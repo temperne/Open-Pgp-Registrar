@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import * as openpgp from 'openpgp';
 import { generateKeyPair, readAnyKey, unlockKey, signDocument, summarize, verifyFiling, type SignedDocument } from '../src/crypto';
-import { registrationPdf, signaturePagePdf, printCopyPdf, privateKeyBackupPdf, safeText } from '../src/pdf';
+import { registrationPdf, signaturePagePdf, printCopyPdf, privateKeyPdf, keyTextFromPdf, safeText } from '../src/pdf';
 
 let key: openpgp.PrivateKey;
 let privateArmored: string;
@@ -112,7 +112,7 @@ describe('PDF generation', () => {
   });
 
   it('builds a private key backup', async () => {
-    const pdf = await privateKeyBackupPdf({
+    const pdf = await privateKeyPdf({
       fingerprint: signed.fingerprint,
       userID: signed.userID,
       created: key.getCreationTime(),
@@ -120,6 +120,30 @@ describe('PDF generation', () => {
       privateArmored,
     });
     expect((await PDFDocument.load(pdf)).getPageCount()).toBe(1);
+  });
+
+  it('private key PDF embeds the key, and the tool can load it back', async () => {
+    const pdf = await privateKeyPdf({
+      fingerprint: signed.fingerprint,
+      userID: signed.userID,
+      created: key.getCreationTime(),
+      protectedByPassphrase: true,
+      privateArmored,
+    });
+    const back = (await readAnyKey(await keyTextFromPdf(pdf))) as openpgp.PrivateKey;
+    expect(back.isPrivate()).toBe(true);
+    expect(back.getFingerprint().toUpperCase()).toBe(signed.fingerprint);
+    await expect(unlockKey(back, 'pw-for-tests')).resolves.toBeTruthy();
+  });
+
+  it('registration form embeds the public key for the Recorder', async () => {
+    const back = await readAnyKey(await keyTextFromPdf(await registrationPdf(regInfo())));
+    expect(back.isPrivate()).toBe(false);
+    expect(back.getFingerprint().toUpperCase()).toBe(signed.fingerprint);
+  });
+
+  it('explains when a PDF has no key inside', async () => {
+    await expect(keyTextFromPdf(originalPdf)).rejects.toThrow(/No key found/);
   });
 
   it('copes with characters outside the standard PDF fonts', async () => {
@@ -151,7 +175,7 @@ describe.skipIf(!canScan)('printed codes scan back correctly', () => {
 
   it('private key backup QR restores the key', async () => {
     const codes = scan(
-      await privateKeyBackupPdf({
+      await privateKeyPdf({
         fingerprint: signed.fingerprint,
         userID: signed.userID,
         created: key.getCreationTime(),

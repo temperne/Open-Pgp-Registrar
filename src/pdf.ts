@@ -1,7 +1,21 @@
 // Printable PDFs: the key registration form (Exhibit A), the signature
 // verification page for a signed instrument (Exhibit B), and an optional paper
 // backup of the private key. All drawing is vector; nothing is rasterized.
-import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb, type RGB } from 'pdf-lib';
+import {
+  PDFDocument,
+  PDFFont,
+  PDFPage,
+  StandardFonts,
+  rgb,
+  PDFName,
+  PDFDict,
+  PDFArray,
+  PDFString,
+  PDFHexString,
+  PDFRawStream,
+  decodePDFRawStream,
+  type RGB,
+} from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
 import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX } from './crypto';
 
@@ -224,6 +238,12 @@ export interface RegistrationInfo {
 export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Array> {
   const { doc, fonts } = await newDoc('Owner Public Key Registration');
   const fpr = info.fingerprint.toUpperCase();
+  // The Recorder's tool can read the key straight from this PDF.
+  await doc.attach(new TextEncoder().encode(info.publicArmored), PUBLIC_KEY_ATTACHMENT, {
+    mimeType: 'application/pgp-keys',
+    description: 'OpenPGP public key being registered',
+    creationDate: info.created,
+  });
   const foot = `Owner key registration  |  Fingerprint ${formatFingerprint(fpr)}`;
 
   // ---- Page 1: the form ----
@@ -530,10 +550,10 @@ export async function printCopyPdf(original: Uint8Array, info: SignaturePageInfo
 }
 
 // ---------------------------------------------------------------------------
-// Private key paper backup
+// Private key PDF
 // ---------------------------------------------------------------------------
 
-export interface BackupInfo {
+export interface PrivateKeyInfo {
   fingerprint: string;
   userID: string;
   created: Date;
@@ -541,16 +561,34 @@ export interface BackupInfo {
   privateArmored: string;
 }
 
-export async function privateKeyBackupPdf(info: BackupInfo): Promise<Uint8Array> {
-  const { doc, fonts } = await newDoc('Private key paper backup');
+export const PRIVATE_KEY_ATTACHMENT = 'private-key.asc';
+export const PUBLIC_KEY_ATTACHMENT = 'public-key.asc';
+
+/**
+ * The owner's private key as a PDF: printable (QR code and text) and loadable,
+ * because the key file is embedded in the PDF as an attachment.
+ */
+export async function privateKeyPdf(info: PrivateKeyInfo): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc('Private key - keep secret');
+  await doc.attach(new TextEncoder().encode(info.privateArmored), PRIVATE_KEY_ATTACHMENT, {
+    mimeType: 'application/pgp-keys',
+    description: 'OpenPGP private key (passphrase-protected)',
+    creationDate: info.created,
+  });
   const p = doc.addPage([PAGE_W, PAGE_H]);
-  let y = header(p, fonts, 'Keep secret  |  Do not file', 'Private Key Paper Backup', 'Store this page somewhere safe, such as a home safe or safe deposit box.');
+  let y = header(
+    p,
+    fonts,
+    'Keep secret  |  Do not file',
+    'Your Private Signing Key',
+    'Keep this PDF (and a printed copy) somewhere safe, such as a USB drive and a home safe. You need it to sign documents.',
+  );
   y = text(
     p,
     fonts,
     info.protectedByPassphrase
-      ? 'This key is protected by a passphrase, which is NOT printed here. Store the passphrase separately. Without it this backup cannot be used.'
-      : 'WARNING: this key has no passphrase. Anyone who gets this page can sign documents as you.',
+      ? 'This key is locked with your passphrase, which is NOT in this PDF. Store the passphrase separately. Without it the key cannot be used.'
+      : 'WARNING: this key has no passphrase. Anyone who gets this PDF or page can sign documents as you.',
     y,
     { size: 10, font: fonts.bold, color: WARN },
   );
@@ -565,31 +603,25 @@ export async function privateKeyBackupPdf(info: BackupInfo): Promise<Uint8Array>
     y - 10,
     CONTENT_W,
   );
+  const how =
+    'To sign later: open the Owner Key Registration tool, choose "Use a key I already have", and pick this PDF ' +
+    '(the key file is embedded in it). From paper: scan this code with a phone, or type the text below into a file ' +
+    'named key.asc. GnuPG users can run gpg --import key.asc.';
   const qr = bestQr(info.privateArmored.trim());
   if (qr) {
     const s = 180;
     drawQr(p, qr, M, y - 14, s);
-    text(
-      p,
-      fonts,
-      'To restore: scan this code with a phone or type the text below into a file named key.asc. Then load it in this tool, ' +
-        'or run gpg --import key.asc.',
-      y - 14,
-      { x: M + s + 16, size: 9, color: MUTED, width: CONTENT_W - s - 16 },
-    );
+    text(p, fonts, how, y - 14, { x: M + s + 16, size: 9, color: MUTED, width: CONTENT_W - s - 16 });
     y -= s + 24;
   } else {
-    y = text(p, fonts, 'To restore: type the text below into a file named key.asc, then load it in this tool or run gpg --import key.asc.', y - 12, {
-      size: 9,
-      color: MUTED,
-    });
+    y = text(p, fonts, how, y - 12, { size: 9, color: MUTED });
     y -= 8;
   }
   let page = p;
   for (const line of info.privateArmored.trim().split(/\r?\n/)) {
     if (y < 64) {
       page = doc.addPage([PAGE_W, PAGE_H]);
-      y = header(page, fonts, 'Keep secret  |  Do not file', 'Private Key Paper Backup (continued)');
+      y = header(page, fonts, 'Keep secret  |  Do not file', 'Your Private Signing Key (continued)');
     }
     page.drawText(safeText(line), { x: M, y: y - 8, size: 8, font: fonts.mono, color: INK });
     y -= 10;
@@ -597,4 +629,64 @@ export async function privateKeyBackupPdf(info: BackupInfo): Promise<Uint8Array>
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, `PRIVATE KEY - KEEP SECRET  |  ${formatFingerprint(info.fingerprint)}`, i + 1, total));
   return doc.save();
+}
+
+// ---------------------------------------------------------------------------
+// Reading keys back out of PDFs made by this tool
+// ---------------------------------------------------------------------------
+
+export function isPdfBytes(bytes: Uint8Array) {
+  return bytes.length > 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+}
+
+/** Lists files embedded in a PDF (the standard EmbeddedFiles name tree). */
+export async function pdfAttachments(bytes: Uint8Array): Promise<{ name: string; data: Uint8Array }[]> {
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+  const out: { name: string; data: Uint8Array }[] = [];
+  const walk = (node: PDFDict | undefined, depth: number) => {
+    if (!node || depth > 8) return;
+    const names = node.lookupMaybe(PDFName.of('Names'), PDFArray);
+    if (names) {
+      for (let i = 0; i + 1 < names.size(); i += 2) {
+        try {
+          const n = names.lookup(i) as PDFString | PDFHexString;
+          const spec = names.lookup(i + 1, PDFDict);
+          const ef = spec.lookup(PDFName.of('EF'), PDFDict);
+          const stream = ef.lookup(PDFName.of('F')) as PDFRawStream;
+          out.push({ name: n.decodeText(), data: decodePDFRawStream(stream).decode() });
+        } catch {
+          /* skip malformed entries */
+        }
+      }
+    }
+    const kids = node.lookupMaybe(PDFName.of('Kids'), PDFArray);
+    if (kids) for (let i = 0; i < kids.size(); i++) walk(kids.lookup(i, PDFDict), depth + 1);
+  };
+  const namesDict = doc.catalog.lookupMaybe(PDFName.of('Names'), PDFDict);
+  walk(namesDict?.lookupMaybe(PDFName.of('EmbeddedFiles'), PDFDict), 0);
+  return out;
+}
+
+/**
+ * Finds an OpenPGP key embedded in a PDF made by this tool: the private key PDF
+ * or the registration form (which carries the public key). Prefers a private key.
+ */
+export async function keyTextFromPdf(bytes: Uint8Array): Promise<string> {
+  let files: { name: string; data: Uint8Array }[];
+  try {
+    files = await pdfAttachments(bytes);
+  } catch {
+    throw new Error('That PDF could not be read.');
+  }
+  const texts = files.map((f) => new TextDecoder().decode(f.data));
+  const priv = texts.find((t) => t.includes('-----BEGIN PGP PRIVATE KEY BLOCK-----'));
+  const pub = texts.find((t) => t.includes('-----BEGIN PGP PUBLIC KEY BLOCK-----'));
+  const found = priv ?? pub;
+  if (!found) {
+    throw new Error(
+      'No key found in that PDF. Use the private key PDF or the registration form PDF made by this tool. ' +
+        'A scanned paper copy has no key file inside; scan its QR code with a phone and paste the text instead.',
+    );
+  }
+  return found;
 }

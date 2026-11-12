@@ -18,6 +18,25 @@
           <strong>Nothing leaves this page.</strong> Everything runs in this browser tab. Nothing is uploaded or
           saved, and closing the tab forgets your key, so download what you need.
         </p>
+        <div id="boot" class="callout warn" role="alert">
+          Starting... If this message does not go away, the app could not start here. Open the file directly in
+          Chrome, Edge, Safari or Firefox (not inside a preview or email viewer).
+        </div>
+        <div id="frame-note" class="callout warn" hidden>
+          You are viewing this inside a preview window. If a button doesn't download anything, open the file directly
+          in Chrome, Edge, Safari or Firefox.
+        </div>
+        <script>
+          // Runs before the app. Explains the failure if the browser can't do the cryptography.
+          (function () {
+            var ok = window.crypto && window.crypto.subtle && window.isSecureContext !== false;
+            if (!ok) {
+              document.getElementById('boot').textContent =
+                "This browser won't run the key tools on this page because it isn't a secure page. " +
+                'Open the downloaded file directly (file://) or from an https:// address, in Chrome, Edge, Safari or Firefox.';
+            }
+          })();
+        </script>
       </div>
     </header>
 
@@ -52,8 +71,9 @@
               <label for="unlock-pass">This private key is locked. Enter its passphrase to sign with it.</label>
               <div class="row">
                 <input id="unlock-pass" type="password" autocomplete="current-password" required />
-                <button type="submit" class="primary">Unlock</button>
+                <button type="button" id="unlock-btn" class="primary">Unlock</button>
               </div>
+              <p class="error" data-error role="alert"></p>
             </form>
 
             <div id="save-warning" class="callout warn" hidden>
@@ -65,12 +85,22 @@
             </div>
 
             <div class="actions">
-              <button id="dl-private" class="primary" hidden>Download private key</button>
-              <button id="dl-backup" hidden>Print paper backup</button>
-              <button id="dl-public">Download public key</button>
-              <button id="forget-key" class="ghost">Forget this key</button>
+              <button type="button" id="dl-private" class="primary" hidden>Download private key (PDF)</button>
+              <button type="button" data-goto="register">Next: registration form</button>
+              <button type="button" id="forget-key" class="ghost">Forget this key</button>
             </div>
-            <p class="hint" id="next-hint">Next: <a href="#register" data-goto="register">fill in the registration form</a>.</p>
+            <p id="dl-note" class="hint" role="status"></p>
+            <p class="hint" id="private-hint" hidden>
+              The private key PDF is what you keep. Print it for your safe and save the file on a USB drive. To sign
+              later, load that PDF here and enter your passphrase.
+            </p>
+            <details class="advanced">
+              <summary>For GnuPG users: download as .asc text files</summary>
+              <div class="actions">
+                <button type="button" id="dl-private-asc" hidden>Private key (.asc)</button>
+                <button type="button" id="dl-public-asc">Public key (.asc)</button>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -90,20 +120,21 @@
               The passphrase locks the private key file. Write it down and keep it apart from the key. It can't be
               recovered.
             </p>
-            <button type="submit" class="primary">Create key</button>
+            <button type="button" id="gen-btn" class="primary">Create key</button>
+            <p class="error" data-error role="alert"></p>
           </form>
 
           <form id="load-form" class="card">
             <h2>Use a key I already have</h2>
-            <p class="muted">A private key to sign, or a public key just to register. From GnuPG, Kleopatra, etc.</p>
-            <label for="load-file">Key file <span class="opt">(.asc, .key, .gpg)</span></label>
-            <input id="load-file" type="file" accept=".asc,.key,.gpg,.pgp,.txt,application/pgp-keys" />
+            <p class="muted">The private key PDF this tool made for you, or a key file from GnuPG, Kleopatra, etc.</p>
+            <label for="load-file">Key file <span class="opt">(.pdf, .asc, .key, .gpg)</span></label>
+            <input id="load-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys" />
             <label for="load-text">or paste it</label>
             <textarea id="load-text" rows="6" spellcheck="false" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
-            <button type="submit" class="primary">Load key</button>
+            <button type="button" id="load-btn" class="primary">Load key</button>
+            <p class="error" data-error role="alert"></p>
           </form>
         </div>
-        <p id="key-error" class="error" role="alert"></p>
       </section>
 
       <!-- 2. REGISTER -->
@@ -145,14 +176,14 @@
               <input id="reg-prev" spellcheck="false" />
             </div>
           </div>
-          <button type="submit" class="primary">Download registration form (PDF)</button>
+          <button type="button" id="reg-btn" class="primary">Download registration form (PDF)</button>
+          <p class="error" data-error role="alert"></p>
           <ol class="steps">
             <li>Print it. Sign in front of a notary, who completes box 1.</li>
             <li>Meet a local law enforcement officer, who completes and signs box 2.</li>
             <li>File it with the Recorder. They call the officer's agency to confirm before activating your key.</li>
           </ol>
         </form>
-        <p id="reg-error" class="error" role="alert"></p>
       </section>
 
       <!-- 3. SIGN -->
@@ -176,9 +207,9 @@
               <input id="sign-parcels" />
             </div>
           </div>
-          <button type="submit" class="primary">Sign</button>
+          <button type="button" id="sign-btn" class="primary">Sign</button>
+          <p class="error" data-error role="alert"></p>
         </form>
-        <p id="sign-error" class="error" role="alert"></p>
 
         <div id="sign-result" class="card" hidden>
           <div class="keycard-head">
@@ -194,10 +225,11 @@
             <dd id="sr-hash" class="mono small"></dd>
           </dl>
           <div class="actions">
-            <button id="dl-sigpage" class="primary">Verification page (PDF)</button>
-            <button id="dl-printcopy" hidden>Document + verification page (PDF)</button>
-            <button id="dl-sig">Signature file (.sig)</button>
+            <button type="button" id="dl-sigpage" class="primary">Verification page (PDF)</button>
+            <button type="button" id="dl-printcopy" hidden>Document + verification page (PDF)</button>
+            <button type="button" id="dl-sig">Signature file (.sig)</button>
           </div>
+          <p id="sign-dl-error" class="error" role="alert"></p>
           <p id="printcopy-note" class="hint"></p>
           <div class="callout">
             <strong>Keep the original file exactly as it is.</strong> The signature covers that file byte for byte.
@@ -214,12 +246,12 @@
           <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner types straight into these boxes.</p>
 
           <label for="v-key">Registered public key for the parcel</label>
-          <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on the registration form, or paste the key"></textarea>
+          <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on page 2 of the registration form, or paste the key"></textarea>
           <div class="row small-gap">
-            <input id="v-key-file" type="file" accept=".asc,.key,.gpg,.pgp,.txt" aria-label="Public key file" />
+            <input id="v-key-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt" aria-label="Registration form PDF or public key file" />
             <button type="button" id="v-use-mine" class="ghost" hidden>Use the key from step 1</button>
           </div>
-          <p id="v-key-info" class="hint"></p>
+          <p id="v-key-info" class="hint">Or choose the registration form PDF; the key is embedded in it.</p>
 
           <label for="v-payload">Signature code from the verification page</label>
           <textarea id="v-payload" rows="3" spellcheck="false" placeholder="Scan the QR code. It starts with PGPSIG1|"></textarea>
@@ -227,9 +259,9 @@
           <label for="v-doc">Signed document file <span class="opt">(needed to finish the check)</span></label>
           <input id="v-doc" type="file" />
 
-          <button type="submit" class="primary">Check</button>
+          <button type="button" id="verify-btn" class="primary">Check</button>
+          <p class="error" data-error role="alert"></p>
         </form>
-        <p id="verify-error" class="error" role="alert"></p>
 
         <div id="verify-result" class="card" hidden aria-live="polite">
           <div id="vr-banner" class="verdict"></div>

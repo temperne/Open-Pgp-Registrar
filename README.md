@@ -11,9 +11,10 @@ connections with a Content-Security-Policy.
 
 ## What owners do
 
-1. **Your key.** Create a new key (protected by a passphrase), or load one you
-   already have from GnuPG, Kleopatra or similar. Download the private key, and
-   optionally print a paper backup. Keep both safe.
+1. **Your key.** Create a new key (protected by a passphrase) and download it as
+   a PDF. Print it for your safe and keep the file on a USB drive. To sign later,
+   load that PDF and enter your passphrase. Keys from GnuPG, Kleopatra or similar
+   work too.
 2. **Register.** Download the registration form (PDF). Print it, sign it before a
    notary, have a local law enforcement officer complete the attestation box, and
    file it with the Recorder. The Recorder calls the officer's agency to confirm
@@ -25,7 +26,8 @@ connections with a Content-Security-Policy.
 
 ## What the Recorder does
 
-Use **Check a filing**. Scan the public-key code from the registration form, scan
+Use **Check a filing**. Scan the public-key code from the registration form (or
+load the form PDF, which has the key embedded), scan
 the QR code on the verification page, and load the filed document. The result is
 **good** (record as usual), **does not verify** (hold, suspected forgery) or
 **not checked yet** (the document file is still needed). A handheld barcode

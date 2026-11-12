@@ -27,16 +27,20 @@ gives counter staff a way to check a filing.
 ## What it does
 
 1. **Your key**: create an Ed25519 key, which must have a passphrase, or load an
-   existing key (armored or binary, from GnuPG, Kleopatra, etc.). A locked key is
-   unlocked with its passphrase. Users can download the public key, the private key
-   (passphrase-protected) and a printable private-key paper backup.
+   existing key. Loading accepts the private key PDF made by this tool, or an
+   armored or binary key file from GnuPG, Kleopatra, etc. A locked key is unlocked
+   with its passphrase. **The key's main output is a PDF.** The private key PDF
+   embeds the passphrase-protected key file as a PDF attachment (so the tool can
+   load it back to sign) and prints it as a QR code and as text. `.asc` downloads
+   are a secondary "for GnuPG users" option.
 2. **Register** (Exhibit A): a PDF registration form. It covers new or replacement
    registration, owner, parcels, addresses and county, and shows the key type,
    creation date, user ID, fingerprint and a fingerprint QR code. It has an owner
    request statement, an owner signature line and two identity boxes (notary
    acknowledgment and law enforcement attestation), plus the callback rule and a
    "Recorder use only" box. Page 2 attaches the full public key as text and as a
-   `PGPKEY1|<base64 binary key>` QR code.
+   `PGPKEY1|<base64 binary key>` QR code. The public key is also embedded as an
+   attachment, so the Recorder's check can load it straight from the form PDF.
 3. **Sign** (Exhibit B): a detached signature over the exact bytes of the chosen
    file. The outputs are a verification-page PDF, an original-plus-verification-page
    print copy (PDF inputs only) and a `.sig` file. The verification page has a QR
@@ -66,6 +70,12 @@ gives counter staff a way to check a filing.
 - `npm run build`: writes `dist/index.html` (single file)
 
 ## Working agreements
+
+- The page must work inside sandboxed previews and embedded viewers. Use
+  `type="button"` buttons wired with `action()` in `main.ts`, never rely on form
+  submission (sandboxes without `allow-forms` drop it silently), and guard
+  `history`/`top` access. Failures must show visibly (the `#boot` banner or the
+  form's `[data-error]` slot), never silently.
 
 - Commit after each milestone.
 - Keep the PDFs on US Letter, and use only the standard fonts (WinAnsi). User text is
