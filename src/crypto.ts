@@ -646,6 +646,61 @@ export interface Registration {
    * however they like; a person at the Recorder judges the structure.
    */
   labels?: string[];
+  /**
+   * Proof of key possession: every listed key's signature over this
+   * registration's statement (see registrationStatement). Only someone with the
+   * private key and its passphrase can make it.
+   */
+  proof?: SignedText;
+}
+
+/**
+ * The statement every key holder signs when registering, proving they hold the
+ * key and passphrase. Keys are listed in fingerprint order so every holder,
+ * on any computer, signs exactly the same text.
+ */
+export function registrationStatement(reg: { parcel: string; keys: AnyKey[] }) {
+  const keys = [...reg.keys].sort((x, y) => x.getFingerprint().localeCompare(y.getFingerprint()));
+  return [
+    'S.T.O.P. PARCEL KEY REGISTRATION.',
+    `PARCEL NUMBER: ${reg.parcel.trim()}.`,
+    'EVERY KEY LISTED BELOW MUST SIGN ANY INSTRUMENT AFFECTING THIS PARCEL.',
+    'BY SIGNING THIS STATEMENT, EACH KEY HOLDER CONFIRMS THEY HOLD THE KEY AND ITS PASSPHRASE.',
+    ...keys.map((k, i) => `KEY ${i + 1}: ${k.getFingerprint().toUpperCase()} ${describeKey(k)}.`),
+  ].join('\n');
+}
+
+/** Signs a registration's statement with one key (adding to signatures made by the other key holders). */
+export async function signRegistration(key: openpgp.PrivateKey, reg: Registration): Promise<SignedText> {
+  const me = key.getFingerprint().toUpperCase();
+  if (!reg.keys.some((k) => k.getFingerprint().toUpperCase() === me)) {
+    throw new Error('This key is not listed on the registration, so it cannot sign it.');
+  }
+  return signText(key, registrationStatement(reg), reg.proof);
+}
+
+export interface ProofStatus {
+  /** Every listed key made a valid signature over this registration's statement. */
+  complete: boolean;
+  signed: string[];
+  missing: string[];
+  problems: string[];
+}
+
+/** Checks the proof of key possession against the registration's own keys and statement. */
+export async function checkRegistrationProof(reg: Registration): Promise<ProofStatus> {
+  const all = reg.keys.map((k) => k.getFingerprint().toUpperCase());
+  if (!reg.proof) return { complete: false, signed: [], missing: all, problems: [] };
+  const problems: string[] = [];
+  if (reg.proof.canonical !== canonicalText(registrationStatement(reg))) {
+    problems.push('The proof was signed for a different parcel or key list.');
+  }
+  const r = await verifyScannedText({ scanned: reg.proof.codes.join('\n'), registration: { parcel: '', keys: reg.keys } });
+  const signed = (r.signers ?? []).filter((x) => x.registered && x.state === 'pass').map((x) => x.fingerprint);
+  for (const x of r.signers ?? []) if (!x.registered) problems.push('A key not on the registration signed it.');
+  for (const x of r.signers ?? []) if (x.registered && x.state === 'fail' && !/No signature/.test(x.detail)) problems.push(x.detail);
+  const missing = all.filter((f) => !signed.includes(f));
+  return { complete: !problems.length && !missing.length, signed, missing, problems };
 }
 
 /** Description of a registered key, if the registration gives one. */
@@ -714,10 +769,15 @@ export function mergeRegistrations(regs: Registration[]): Registration {
     });
   }
   const list = [...keys.entries()];
+  const proof = regs
+    .map((r) => r.proof)
+    .filter((x): x is SignedText => !!x)
+    .sort((x, y) => y.signatures.length - x.signatures.length)[0];
   return {
     parcel: withParcel[0]?.parcel ?? '',
     keys: list.map(([, k]) => k),
     labels: labels.size ? list.map(([f]) => labels.get(f) ?? '') : undefined,
+    proof,
   };
 }
 

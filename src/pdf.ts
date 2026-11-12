@@ -27,8 +27,13 @@ import {
   encodeRegistrationCodes,
   keyIdentity,
   describeKey,
+  registrationStatement,
+  assembleSigned,
+  fromBase64,
   type Registration,
+  type SignedText,
 } from './crypto';
+import { canonicalText } from './text';
 import type * as openpgp from 'openpgp';
 import { safeText } from './text';
 import { BRAND, brandLine } from './brand';
@@ -268,6 +273,10 @@ export interface RegistrationInfo {
    * Each gets a signature line, notary box and officer box. Defaults to the owner.
    */
   signatories?: (string | Signatory)[];
+  /** Proof of key possession per parcel: every key's signature over the registration statement. */
+  proofs?: Record<string, SignedText>;
+  /** Embedded so the next key holder can load this PDF and add their signature. */
+  draft?: RegistrationDraft;
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -289,6 +298,35 @@ export function splitParcels(s: string) {
 }
 
 export const REGISTRATION_ATTACHMENT = 'stop-registration';
+export const REGISTRATION_DRAFT_ATTACHMENT = 'stop-registration-draft.json';
+
+/** Everything needed to regenerate a registration and add more key holders' signatures. */
+export interface RegistrationDraft {
+  format: 'stop-registration-draft-1';
+  ownerName: string;
+  parcels: string;
+  propertyAddress: string;
+  mailingAddress: string;
+  county: string;
+  replacement: boolean;
+  previousFingerprint: string;
+  /** Armored public keys, the first one shown on page 1. */
+  keys: string[];
+  /** Per parcel: each key holder's signature over the registration statement. */
+  proofs: Record<string, { fingerprint: string; userID: string; signedAt: string; sig: string }[]>;
+}
+
+const proofSigs = (p?: SignedText) =>
+  (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
+
+/** Rebuilds a proof from stored signatures for the given registration. */
+export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[] }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
+  if (!sigs?.length) return undefined;
+  return assembleSigned(
+    canonicalText(registrationStatement(reg)),
+    sigs.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: new Date(x.signedAt), bytes: fromBase64(x.sig) })),
+  );
+}
 
 /**
  * Registration forms: one complete form per parcel. Each lists every key
@@ -310,8 +348,15 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
     creationDate: info.created,
   });
   const parcels = splitParcels(info.parcels);
+  if (info.draft) {
+    await doc.attach(new TextEncoder().encode(JSON.stringify(info.draft)), REGISTRATION_DRAFT_ATTACHMENT, {
+      mimeType: 'application/json',
+      description: 'Registration in progress, so other key holders can add their signatures',
+    });
+  }
   const footers: string[] = [];
   for (const [n, parcel] of parcels.entries()) {
+    const proof = info.proofs?.[parcel];
     const json = {
       format: 'stop-registration-1',
       parcel,
@@ -319,6 +364,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       registrant: fpr,
       keys: keys.map((k) => k.armor()),
       labels,
+      proof: proofSigs(proof),
     };
     await doc.attach(new TextEncoder().encode(JSON.stringify(json, null, 1)), `${REGISTRATION_ATTACHMENT}-${n + 1}.json`, {
       mimeType: 'application/json',
@@ -326,7 +372,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       creationDate: info.created,
     });
     const before = doc.getPageCount();
-    await drawRegistration(doc, fonts, info, parcel, keys, labels);
+    await drawRegistration(doc, fonts, info, parcel, keys, labels, proof);
     const label = `Registration for parcel ${parcel || '(not given)'}  |  Registrant ${formatFingerprint(fpr)}`;
     for (let i = before; i < doc.getPageCount(); i++) footers[i] = label;
   }
@@ -476,7 +522,15 @@ function signAndVerify(p: PDFPage, fonts: Fonts, y: number, who: Signatory, tag:
   });
 }
 
-async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: RegistrationInfo, parcel: string, keys: openpgp.PublicKey[], labels: string[]) {
+async function drawRegistration(
+  doc: PDFDocument,
+  fonts: Fonts,
+  info: RegistrationInfo,
+  parcel: string,
+  keys: openpgp.PublicKey[],
+  labels: string[],
+  proof?: SignedText,
+) {
   const fpr = info.fingerprint.toUpperCase();
   // ---- Page 1: the form ----
   const p = doc.addPage([PAGE_W, PAGE_H]);
@@ -590,7 +644,9 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
     const kf = k.getFingerprint().toUpperCase();
     keyRows.push({
       label: `Key ${i + 1}${kf === fpr ? ' (this registrant)' : ''}`,
-      value: `${labels[i] ? `${labels[i]}: ` : ''}${k.getUserIDs()[0] ?? ''}\n${formatFingerprint(kf)}`,
+      value: `${labels[i] && labels[i] !== describeKey(k) ? `${labels[i]}: ` : ''}${describeKey(k)}${
+        keyIdentity(k).kind === 'position' ? ' (whoever holds the position)' : keyIdentity(k).kind === 'group' ? ' (all members sign)' : ''
+      }\n${formatFingerprint(kf)}`,
     });
   });
   y = table(page, fonts, keyRows, y, CONTENT_W, 150);
@@ -629,6 +685,45 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
     page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8)) / 2, y: y - size - 12, size: 8, font: fonts.bold, color: MUTED });
     if (col === perRow - 1 || i === all.length - 1) y -= size + 50;
   });
+
+  // Proof of key possession: every key holder's signature over the registration statement.
+  {
+    const signed = new Set((proof?.signatures ?? []).map((x) => x.fingerprint.toUpperCase()));
+    const missing = keys.filter((k) => !signed.has(k.getFingerprint().toUpperCase()));
+    const done = !!proof && missing.length === 0;
+    ensure(70);
+    y = text(page, fonts, 'Proof that every key holder has the key and its passphrase', y + 10, { size: 9.5, font: fonts.bold });
+    const msg = done
+      ? `COMPLETE: all ${keys.length} key${keys.length > 1 ? 's have' : ' has'} signed this registration.`
+      : `NOT COMPLETE: ${keys.length - missing.length} of ${keys.length} keys have signed this registration. Still needed: ` +
+        missing.map((k) => describeKey(k)).join(', ') +
+        '. The Recorder will not activate the keys until every key has signed.';
+    const lines = wrap(msg, fonts.bold, 9, CONTENT_W - 20);
+    const h = lines.length * 12 + 12;
+    page.drawRectangle({
+      x: M,
+      y: y - 4 - h,
+      width: CONTENT_W,
+      height: h,
+      color: done ? rgb(0.9, 0.96, 0.92) : rgb(0.98, 0.91, 0.91),
+      borderColor: done ? rgb(0.08, 0.42, 0.18) : WARN,
+      borderWidth: 1,
+    });
+    lines.forEach((l, i) => page.drawText(l, { x: M + 10, y: y - 18 - i * 12, size: 9, font: fonts.bold, color: done ? rgb(0.08, 0.42, 0.18) : WARN }));
+    y -= h + 16;
+    if (proof?.codes.length) {
+      proof.codes.forEach((code, i) => {
+        const col = i % perRow;
+        if (col === 0) ensure(size + 24);
+        const x = M + col * (size + gap);
+        const qr = bestQr(code);
+        if (qr) drawQr(page, qr, x, y, size);
+        const label = `Proof ${i + 1} of ${proof.codes.length}`;
+        page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8)) / 2, y: y - size - 12, size: 8, font: fonts.bold, color: MUTED });
+        if (col === perRow - 1 || i === proof.codes.length - 1) y -= size + 50;
+      });
+    }
+  }
 
   // This registrant's key as text.
   ensure(40);
@@ -1427,7 +1522,9 @@ export async function registrationsFromPdf(bytes: Uint8Array): Promise<Registrat
       if (j.format !== 'stop-registration-1') continue;
       const keys = await Promise.all((j.keys as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
       const labels = Array.isArray(j.labels) ? (j.labels as unknown[]).map((x) => String(x ?? '')) : undefined;
-      out.push({ parcel: String(j.parcel ?? ''), keys, labels });
+      const parcel = String(j.parcel ?? '');
+      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys }, j.proof) : undefined;
+      out.push({ parcel, keys, labels, proof });
     } catch {
       /* skip damaged entries */
     }
@@ -1443,6 +1540,19 @@ export async function draftFromPdf(bytes: Uint8Array): Promise<DocumentDraft | n
   try {
     const j = JSON.parse(new TextDecoder().decode(f.data));
     return j.format === 'stop-document-1' ? (j as DocumentDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The registration in progress embedded in a registration PDF made by this tool, if any. */
+export async function registrationDraftFromPdf(bytes: Uint8Array): Promise<RegistrationDraft | null> {
+  const files = await pdfAttachments(bytes).catch(() => []);
+  const f = files.find((x) => x.name === REGISTRATION_DRAFT_ATTACHMENT);
+  if (!f) return null;
+  try {
+    const j = JSON.parse(new TextDecoder().decode(f.data));
+    return j.format === 'stop-registration-draft-1' ? (j as RegistrationDraft) : null;
   } catch {
     return null;
   }

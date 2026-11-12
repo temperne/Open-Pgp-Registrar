@@ -302,8 +302,16 @@
         <form id="reg-form" class="card">
           <h2>Registration form</h2>
           <p class="muted">
-            Fills in the form the Recorder files with your parcel. Only your public key goes on it.
+            Fills in the form the Recorder files with your parcel. Only public keys go on it. Every key listed signs the
+            registration digitally, which proves its holder has the key and passphrase.
           </p>
+          <div class="subcard">
+            <h3>Continue a registration</h3>
+            <p class="hint">Another key holder started the registration? Load their registration PDF to add your signature.</p>
+            <input id="reg-continue-file" type="file" accept=".pdf,application/pdf" aria-label="Registration PDF to continue" />
+            <p id="reg-continue-status" class="hint" role="status"></p>
+          </div>
+          <div id="reg-locked-note" class="callout warn" hidden></div>
           <fieldset class="choice">
             <legend>This is a</legend>
             <label><input type="radio" name="reg-kind" value="new" checked /> New registration</label>
@@ -349,14 +357,27 @@
             <input id="co-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
             <p id="co-status" class="hint" role="status"></p>
           </fieldset>
-          <button type="button" id="reg-btn" class="primary">Download registration form(s) (PDF)</button>
+          <button type="button" id="reg-btn" class="primary">Sign the registration with my key</button>
           <p class="error" data-error role="alert"></p>
           <ol class="steps">
-            <li>Print it (one form per parcel). Sign in front of a notary, who completes box 1.</li>
-            <li>Meet a local law enforcement officer, who completes and signs box 2.</li>
-            <li>File it with the Recorder. They call the officer's agency to confirm before activating your key.</li>
+            <li>Every key listed signs the registration here, on one computer or each on their own, proving they hold the key and passphrase.</li>
+            <li>Print it (one form per parcel). Each signer signs in ink before a notary, and has their identity checked by an officer (or, for a position, by the business authority).</li>
+            <li>File it with the Recorder. They make the callbacks and confirm every key signed before activating the keys.</li>
           </ol>
         </form>
+        <div id="reg-result" class="card" hidden>
+          <div class="keycard-head">
+            <h2>Registration signatures</h2>
+            <span id="reg-status" class="pill"></span>
+          </div>
+          <ul id="reg-signers" class="keylist"></ul>
+          <div class="actions">
+            <button type="button" id="dl-reg" class="primary">Download registration form(s) (PDF)</button>
+            <button type="button" id="reg-next">Next key holder signs on this computer</button>
+          </div>
+          <p id="reg-next-hint" class="hint"></p>
+          <p class="error" data-error role="alert"></p>
+        </div>
       </section>
 
       <!-- 3. SIGN -->

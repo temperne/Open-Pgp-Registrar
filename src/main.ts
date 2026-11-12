@@ -23,6 +23,9 @@ import {
   keyLabel,
   describeKey,
   keyIdentity,
+  signRegistration,
+  checkRegistrationProof,
+  registrationStatement,
   parsePayload,
   toBase64,
   fromBase64,
@@ -45,6 +48,9 @@ import {
   setBrandSeal,
   certificatePdf,
   signerBlocksForKey,
+  registrationDraftFromPdf,
+  proofFromSigs,
+  type RegistrationDraft,
   publicKeyCardPdf,
   registrationsFromPdf,
   draftFromPdf,
@@ -79,8 +85,17 @@ interface State {
   coOwners: openpgp.PublicKey[];
   /** Optional description of each co-owner key, by fingerprint. */
   coLabels: Map<string, string>;
+  /**
+   * The registration being signed by its key holders (proof of key possession).
+   * Kept when keys are switched, so several holders can sign on one computer.
+   */
+  regDraft: {
+    keys: openpgp.PublicKey[];
+    parcels: string[];
+    proofs: Record<string, SignedText>;
+  } | null;
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map() };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -556,36 +571,190 @@ input('co-file').addEventListener('change', async () => {
   }
 });
 
+// ---- Proof of key possession: every key listed signs the registration ----
+function regKeysFromForm(): openpgp.PublicKey[] {
+  const mine = state.key!.toPublic();
+  const others = state.coOwners.filter((c) => c.getFingerprint().toUpperCase() !== mine.getFingerprint().toUpperCase());
+  return [mine, ...others];
+}
+
+function lockRegistration() {
+  const d = state.regDraft;
+  textarea('reg-parcels').disabled = !!d;
+  input('co-file').disabled = !!d;
+  $('co-list').querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = !!d));
+  const note = $('reg-locked-note');
+  note.hidden = !d;
+  note.innerHTML = '';
+  if (d) {
+    const over = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Start over' });
+    over.addEventListener('click', () => {
+      if (!confirm('This discards the signatures on this registration. Start over?')) return;
+      state.regDraft = null;
+      $('reg-result').hidden = true;
+      lockRegistration();
+      renderCoOwners();
+    });
+    note.append(
+      Object.assign(document.createElement('strong'), { textContent: 'Parcels and keys locked. ' }),
+      'Key holders have signed this list. Other details can still be edited. ',
+      over,
+    );
+  }
+}
+
+function regMissing() {
+  const d = state.regDraft;
+  if (!d) return [];
+  const first = d.proofs[d.parcels[0]];
+  const signed = new Set((first?.signatures ?? []).map((x) => x.fingerprint.toUpperCase()));
+  return d.keys.filter((k) => !signed.has(k.getFingerprint().toUpperCase()));
+}
+
+function renderRegDraft() {
+  const d = state.regDraft;
+  $('reg-result').hidden = !d;
+  if (!d) return;
+  const missing = regMissing();
+  const list = $('reg-signers');
+  list.innerHTML = '';
+  for (const k of d.keys) {
+    const li = keyItem(k);
+    const done = !missing.includes(k);
+    li.className = done ? 'signed' : 'waiting';
+    li.prepend(Object.assign(document.createElement('span'), { className: 'tag', textContent: done ? 'signed' : 'still needed' }));
+    list.append(li);
+  }
+  const status = $('reg-status');
+  status.textContent = missing.length ? `Not complete: ${d.keys.length - missing.length} of ${d.keys.length}` : 'Complete: every key signed';
+  status.className = missing.length ? 'pill warn' : 'pill good';
+  $('dl-reg').textContent = missing.length ? 'Download for the next key holder (PDF)' : 'Download registration form(s) (PDF)';
+  $('reg-next').hidden = !missing.length;
+  $('reg-next-hint').textContent = missing.length
+    ? 'Give the PDF to the next key holder (they choose "Continue a registration" and load it), or let them sign on this computer.'
+    : 'Print and file it. Every signer still signs in ink before a notary.';
+}
+
 action(
   'reg-btn',
   async () => {
-    const k = state.key;
-    if (!k) return;
-    const owner = need(input('reg-owner').value, 'Enter the owner(s) of record.');
-    const parcels = need(textarea('reg-parcels').value, 'Enter the parcel number.');
-    const s = summarize(k);
-    const others = state.coOwners.filter((c) => c.getFingerprint().toUpperCase() !== s.fingerprint);
-    const pdf = await registrationPdf({
-      ownerName: owner,
-      parcels,
-      coOwnerKeys: others,
+    if (!state.key) return;
+    if (!state.signer) {
+      throw new UserError('Unlock your private key in step 1 first. Signing the registration proves you hold the key and its passphrase.');
+    }
+    need(input('reg-owner').value, 'Enter the owner(s) of record.');
+    if (!state.regDraft) {
+      const parcels = splitParcels(need(textarea('reg-parcels').value, 'Enter the parcel number.'));
+      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {} };
+    }
+    const d = state.regDraft;
+    for (const parcel of d.parcels) {
+      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel] });
+    }
+    lockRegistration();
+    renderRegDraft();
+    $('reg-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+  'Signing...',
+);
+
+action(
+  'dl-reg',
+  async () => {
+    const d = state.regDraft;
+    if (!d) return;
+    const first = d.keys[0];
+    const s = summarize(first);
+    const sigsOf = (p?: SignedText) =>
+      (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
+    const draft: RegistrationDraft = {
+      format: 'stop-registration-draft-1',
+      ownerName: input('reg-owner').value.trim(),
+      parcels: d.parcels.join('\n'),
       propertyAddress: input('reg-property').value.trim(),
       mailingAddress: input('reg-mailing').value.trim(),
       county: input('reg-county').value.trim(),
       replacement: isReplacement(),
       previousFingerprint: input('reg-prev').value.trim(),
+      keys: d.keys.map((k) => k.armor()),
+      proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
+    };
+    const pdf = await registrationPdf({
+      ownerName: draft.ownerName,
+      parcels: draft.parcels,
+      coOwnerKeys: d.keys.slice(1),
+      proofs: d.proofs,
+      draft,
+      propertyAddress: draft.propertyAddress,
+      mailingAddress: draft.mailingAddress,
+      county: draft.county,
+      replacement: draft.replacement,
+      previousFingerprint: draft.previousFingerprint,
       fingerprint: s.fingerprint,
       algorithm: s.algorithm,
       created: s.created,
       userID: s.userIDs[0] ?? '',
-      publicKeyBinary: k.toPublic().write(),
+      publicKeyBinary: first.write(),
       publicArmored: s.publicArmored,
     });
-    const list = splitParcels(parcels);
-    download(pdf, `key-registration-${fileSlug(list[0])}${list.length > 1 ? `-and-${list.length - 1}-more` : ''}.pdf`, 'application/pdf');
+    const done = !regMissing().length;
+    download(
+      pdf,
+      `key-registration-${fileSlug(d.parcels[0])}${d.parcels.length > 1 ? `-and-${d.parcels.length - 1}-more` : ''}${done ? '' : '-partly-signed'}.pdf`,
+      'application/pdf',
+    );
   },
   'Preparing PDF...',
 );
+
+$('reg-next').addEventListener('click', () => {
+  state.key = null;
+  state.signer = null;
+  state.privateArmored = null;
+  state.unsaved = false;
+  refresh();
+  showTab('key');
+  banner('Load the next key holder’s key and unlock it, then return to "Register" and choose "Sign the registration with my key". The registration is kept.');
+  $('boot').className = 'callout';
+});
+
+input('reg-continue-file').addEventListener('change', async () => {
+  const f = input('reg-continue-file').files?.[0];
+  if (!f) return;
+  const status = $('reg-continue-status');
+  status.className = 'hint';
+  try {
+    const draft = await registrationDraftFromPdf(new Uint8Array(await f.arrayBuffer()));
+    if (!draft) throw new Error('No registration in progress was found in that PDF. Load the registration PDF made by this tool.');
+    const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+    const parcels = splitParcels(draft.parcels);
+    const proofs: Record<string, SignedText> = {};
+    for (const p of parcels) {
+      const proof = await proofFromSigs({ parcel: p, keys }, draft.proofs[p] ?? []);
+      if (proof) proofs[p] = proof;
+    }
+    state.regDraft = { keys, parcels, proofs };
+    input('reg-owner').value = draft.ownerName;
+    textarea('reg-parcels').value = draft.parcels;
+    input('reg-property').value = draft.propertyAddress;
+    input('reg-mailing').value = draft.mailingAddress;
+    input('reg-county').value = draft.county;
+    input('reg-prev').value = draft.previousFingerprint;
+    document.querySelectorAll<HTMLInputElement>('input[name="reg-kind"]').forEach((r) => (r.checked = r.value === (draft.replacement ? 'replacement' : 'new')));
+    state.coOwners = keys.slice(1);
+    renderCoOwners();
+    lockRegistration();
+    renderRegDraft();
+    refresh();
+    status.className = 'hint ok';
+    status.textContent = `Loaded a registration signed by ${keys.length - regMissing().length} of ${keys.length} keys. Unlock your key and choose "Sign the registration with my key".`;
+  } catch (err) {
+    status.className = 'hint error';
+    status.textContent = (err as Error).message;
+  } finally {
+    input('reg-continue-file').value = '';
+  }
+});
 
 /**
  * Reads parcel registrations from a registration form PDF (embedded), a scan or
@@ -605,7 +774,25 @@ async function registrationsFromFile(file: File, onProgress?: (msg: string) => v
       const m = /^PGPR1\|([0-9A-F]{12})\|/.exec(c);
       if (m) groups.set(m[1], [...(groups.get(m[1]) ?? []), c]);
     }
-    if (groups.size) return Promise.all([...groups.values()].map((g) => decodeRegistrationCodes(g.join('\n'))));
+    if (groups.size) {
+      const regs = await Promise.all([...groups.values()].map((g) => decodeRegistrationCodes(g.join('\n'))));
+      // Proof codes (PGPQ1) on the same pages: match each to its registration's statement.
+      const proofGroups = new Map<string, string[]>();
+      for (const c of codes) {
+        const m = /^PGPQ1\|([0-9A-F]{12})\|/.exec(c);
+        if (m) proofGroups.set(m[1], [...(proofGroups.get(m[1]) ?? []), c]);
+      }
+      for (const g of proofGroups.values()) {
+        try {
+          const proof = await signedFromCodes(g.join('\n'));
+          const reg = regs.find((r) => canonicalText(registrationStatement(r)) === proof.canonical);
+          if (reg) reg.proof = proof;
+        } catch {
+          /* incomplete proof codes: reported as not proven */
+        }
+      }
+      return regs;
+    }
     return [{ parcel: '', keys: [(await keyFromCodes(codes)).toPublic()] }];
   }
   return [{ parcel: '', keys: [(await readAnyKey(bytes)).toPublic()] }];
@@ -887,6 +1074,17 @@ function useSignRegistration(regs: Registration[]) {
     info.innerHTML = '';
     if (state.signReg) {
       info.append(describeRegistration(state.signReg));
+      const reg = state.signReg;
+      void checkRegistrationProof(reg).then((ps) => {
+        if (!ps.complete && state.signReg === reg) {
+          info.append(
+            Object.assign(document.createElement('p'), {
+              className: 'hint error',
+              textContent: 'This registration is not fully signed by its keys yet, so the Recorder’s check will fail until it is.',
+            }),
+          );
+        }
+      });
       if (state.signReg.parcel && !state.draft && !input('f-parcels').value) input('f-parcels').value = state.signReg.parcel;
     }
     syncTemplate();
@@ -1071,7 +1269,17 @@ function showVerifyRegs(error?: string) {
   for (const r of verifyRegs) byParcel.set(parcelKey(r.parcel), [...(byParcel.get(parcelKey(r.parcel)) ?? []), r]);
   for (const g of byParcel.values()) {
     try {
-      info.append(describeRegistration(mergeRegistrations(g)));
+      const merged = mergeRegistrations(g);
+      info.append(describeRegistration(merged));
+      const line = Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Checking proof of key possession...' });
+      info.append(line);
+      void checkRegistrationProof(merged).then((ps) => {
+        line.className = ps.complete ? 'hint ok' : 'hint error';
+        line.textContent = ps.complete
+          ? `Proof of key possession: every key signed this registration.`
+          : `Proof of key possession NOT COMPLETE${ps.problems.length ? ` (${ps.problems.join(' ')})` : ''}: ` +
+            `${ps.missing.length} of ${merged.keys.length} keys have not signed. Do not activate these keys or rely on this registration.`;
+      });
     } catch (err) {
       info.className = 'hint error';
       info.append((err as Error).message);
@@ -1242,6 +1450,17 @@ action(
       // Paper filing: the codes carry the signed text.
       const registration = await registrationFor(payload);
       r = await verifyScannedText({ scanned: payload, registration });
+      if (r.verdict !== 'incomplete') {
+        const ps = await checkRegistrationProof(registration);
+        r.checks.push({
+          label: 'Registration proven by every key',
+          state: ps.complete ? 'pass' : 'fail',
+          detail: ps.complete
+            ? 'Every registered key signed the registration itself, proving its holder had the key and passphrase.'
+            : `The registration is not fully proven: ${ps.missing.length} key${ps.missing.length === 1 ? ' has' : 's have'} not signed it. Do not rely on it.`,
+        });
+        if (!ps.complete) r.verdict = 'bad';
+      }
       if (r.verdict !== 'incomplete' && r.documentId && r.signedText) {
         lastCheck = {
           result: r.verdict === 'good' ? 'good' : 'bad',

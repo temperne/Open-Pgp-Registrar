@@ -72,7 +72,15 @@ gives counter staff a way to check a filing.
    **description** ("Trustee", "Beneficiary"...) carried in the codes (a fifth field,
    `b64(JSON labels)`), the embedded JSON (`labels`), signer lists and the
    certificate. A person at the Recorder judges whether the structure fits. The PDF embeds `public-key.asc` (the registrant)
-   and `stop-registration-N.json` per parcel. The key tab also offers a **public key
+   and `stop-registration-N.json` per parcel. **Proof of key possession**: every
+   listed key must digitally sign the parcel's registration statement
+   (`registrationStatement`: parcel plus keys in fingerprint order, so every holder
+   signs the same text). Holders sign on one computer ("Next key holder signs on
+   this computer") or apart ("Continue a registration": the PDF embeds
+   `stop-registration-draft.json`). The key page prints a COMPLETE / NOT COMPLETE
+   banner and the proof as `PGPQ1` codes; the JSON carries `proof`. The check page
+   shows each registration's proof status, and a deed check fails unless the
+   registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
    card** PDF for sharing with co-owners.
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
    body), not a file, so it can be checked from paper. Load the parcel's registration

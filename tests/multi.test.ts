@@ -372,3 +372,48 @@ describe('group keys', () => {
     await expect(generateKeyPair({ name: '', members: ['Only One'], passphrase: 'x' })).rejects.toThrow(/at least two/);
   });
 });
+
+describe('proof of key possession', () => {
+  it('is complete only when every listed key has signed the registration', async () => {
+    const { signRegistration, checkRegistrationProof } = await import('../src/crypto');
+    const r: Registration = { parcel: '123-45-6789', keys: [a.toPublic(), b.toPublic()] };
+    expect((await checkRegistrationProof(r)).complete).toBe(false);
+    r.proof = await signRegistration(a, r);
+    const half = await checkRegistrationProof(r);
+    expect(half.complete).toBe(false);
+    expect(half.missing).toEqual([b.getFingerprint().toUpperCase()]);
+    // The second holder signs on another computer, keys listed in a different order: same statement.
+    const r2: Registration = { parcel: '123-45-6789', keys: [b.toPublic(), a.toPublic()], proof: r.proof };
+    r2.proof = await signRegistration(b, r2);
+    expect((await checkRegistrationProof(r2)).complete).toBe(true);
+    // A proof for one parcel does not prove another.
+    const other = await checkRegistrationProof({ parcel: '999-99-9999', keys: r2.keys, proof: r2.proof });
+    expect(other.complete).toBe(false);
+    expect(other.problems.join(' ')).toMatch(/different parcel/);
+    // A key that is not listed cannot sign.
+    await expect(signRegistration(c, r2)).rejects.toThrow(/not listed/);
+  });
+
+  it('travels in the registration PDF', async () => {
+    const { signRegistration, checkRegistrationProof } = await import('../src/crypto');
+    const { registrationPdf, registrationsFromPdf } = await import('../src/pdf');
+    const r: Registration = { parcel: '123-45-6789', keys: [a.toPublic(), b.toPublic()] };
+    r.proof = await signRegistration(a, r);
+    r.proof = await signRegistration(b, r);
+    const pdf = await registrationPdf({
+      ownerName: 'Example Owner',
+      parcels: '123-45-6789',
+      coOwnerKeys: [b.toPublic()],
+      proofs: { '123-45-6789': r.proof },
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    });
+    const [back] = await registrationsFromPdf(pdf);
+    expect(back.proof?.signatures).toHaveLength(2);
+    expect((await checkRegistrationProof(back)).complete).toBe(true);
+  });
+});
