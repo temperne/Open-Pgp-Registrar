@@ -23,6 +23,8 @@ export const BRAND = {
   expansion: 'Stop Theft of Property',
   /** County that runs the Recorder's office (used as the default county). */
   county: 'Pima County',
+  /** State: used in the deed templates ("... County, Arizona") and the notary venue ("STATE OF ARIZONA"). */
+  state: 'Arizona',
   /**
    * Program web address, printed on every PDF and linked from the site.
    * PLACEHOLDER: replace '[PROJECT URL]' with the real address, e.g.

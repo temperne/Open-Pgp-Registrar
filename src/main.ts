@@ -82,7 +82,7 @@ interface State {
    * The document being signed: its text and every owner's signature so far.
    * Kept when keys are switched, so several owners can sign on one computer.
    */
-  draft: { signed: SignedText; title: string; text: string; returnTo: string; signers: string } | null;
+  draft: { signed: SignedText; title: string; text: string; returnTo: string; signers: string; recordable: boolean } | null;
   /** Registration of the parcel being signed for (who must sign). */
   signReg: Registration | null;
   /** Other keys to list on this owner's registration forms (co-owners, trust, beneficiary...). */
@@ -890,7 +890,10 @@ action('dl-sig', () => {
 // ---------------------------------------------------------------------------
 // Step 3: sign document text (paper workflow), by one owner or several
 // ---------------------------------------------------------------------------
-const FIELD_IDS: (keyof TemplateFields)[] = ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date'];
+const FIELD_IDS: (keyof TemplateFields)[] = ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date', 'terms'];
+/** The deed wording of each field label, restored when a template does not rename it. */
+const DEFAULT_LABELS = new Map<string, string>();
+document.querySelectorAll<HTMLLabelElement>('#tpl-fields [data-field] label').forEach((l) => DEFAULT_LABELS.set(l.htmlFor, l.innerHTML));
 const fieldEl = (f: keyof TemplateFields) => document.getElementById(`f-${f}`) as HTMLInputElement | HTMLTextAreaElement;
 const tplSelect = $<HTMLSelectElement>('tpl');
 for (const t of TEMPLATES) tplSelect.append(new Option(t.label, t.id));
@@ -923,8 +926,13 @@ function syncTemplate(force = false) {
   const t = currentTemplate();
   $('tpl-note').textContent = t.note;
   document.querySelectorAll<HTMLElement>('#tpl-fields [data-field]').forEach((el) => {
-    el.hidden = !t.uses.includes(el.dataset.field as keyof TemplateFields);
+    const field = el.dataset.field as keyof TemplateFields;
+    el.hidden = !t.uses.includes(field);
+    const label = el.querySelector('label')!;
+    if (t.labels?.[field]) label.textContent = t.labels[field]!;
+    else label.innerHTML = DEFAULT_LABELS.get(label.htmlFor) ?? label.innerHTML;
   });
+  $('doc-return-wrap').hidden = !t.recordable;
   $('tpl-fields').hidden = t.uses.length === 0;
   const f = fields();
   if (force || !edited.has('doc-text')) {
@@ -1185,7 +1193,7 @@ input('continue-file').addEventListener('change', async () => {
         const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
         useSignRegistration([{ parcel: embedded.registration.parcel, keys, labels: embedded.registration.labels }]);
       }
-      setDraft({ signed, title: embedded.title, text: embedded.text, returnTo: embedded.returnTo, signers: embedded.signers });
+      setDraft({ signed, title: embedded.title, text: embedded.text, returnTo: embedded.returnTo, signers: embedded.signers, recordable: embedded.recordable !== false });
     } else {
       // A scan or photo of the signature page: the codes carry the text and signatures.
       const { readCodesFromFile } = await import('./qrscan');
@@ -1194,7 +1202,7 @@ input('continue-file').addEventListener('change', async () => {
         return p.total > 0 && p.missing.length === 0;
       });
       const signed = await signedFromCodes(codes.join('\n'));
-      setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+      setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: true });
     }
     const n = state.draft!.signed.signatures.length;
     status.className = 'hint ok';
@@ -1231,7 +1239,7 @@ action(
         throw new UserError(`The text must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail.`);
       }
       const signed = await signText(state.signer, fullText(title, text));
-      setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+      setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: currentTemplate().recordable });
     }
     $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
@@ -1247,6 +1255,7 @@ function draftForPdf(): DocumentDraft | undefined {
     text: d.text,
     returnTo: textarea('doc-return').value,
     signers: textarea('doc-signers').value,
+    recordable: d.recordable,
     signatures: d.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
     registration: state.signReg
       ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()), labels: state.signReg.labels }
@@ -1263,7 +1272,8 @@ async function downloadInstrument() {
       : undefined,
     title: d.title,
     text: d.text,
-    returnTo: textarea('doc-return').value,
+    recordable: d.recordable,
+    returnTo: d.recordable ? textarea('doc-return').value : '',
     signers: textarea('doc-signers').value,
     signatures: d.signed.signatures,
     documentId: d.signed.documentId,

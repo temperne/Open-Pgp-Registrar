@@ -499,3 +499,47 @@ describe.skipIf(!has('pdftotext', '-v'))('every key is enumerated', () => {
     }
   });
 });
+
+describe('document templates', () => {
+  it('cover deeds, leases, offers, ownership statements and authorizations', async () => {
+    const { TEMPLATES } = await import('../src/templates');
+    const f = {
+      grantor: 'Example Owner',
+      grantee: 'Example Tenant',
+      county: 'Pima',
+      parcels: '123-45-6789',
+      propertyAddress: '100 Example St',
+      legal: 'Lot 1',
+      consideration: '$1,500 per month',
+      date: 'November 12, 2026',
+      terms: 'January 1 to December 31, 2027; deposit $1,500.',
+    };
+    const ids = TEMPLATES.map((t) => t.id);
+    expect(ids).toEqual(expect.arrayContaining(['warranty', 'quitclaim', 'beneficiary', 'lease', 'offer', 'ownership', 'authorization', 'blank']));
+    for (const t of TEMPLATES.filter((x) => x.id !== 'blank')) {
+      const body = t.body(f);
+      expect(body, t.id).not.toMatch(/\[[A-Z ]+\]/); // every placeholder filled
+      expect(body, t.id).toContain('123-45-6789'); // names the parcel, so the check can confirm it
+    }
+    expect(TEMPLATES.find((t) => t.id === 'lease')!.recordable).toBe(false);
+    expect(TEMPLATES.find((t) => t.id === 'warranty')!.recordable).toBe(true);
+    expect(TEMPLATES.find((t) => t.id === 'lease')!.labels?.grantee).toBe('Tenant');
+  });
+
+  it.skipIf(!has('pdftotext', '-v'))('a lease prints without the recording margin; a deed keeps it', async () => {
+    const { instrumentPdf } = await import('../src/pdf');
+    const one = await signText(a, text);
+    const dir = mkdtempSync('/tmp/opr-tpl-');
+    try {
+      for (const [name, recordable] of [['lease', false], ['deed', true]] as const) {
+        const pdf = await instrumentPdf({ title: name, text, recordable, returnTo: 'Somebody', signatures: one.signatures, documentId: one.documentId, codes: one.codes });
+        writeFileSync(join(dir, `${name}.pdf`), pdf);
+        const t = execFileSync('pdftotext', ['-f', '1', '-l', '1', join(dir, `${name}.pdf`), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+        expect(t.includes('Recorder')).toBe(recordable);
+        expect(t.includes('When recorded, mail to')).toBe(recordable);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

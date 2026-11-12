@@ -28,6 +28,7 @@ const fields = {
   legal: 'Lot 1, Block 2, EXAMPLE SUBDIVISION, according to Book 1 of Maps and Plats, Page 1, records of Pima County, Arizona.',
   consideration: 'Ten Dollars and other valuable consideration',
   date: 'November 12, 2026',
+  terms: '',
 };
 const deedText = TEMPLATES.find((t) => t.id === 'warranty')!.body(fields);
 

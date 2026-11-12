@@ -1073,6 +1073,8 @@ export interface InstrumentInfo {
   text: string;
   /** "When recorded, mail to" block. */
   returnTo?: string;
+  /** Recorded with the County Recorder (deeds): leave the 2-inch recording margin. Default true. */
+  recordable?: boolean;
   /** Names for the wet-ink signature lines, one per line. */
   signers?: string;
   /** Every digital signature so far (or use fingerprint/userID/signedAt for a single signer). */
@@ -1117,6 +1119,8 @@ export interface DocumentDraft {
   text: string;
   returnTo: string;
   signers: string;
+  /** Recorded with the County Recorder (deeds); otherwise printed without the recording margin. */
+  recordable?: boolean;
   /** Base64 of each owner's detached signature, in signing order. */
   signatures: { fingerprint: string; userID: string; signedAt: string; sig: string }[];
   /** The parcel's registration, when one was loaded. */
@@ -1141,17 +1145,19 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   const contentPages: PDFPage[] = [page];
   const BOTTOM = 64;
 
-  // Recording area: the top 2 inches of page 1 stay clear for the Recorder.
-  const recTop = PAGE_H - 36;
-  if (info.returnTo?.trim()) {
-    let ry = text(page, fonts, 'When recorded, mail to:', recTop, { size: 8.5, font: fonts.bold, color: MUTED, width: 250 });
-    text(page, fonts, info.returnTo.trim(), ry - 2, { size: 9.5, width: 250, leading: 12 });
+  const recordable = info.recordable !== false;
+  if (recordable) {
+    // Recording area: the top 2 inches of page 1 stay clear for the Recorder.
+    const recTop = PAGE_H - 36;
+    if (info.returnTo?.trim()) {
+      let ry = text(page, fonts, 'When recorded, mail to:', recTop, { size: 8.5, font: fonts.bold, color: MUTED, width: 250 });
+      text(page, fonts, info.returnTo.trim(), ry - 2, { size: 9.5, width: 250, leading: 12 });
+    }
+    const recLabel = 'Space above this line for Recorder’s use';
+    rule(page, PAGE_H - 144, M, PAGE_W - M, RULE);
+    page.drawText(recLabel, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(recLabel, 7), y: PAGE_H - 152, size: 7, font: fonts.reg, color: MUTED });
   }
-  const recLabel = 'Space above this line for Recorder’s use';
-  rule(page, PAGE_H - 144, M, PAGE_W - M, RULE);
-  page.drawText(recLabel, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(recLabel, 7), y: PAGE_H - 152, size: 7, font: fonts.reg, color: MUTED });
-
-  let y = PAGE_H - 170;
+  let y = recordable ? PAGE_H - 170 : PAGE_H - M - 10;
   if (title) {
     const tw = fonts.bold.widthOfTextAtSize(safeText(title.toUpperCase()), 15);
     page.drawText(safeText(title.toUpperCase()), { x: (PAGE_W - tw) / 2, y: y - 15, size: 15, font: fonts.bold, color: INK });
@@ -1210,7 +1216,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     }
     y -= 30;
     const venue: [string, string][] = [
-      ['STATE OF ARIZONA', ')'],
+      [`STATE OF ${BRAND.state.toUpperCase()}`, ')'],
       ['', ') ss.'],
       ['COUNTY OF ______________________', ')'],
     ];
@@ -1674,7 +1680,7 @@ export async function holderUpdatePdf(key: openpgp.PublicKey | openpgp.PrivateKe
   text(p, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
   y -= 46;
   for (const [left, right] of [
-    ['STATE OF ARIZONA', ')'],
+    [`STATE OF ${BRAND.state.toUpperCase()}`, ')'],
     ['', ') ss.'],
     ['COUNTY OF ______________________', ')'],
   ] as [string, string][]) {
