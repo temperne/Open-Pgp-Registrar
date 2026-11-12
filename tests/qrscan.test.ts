@@ -4,8 +4,8 @@ import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'n
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
-import { generateKeyPair, readAnyKey, unlockKey, signText, scanProgress, verifyScannedText, type SignedText } from '../src/crypto';
-import { instrumentPdf, setBrandSeal } from '../src/pdf';
+import { generateKeyPair, readAnyKey, unlockKey, signText, scanProgress, verifyScannedText, keyFromCodes, type SignedText } from '../src/crypto';
+import { instrumentPdf, privateKeyPdf, setBrandSeal } from '../src/pdf';
 import { decodeAllQr } from '../src/qrscan';
 
 function has(cmd: string, arg = '--version') {
@@ -18,6 +18,7 @@ function has(cmd: string, arg = '--version') {
 }
 
 let key: openpgp.PrivateKey;
+let privateArmored: string;
 let signed: SignedText;
 let pdf: Uint8Array;
 
@@ -26,7 +27,7 @@ beforeAll(async () => {
   const html = readFileSync(join(__dirname, '..', 'index.html'), 'utf8');
   const m = /id="brand-seal"[^>]*src="data:image\/png;base64,([^"]+)"/.exec(html);
   if (m) setBrandSeal(new Uint8Array(Buffer.from(m[1], 'base64')));
-  const { privateArmored } = await generateKeyPair({ name: 'Example Owner', passphrase: 'pw' });
+  ({ privateArmored } = await generateKeyPair({ name: 'Example Owner', passphrase: 'pw' }));
   key = await unlockKey((await readAnyKey(privateArmored)) as openpgp.PrivateKey, 'pw');
   let seed = 9;
   const rand = () => (seed = (seed * 48271) % 2147483647).toString(36);
@@ -83,6 +84,35 @@ describe.skipIf(!has('pdftoppm', '-v'))('reading codes back from the page images
       const scanned = readPages(dir, '.scan.png');
       expect(scanProgress(scanned).missing).toEqual([]);
       expect((await verifyScannedText({ scanned, registeredKey: key.toPublic() })).verdict).toBe('good');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!has('convert'))('loads the private key from a photo-like image of its printed page', async () => {
+    const dir = mkdtempSync('/tmp/opr-qr-');
+    try {
+      const pdfBytes = await privateKeyPdf({
+        fingerprint: key.getFingerprint().toUpperCase(),
+        userID: key.getUserIDs()[0],
+        created: key.getCreationTime(),
+        protectedByPassphrase: true,
+        privateArmored,
+      });
+      writeFileSync(join(dir, 'key.pdf'), pdfBytes);
+      execFileSync('pdftoppm', ['-r', '160', '-png', '-f', '1', '-l', '1', '-singlefile', join(dir, 'key.pdf'), join(dir, 'k')]);
+      // Like a phone photo: a bit rotated, soft, noisy, JPEG-compressed, odd scale.
+      execFileSync('convert', [
+        join(dir, 'k.png'),
+        ...['-background', 'white', '-rotate', '-2.5', '-resize', '87%', '-blur', '0x0.8', '-attenuate', '0.6', '+noise', 'Gaussian', '-quality', '60'],
+        join(dir, 'k.jpg'),
+      ]);
+      execFileSync('convert', [join(dir, 'k.jpg'), join(dir, 'photo.png')]);
+      const png = PNG.sync.read(readFileSync(join(dir, 'photo.png')));
+      const codes = decodeAllQr({ data: new Uint8ClampedArray(png.data), width: png.width, height: png.height });
+      const restored = (await keyFromCodes(codes)) as openpgp.PrivateKey;
+      expect(restored.getFingerprint()).toBe(key.getFingerprint());
+      await expect(unlockKey(restored, 'pw')).resolves.toBeTruthy();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -619,3 +619,130 @@ button.linklike {
 .foot a {
   color: var(--accent);
 }
+
+.cert {
+  margin-top: 18px;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+
+/* ---- Multiple owners ---- */
+.subcard {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+}
+.subcard h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.subcard select {
+  margin-top: 8px;
+}
+fieldset.coowners {
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  margin: 16px 0 0;
+  padding: 10px 14px 12px;
+}
+fieldset.coowners legend {
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0 4px;
+}
+.keylist {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.keylist li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.keylist li .mono {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.keylist li.signed {
+  border-color: color-mix(in srgb, var(--good) 45%, var(--rule));
+}
+.keylist li.waiting {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--rule));
+}
+.pill.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: transparent;
+}
+#locked-note .linklike {
+  margin-left: 4px;
+}
+.keyctl {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1 1 220px;
+  justify-content: flex-end;
+}
+.keyctl input {
+  max-width: 260px;
+  padding: 5px 8px !important;
+  font-size: 0.9rem !important;
+}
+
+fieldset.signers {
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  margin: 14px 0 0;
+  padding: 10px 14px 12px;
+}
+fieldset.signers legend {
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0 4px;
+}
+.signer-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.4fr auto;
+  gap: 6px 8px;
+  align-items: center;
+  margin: 8px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+}
+.signer-row .sr-entity {
+  grid-column: 1 / 2;
+}
+.signer-row .sr-title {
+  grid-column: 2 / 3;
+}
+@media (max-width: 680px) {
+  .signer-row {
+    grid-template-columns: 1fr;
+  }
+  .signer-row .sr-entity,
+  .signer-row .sr-title {
+    grid-column: auto;
+  }
+}
+.keylist .tag {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  color: var(--muted);
+}

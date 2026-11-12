@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import * as openpgp from 'openpgp';
-import { generateKeyPair, readAnyKey, unlockKey, signDocument, summarize, verifyFiling, type SignedDocument } from '../src/crypto';
+import { generateKeyPair, readAnyKey, unlockKey, signDocument, summarize, verifyFiling, keyFromCodes, type SignedDocument } from '../src/crypto';
 import { registrationPdf, signaturePagePdf, printCopyPdf, privateKeyPdf, keyTextFromPdf, safeText } from '../src/pdf';
 
 let key: openpgp.PrivateKey;
@@ -77,7 +77,7 @@ function scan(pdf: Uint8Array): string[] {
     for (const f of readdirSync(dir).filter((n) => n.endsWith('.png')).sort()) {
       try {
         const typed = execFileSync('zbarimg', ['--quiet', join(dir, f)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-        out.push(...typed.split(/\n(?=[A-Z0-9-]+:)/).map((s) => s.trim()).filter(Boolean));
+        out.push(...typed.split(/\n(?=(?:QR-Code|CODE-128|[A-Z0-9-]+):)/).map((s) => s.trim()).filter(Boolean));
       } catch {
         /* no codes on this page */
       }
@@ -173,7 +173,7 @@ describe.skipIf(!canScan)('printed codes scan back correctly', () => {
     expect(r.verdict).toBe('good');
   });
 
-  it('private key backup QR restores the key', async () => {
+  it('private key page QR codes restore the key', async () => {
     const codes = scan(
       await privateKeyPdf({
         fingerprint: signed.fingerprint,
@@ -183,9 +183,10 @@ describe.skipIf(!canScan)('printed codes scan back correctly', () => {
         privateArmored,
       }),
     );
-    const qr = codes.find((c) => c.startsWith('QR-Code:-----BEGIN PGP PRIVATE KEY BLOCK-----'));
-    expect(qr).toBeTruthy();
-    const restored = (await readAnyKey(qr!.slice('QR-Code:'.length))) as openpgp.PrivateKey;
+    const keyCodes = codes.filter((c) => c.startsWith('QR-Code:PGPK1|')).map((c) => c.slice('QR-Code:'.length));
+    expect(keyCodes.length).toBeGreaterThanOrEqual(1);
+    const restored = (await keyFromCodes(keyCodes)) as openpgp.PrivateKey;
+    expect(restored.getFingerprint().toUpperCase()).toBe(signed.fingerprint);
     await expect(unlockKey(restored, 'pw-for-tests')).resolves.toBeTruthy();
   });
 });

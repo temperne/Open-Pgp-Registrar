@@ -23,12 +23,23 @@ export const BRAND = {
   expansion: 'Stop Theft of Property',
   /** County that runs the Recorder's office (used as the default county). */
   county: 'Pima County',
+  /** State: used in the deed templates ("... County, Arizona") and the notary venue ("STATE OF ARIZONA"). */
+  state: 'Arizona',
   /**
    * Program web address, printed on every PDF and linked from the site.
    * PLACEHOLDER: replace '[PROJECT URL]' with the real address, e.g.
    * 'https://www.example.gov/stop'.
    */
   projectUrl: '[PROJECT URL]',
+  /**
+   * Office that confirms a business, trust or other entity signer: that the
+   * entity exists and the person holds the title they sign with. It signs the
+   * "Business authority verification" box on registrations, and the Recorder
+   * calls it back. PLACEHOLDER until the county decides. (Arizona corporations
+   * and LLCs are registered with the Arizona Corporation Commission; trusts are
+   * not registered anywhere, so trusts may need a certification of trust.)
+   */
+  entityAuthority: 'Pima County Business Licensing Authority',
   /**
    * 'proposed' prints the notice below on the site and every PDF, so nobody
    * mistakes these documents for official county forms before the program is

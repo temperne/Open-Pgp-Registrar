@@ -28,6 +28,7 @@ const fields = {
   legal: 'Lot 1, Block 2, EXAMPLE SUBDIVISION, according to Book 1 of Maps and Plats, Page 1, records of Pima County, Arizona.',
   consideration: 'Ten Dollars and other valuable consideration',
   date: 'November 12, 2026',
+  terms: '',
 };
 const deedText = TEMPLATES.find((t) => t.id === 'warranty')!.body(fields);
 
@@ -128,7 +129,7 @@ describe('verifying a paper filing', () => {
     const codes = await encodeCodes(signed.fingerprint, signed.signature, altered, sha);
     const r = await verifyScannedText({ scanned: codes.join('\n'), registeredKey: key.toPublic() });
     expect(r.verdict).toBe('bad');
-    expect(r.checks.find((c) => c.label === 'Signature valid')?.state).toBe('fail');
+    expect(r.signers?.[0].state).toBe('fail');
   });
 
   it('bad: garbage', async () => {
@@ -207,6 +208,49 @@ describe.skipIf(!has('zbarimg') || !has('pdftoppm', '-v'))('printed instrument',
       // And what was printed on the pages is the text that was signed.
       const txt = execFileSync('pdftotext', [join(dir, 'doc.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
       expect(canonicalText(txt)).toContain(canonicalText(deedText).slice(0, 200));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(!has('zbarimg') || !has('pdftoppm', '-v'))('verification certificate', () => {
+  it('states the check, carries the signed text, and its codes verify again', async () => {
+    const { certificatePdf } = await import('../src/pdf');
+    const { orderedCodes } = await import('../src/crypto');
+    const r = await verifyScannedText({ scanned: signed.codes.join('\n'), registeredKey: key.toPublic() });
+    const pdf = await certificatePdf({
+      result: 'good',
+      checks: r.checks.map((c) => `${c.state}: ${c.label}`),
+      verifierName: 'Pat Example',
+      verifierTitle: 'Recording Clerk',
+      agency: 'Pima County Recorder',
+      parcels: '000-00-0000',
+      owners: [{ userID: key.getUserIDs()[0], fingerprint: key.getFingerprint().toUpperCase(), result: 'Valid signature', signedAt: r.signedAt }],
+      documentId: r.documentId!,
+      checkedAt: new Date(),
+      signedText: r.signedText!,
+      codes: orderedCodes(signed.codes.join('\n')),
+    });
+    const dir = mkdtempSync('/tmp/opr-cert-');
+    try {
+      writeFileSync(join(dir, 'c.pdf'), pdf);
+      const txt = execFileSync('pdftotext', [join(dir, 'c.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      expect(txt).toContain('Pat Example');
+      expect(canonicalText(txt)).toContain(canonicalText('determined that the parcel(s) below are protected by the Pima County S.T.O.P. Initiative'));
+      expect(txt).toContain('RESULT: GOOD');
+      expect(canonicalText(txt)).toContain(signed.canonical.slice(0, 120));
+      execFileSync('pdftoppm', ['-r', '200', '-png', join(dir, 'c.pdf'), join(dir, 'p')]);
+      let scanned = '';
+      for (const f of readdirSync(dir).filter((x) => x.endsWith('.png'))) {
+        try {
+          scanned += execFileSync('zbarimg', ['--quiet', '--raw', join(dir, f)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString() + '\n';
+        } catch {
+          /* page without codes */
+        }
+      }
+      expect((await verifyScannedText({ scanned, registeredKey: key.toPublic() })).verdict).toBe('good');
+      expect(scanned).toContain(r.documentId!);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

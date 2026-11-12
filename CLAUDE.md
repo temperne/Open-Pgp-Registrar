@@ -26,43 +26,104 @@ gives counter staff a way to check a filing.
 
 ## What it does
 
-1. **Your key**: create an Ed25519 key, which must have a passphrase, or load an
+1. **Your key**: the key records **who signs with it**, in its OpenPGP user ID, so
+   every registration, deed and check builds its signature lines from the key:
+   *individual* ("Jane Doe"); *group* ("Jane Doe and John Doe (group: Jane Doe; John
+   Doe)": one key, every member signs in ink, notarized and officer-checked; the
+   page warns that a shared key cannot prevent fraud between members); or
+   *position* in a business, trust or other entity ("Doe Holdings LLC (position:
+   Secretary; holder: Jane Doe)": the current holder is named on every signature
+   block, so the ink signature and the digital signature match, and the business
+   authority verifies them with documentation at registration). When the position
+   changes hands, the key tab makes a **position holder update**
+   (`signHolderUpdate`, `holderUpdatePdf`): signed with the same key, with a
+   signature line and notary acknowledgment for the new holder only, filed with the
+   registration. Signing loads holder updates, checks them against the registered
+   key, and names the newest holder. See `keyIdentity`,
+   `signatoriesForKey`, `signerBlocksForKey`.
+   Create an Ed25519 key, which must have a passphrase, or load an
    existing key. Loading accepts the private key PDF made by this tool, or an
    armored or binary key file from GnuPG, Kleopatra, etc. A locked key is unlocked
    with its passphrase. **The key's main output is a PDF.** The private key PDF
    embeds the passphrase-protected key file as a PDF attachment (so the tool can
    load it back to sign) and prints it as a QR code and as text. `.asc` downloads
-   are a secondary "for GnuPG users" option.
-2. **Register** (Exhibit A): a PDF registration form. It covers new or replacement
-   registration, owner, parcels, addresses and county, and shows the key type,
-   creation date, user ID, fingerprint and a fingerprint QR code. It has an owner
-   request statement, an owner signature line and two identity boxes (notary
-   acknowledgment and law enforcement attestation), plus the callback rule and a
-   "Recorder use only" box. Page 2 attaches the full public key as text and as a
-   `PGPKEY1|<base64 binary key>` QR code. The public key is also embedded as an
-   attachment, so the Recorder's check can load it straight from the form PDF.
-3. **Sign** (Exhibit B): the signature covers the document's **text**, not a file,
-   so it can be checked from paper. The owner picks a template (warranty, quitclaim
-   or beneficiary deed, based on A.R.S. 33-402/33-405, or blank), fills in the
-   fields, and can edit the text freely. The signed bytes are the *canonical* text
-   (`src/text.ts`): mapped to printable WinAnsi characters, upper-cased, all
-   whitespace collapsed to single spaces. Words, numbers and punctuation count;
-   case, line breaks and spacing don't. The output is the printed instrument:
-   a 2-inch recording margin on page 1 ("when recorded, mail to"), the title and text,
-   **ink signature lines and a notary acknowledgment (still required; the digital
-   signature is only an extra layer)**, then a signature page. That page has the
-   fingerprint, the document ID (Code 128) and QR codes carrying
-   `PGPDOC1|FPR|base64sig|z|base64(deflate-raw(canonical text))`, split into
-   `PGPQ1|GROUP|i/n|chunk` codes of at most 320 characters. The `.txt` and `.sig`
-   files verify with stock `gpg`. Signing a file byte-for-byte (`PGPSIG1`) remains
-   as a secondary option for electronic filing.
-4. **Check a filing** (Exhibit C): load the registered public key (scan the form's
-   QR code, paste it, or load the registration PDF), then scan every QR code on the
-   signature page in any order. Progress shows which codes are missing. The tool
-   recovers the signed text, checks the signature, and shows the exact signed text
-   for the clerk to compare with the paper. An optional "compare with the paper"
-   box shows the first difference. The result is good, bad (hold: suspected
-   forgery) or incomplete (codes missing).
+   are a secondary "for GnuPG users" option. The printed page carries the key as
+   a few large `PGPK1|GROUP|i/n|chunk` codes, so it loads back from a phone photo
+   or a scan (the picker accepts images and offers the camera on phones).
+2. **Register** (Exhibit A): each owner files their own PDF form, **one per parcel**
+   (enter several parcels, get one form each in one PDF). One key can be registered on
+   any number of parcels. Each form carries the parcel's complete key list (this
+   owner's key plus every co-owner's, added from their public key card, registration
+   form, a photo, or a .asc). **Every listed key must sign.** Page 1 covers new or
+   replacement registration, owner, parcel, addresses, county, the key's type,
+   creation date, user ID, fingerprint and fingerprint QR, the owner request, an
+   owner signature line, two identity boxes (notary and law enforcement), the callback
+   rule and a "Recorder use only" box. **Every key is enumerated**: page 1 lists each
+   key (with a QR of all fingerprints), the key page has a code and the armored text
+   for every key, and the footer names every key. When the first signer's section
+   doesn't fit on page 1, every signer gets their own page. **Everyone who signs the registration** (e.g.
+   both spouses sharing one key, a company's officers; "People signing this
+   registration", one per line with an optional capacity) gets their own signature
+   line, notary box, officer box and Recorder callback box: the first on page 1,
+   each additional person on an "Additional Signer" page. Each signer has a **type**:
+   an *individual* (notary + law enforcement officer), or someone signing *for a
+   business, trust or other entity* (entity name and title; notary + a **business
+   authority verification** box, completed by `BRAND.entityAuthority`, which confirms
+   from its records that the entity exists and the signer holds the title, and is
+   the one the Recorder calls back). The authority is a placeholder setting in
+   `src/brand.ts` until the county decides (Arizona corporations and LLCs are
+   registered with the Arizona Corporation Commission; trusts are not registered). Page 2 lists every key for the parcel, the key
+   list as `PGPR1|GROUP|i/n|chunk` codes (message
+   `PGPREG1|b64(parcel)|ALL|b64(concatenated public keys)`), the registrant's
+   `PGPKEY1` code and armored key. **Multiple keys are optional for any kind of
+   owner** (person, family, trust, company): one key named with a list of names or
+   the entity's name is enough, or several keys, each with an optional free
+   **description** ("Trustee", "Beneficiary"...) carried in the codes (a fifth field,
+   `b64(JSON labels)`), the embedded JSON (`labels`), signer lists and the
+   certificate. A person at the Recorder judges whether the structure fits. The PDF embeds `public-key.asc` (the registrant)
+   and `stop-registration-N.json` per parcel. **Proof of key possession**: every
+   listed key must digitally sign the parcel's registration statement
+   (`registrationStatement`: parcel plus keys in fingerprint order, so every holder
+   signs the same text). Holders sign on one computer ("Next key holder signs on
+   this computer") or apart ("Continue a registration": the PDF embeds
+   `stop-registration-draft.json`). The key page prints a COMPLETE / NOT COMPLETE
+   banner and the proof as `PGPQ1` codes; the JSON carries `proof`. The check page
+   shows each registration's proof status, and a deed check fails unless the
+   registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
+   card** PDF for sharing with co-owners.
+3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
+   body), not a file, so it can be checked from paper. Load the parcel's registration
+   first (PDF, scan or photo) so the tool knows every owner who must sign, and refuses
+   a key that isn't listed or text that doesn't name the parcel. Pick a template
+   (warranty, quitclaim or beneficiary deed, based on A.R.S. 33-402/33-405, or blank)
+   and edit freely. The signed bytes are the *canonical* text (`src/text.ts`):
+   printable WinAnsi characters, upper-cased, whitespace collapsed. **Several owners
+   sign the same text**: on one computer ("Next owner signs on this computer" keeps the
+   document while switching keys) or apart ("**Sign exactly as others**": load the
+   partly signed PDF, which embeds `stop-document.json`, or a scan or photo of its
+   signature page). The text locks after the first signature. Signatures are standard
+   detached OpenPGP signatures, concatenated; codes carry
+   `PGPDOC2|FPR1,FPR2|sigs|z|text` (one signer: `PGPDOC1`), split into `PGPQ1` codes of
+   at most 320 characters. The printed instrument has a 2-inch recording margin, the
+   title and text, **one complete signature block per signer (signature line with
+   that signer's notary acknowledgment directly below; still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
+   banner against the registration, the document ID barcode and the codes. The `.txt`
+   and `.sig` files verify with stock `gpg` (it checks each signature). Signing a file
+   byte for byte (`PGPSIG1`) remains for electronic filing (single signer).
+4. **Check a filing** (Exhibit C): load the parcel registration (any owner's form
+   PDF, scan or photo; several may be loaded and must agree), then the signature
+   codes: scanned in any order, or read from the signed PDF, the Recorder's scan or a
+   phone photo. **Several files can be loaded at once** (the filed document and each
+   owner's copy): each is listed with its document ID and signature count, every copy
+   must carry the same text (a different one fails the check), and their signatures
+   are combined. Good only if **every registered key** made a valid signature, no
+   unregistered key signed, all over the same text, and that text names the
+   registered parcel. When registrations for several parcels are loaded, the parcel
+   named in the signed text is used. The signed text is shown for comparison with the
+   paper (there is no typed-comparison box). Staff can then print a **verification
+   certificate** (`certificatePdf`) listing each scanned copy (same text) and each owner's result, their name, title and
+   agency, ink signature and date lines, the document ID barcode, the signed text and
+   the codes reprinted. It is appended to the filing.
 
 5. **About the program** (first tab, the default): explains the problem (deed
    fraud and the cost of quiet title), why the program exists, how it works, how it
@@ -120,7 +181,8 @@ at fractional pixel sizes, which real scans and photos produce.
   `history`/`top` access. Failures must show visibly (the `#boot` banner or the
   form's `[data-error]` slot), never silently.
 
-- Commit after each milestone.
+- Commit after each milestone, and add user-visible changes to `CHANGELOG.md`
+  (Unreleased section). Refresh `docs/images` screenshots when the screens change.
 - Keep the PDFs on US Letter, and use only the standard fonts (WinAnsi). User text is
   passed through `safeText`.
 - After any layout change, regenerate the PDFs and look at them, including the
@@ -145,5 +207,8 @@ at fractional pixel sizes, which real scans and photos produce.
    document it records, and "Check a filing" accepts that scan (PDF or image) and
    reads all the codes from it. Handheld scanners also work. Live phone-camera
    scanning could be added later if counter staff want it.
+8. **Entity verification.** Which office confirms business and trust signers
+   (`BRAND.entityAuthority`, currently "Pima County Business Licensing Authority")?
+   Should trusts use a certification of trust instead?
 7. **License.** Resolved: MIT with an express government-use grant (see `LICENSE`),
    shown in README.md and the site footer. Keep all three in sync if it changes.
