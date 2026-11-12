@@ -1,0 +1,36 @@
+{
+  "name": "open-pgp-registrar",
+  "version": "0.1.0",
+  "description": "Browser-only tool for property owners to register an OpenPGP signing key with a county recorder on paper and sign instruments with QR/barcode verification pages.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/temperne/Open-Pgp-Registrar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/temperne/Open-Pgp-Registrar/issues"
+  },
+  "homepage": "https://github.com/temperne/Open-Pgp-Registrar#readme",
+  "dependencies": {
+    "jsbarcode": "^3.12.1",
+    "openpgp": "^6.3.2",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^5.1.0"
+  },
+  "private": true,
+  "type": "module"
+}
