@@ -470,3 +470,56 @@ details.advanced summary {
 form .error {
   margin-top: 10px;
 }
+
+select {
+  width: 100%;
+  font: inherit;
+  padding: 9px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+textarea.prose {
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+.span2 {
+  grid-column: 1 / -1;
+}
+button.linklike {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  font-size: inherit;
+}
+.signed-text {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+  max-height: 22em;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+#verify-result h3 {
+  margin: 18px 0 2px;
+  font-size: 1rem;
+}
+.diff {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+#file-sign > summary {
+  cursor: pointer;
+  font-weight: 600;
+}

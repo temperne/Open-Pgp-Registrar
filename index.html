@@ -189,53 +189,115 @@
       <!-- 3. SIGN -->
       <section role="tabpanel" id="panel-sign" aria-labelledby="tab-sign" hidden>
         <div class="needs-private callout" hidden></div>
-        <form id="sign-form" class="card">
-          <h2>Sign a document</h2>
-          <p class="muted">
-            Signs the exact file you choose, usually the PDF of the deed. You get a verification page to print and
-            attach.
-          </p>
-          <label for="sign-file">Document file</label>
-          <input id="sign-file" type="file" required />
-          <div class="grid2 tight">
-            <div>
-              <label for="sign-title">Document title <span class="opt">(printed on the page)</span></label>
-              <input id="sign-title" placeholder="e.g. Warranty Deed" />
+        <div id="sign-area">
+          <form id="text-form" class="card">
+            <h2>Sign a document</h2>
+            <p class="muted">
+              Write the document here. The app prints it with QR codes that carry your digital signature and the exact
+              text you signed, so the Recorder can check it straight from the paper. The printed document still has the
+              usual ink signature lines and notary block; the digital signature is an extra layer on top.
+            </p>
+            <label for="tpl">Start from</label>
+            <select id="tpl"></select>
+            <p id="tpl-note" class="hint"></p>
+            <div id="tpl-fields" class="grid2 tight">
+              <div data-field="grantor"><label for="f-grantor">Grantor (owner) <span class="opt">with vesting, e.g. "a single man"</span></label><input id="f-grantor" /></div>
+              <div data-field="grantee"><label for="f-grantee">Grantee</label><input id="f-grantee" /></div>
+              <div data-field="county"><label for="f-county">County</label><input id="f-county" placeholder="e.g. Pima" /></div>
+              <div data-field="parcels"><label for="f-parcels">Assessor's parcel number</label><input id="f-parcels" /></div>
+              <div data-field="propertyAddress"><label for="f-propertyAddress">Property address</label><input id="f-propertyAddress" /></div>
+              <div data-field="consideration"><label for="f-consideration">Consideration</label><input id="f-consideration" value="Ten Dollars and other valuable consideration" /></div>
+              <div data-field="date"><label for="f-date">Date</label><input id="f-date" /></div>
+              <div data-field="legal" class="span2"><label for="f-legal">Legal description <span class="opt">(copy it exactly from the current deed)</span></label><textarea id="f-legal" rows="3" class="prose"></textarea></div>
             </div>
-            <div>
-              <label for="sign-parcels">Parcel number(s)</label>
-              <input id="sign-parcels" />
-            </div>
-          </div>
-          <button type="button" id="sign-btn" class="primary">Sign</button>
-          <p class="error" data-error role="alert"></p>
-        </form>
 
-        <div id="sign-result" class="card" hidden>
-          <div class="keycard-head">
-            <h2>Signed</h2>
-            <span class="pill good">Good signature</span>
+            <label for="doc-text">Document text <span class="opt">(this is what gets signed)</span></label>
+            <textarea id="doc-text" rows="14" class="prose" spellcheck="true"></textarea>
+            <p class="hint">
+              <span id="doc-count"></span> Capital letters, spacing and line breaks don't matter. Every word, number and
+              punctuation mark does. <button type="button" id="rebuild" class="linklike" hidden>Rebuild from the fields above</button>
+            </p>
+
+            <div class="grid2 tight">
+              <div><label for="doc-title">Title</label><input id="doc-title" /></div>
+              <div><label for="doc-signers">Signature lines <span class="opt">(one name per line)</span></label><textarea id="doc-signers" rows="2" class="prose"></textarea></div>
+              <div class="span2"><label for="doc-return">When recorded, mail to <span class="opt">(printed in the top margin, not signed)</span></label><textarea id="doc-return" rows="3" class="prose"></textarea></div>
+            </div>
+            <p class="hint" id="disclaimer"></p>
+            <button type="button" id="text-sign-btn" class="primary">Sign and make the document (PDF)</button>
+            <p class="error" data-error role="alert"></p>
+          </form>
+
+          <div id="text-result" class="card" hidden>
+            <div class="keycard-head">
+              <h2>Signed</h2>
+              <span class="pill good">Good signature</span>
+            </div>
+            <dl class="facts">
+              <dt>Document ID</dt>
+              <dd id="tr-id" class="mono"></dd>
+              <dt>Signature codes</dt>
+              <dd id="tr-codes"></dd>
+            </dl>
+            <div class="actions">
+              <button type="button" id="dl-instrument" class="primary">Download signed document (PDF)</button>
+            </div>
+            <ol class="steps">
+              <li>Print it. The last page holds the QR codes with your signature.</li>
+              <li>Sign in ink in front of the notary, as usual, and file the paper with the Recorder.</li>
+              <li>If anything in the text needs to change, edit it above and sign again. Hand-written changes will not match the signature.</li>
+            </ol>
+            <details class="advanced">
+              <summary>For GnuPG users: signed text and signature files</summary>
+              <div class="actions">
+                <button type="button" id="dl-text-txt">Signed text (.txt)</button>
+                <button type="button" id="dl-text-sig">Signature (.sig)</button>
+              </div>
+            </details>
+            <p class="error" data-error role="alert"></p>
           </div>
-          <dl class="facts">
-            <dt>File</dt>
-            <dd id="sr-file"></dd>
-            <dt>Document ID</dt>
-            <dd id="sr-id" class="mono"></dd>
-            <dt>SHA-256</dt>
-            <dd id="sr-hash" class="mono small"></dd>
-          </dl>
-          <div class="actions">
-            <button type="button" id="dl-sigpage" class="primary">Verification page (PDF)</button>
-            <button type="button" id="dl-printcopy" hidden>Document + verification page (PDF)</button>
-            <button type="button" id="dl-sig">Signature file (.sig)</button>
-          </div>
-          <p id="sign-dl-error" class="error" role="alert"></p>
-          <p id="printcopy-note" class="hint"></p>
-          <div class="callout">
-            <strong>Keep the original file exactly as it is.</strong> The signature covers that file byte for byte.
-            Re-saving or editing it, even without visible changes, makes the check fail. Give the Recorder that original
-            file along with the paper.
-          </div>
+
+          <details class="card" id="file-sign">
+            <summary>Electronic filing: sign a file instead</summary>
+            <p class="muted">
+              For documents filed electronically. The signature covers the file byte for byte, so it can only be checked
+              against that same file, not against a paper copy.
+            </p>
+            <form id="sign-form">
+              <label for="sign-file">Document file</label>
+              <input id="sign-file" type="file" />
+              <div class="grid2 tight">
+                <div>
+                  <label for="sign-title">Document title <span class="opt">(printed on the page)</span></label>
+                  <input id="sign-title" placeholder="e.g. Warranty Deed" />
+                </div>
+                <div>
+                  <label for="sign-parcels">Parcel number(s)</label>
+                  <input id="sign-parcels" />
+                </div>
+              </div>
+              <button type="button" id="sign-btn" class="primary">Sign file</button>
+              <p class="error" data-error role="alert"></p>
+            </form>
+
+            <div id="sign-result" hidden>
+              <dl class="facts">
+                <dt>File</dt>
+                <dd id="sr-file"></dd>
+                <dt>Document ID</dt>
+                <dd id="sr-id" class="mono"></dd>
+                <dt>SHA-256</dt>
+                <dd id="sr-hash" class="mono small"></dd>
+              </dl>
+              <div class="actions">
+                <button type="button" id="dl-sigpage" class="primary">Verification page (PDF)</button>
+                <button type="button" id="dl-printcopy" hidden>Document + verification page (PDF)</button>
+                <button type="button" id="dl-sig">Signature file (.sig)</button>
+              </div>
+              <p id="sign-dl-error" class="error" role="alert"></p>
+              <p id="printcopy-note" class="hint"></p>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -243,7 +305,7 @@
       <section role="tabpanel" id="panel-verify" aria-labelledby="tab-verify" hidden>
         <form id="verify-form" class="card">
           <h2>Check a filing</h2>
-          <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner types straight into these boxes.</p>
+          <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner or a phone's QR reader types straight into these boxes.</p>
 
           <label for="v-key">Registered public key for the parcel</label>
           <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on page 2 of the registration form, or paste the key"></textarea>
@@ -253,11 +315,15 @@
           </div>
           <p id="v-key-info" class="hint">Or choose the registration form PDF; the key is embedded in it.</p>
 
-          <label for="v-payload">Signature code from the verification page</label>
-          <textarea id="v-payload" rows="3" spellcheck="false" placeholder="Scan the QR code. It starts with PGPSIG1|"></textarea>
+          <label for="v-payload">Signature codes from the document</label>
+          <textarea id="v-payload" rows="4" spellcheck="false" placeholder="Scan every QR code on the signature page, in any order. They start with PGPQ1|"></textarea>
+          <p id="v-progress" class="hint" role="status"></p>
 
-          <label for="v-doc">Signed document file <span class="opt">(needed to finish the check)</span></label>
-          <input id="v-doc" type="file" />
+          <details class="advanced">
+            <summary>Electronic filing: check a signed file</summary>
+            <label for="v-doc">Signed document file <span class="opt">(for a PGPSIG1 code from "sign a file")</span></label>
+            <input id="v-doc" type="file" />
+          </details>
 
           <button type="button" id="verify-btn" class="primary">Check</button>
           <p class="error" data-error role="alert"></p>
@@ -266,6 +332,14 @@
         <div id="verify-result" class="card" hidden aria-live="polite">
           <div id="vr-banner" class="verdict"></div>
           <ul id="vr-checks" class="checks"></ul>
+          <div id="vr-text-wrap" hidden>
+            <h3>Exactly what the owner signed</h3>
+            <p class="hint">Compare this with the paper. Capital letters, spacing and line breaks may differ; the words, numbers and punctuation must not.</p>
+            <div id="vr-text" class="signed-text"></div>
+            <label for="vr-compare">Compare with the paper <span class="opt">(optional: type or paste the text of the paper document)</span></label>
+            <textarea id="vr-compare" rows="4" class="prose"></textarea>
+            <p id="vr-compare-result" class="hint" role="status"></p>
+          </div>
           <dl class="facts">
             <dt>Document ID</dt>
             <dd id="vr-id" class="mono"></dd>
@@ -295,7 +369,7 @@
     <footer class="wrap foot">
       <p>
         Uses standard OpenPGP (RFC 4880) signatures. Every signature can also be checked with GnuPG:
-        <code>gpg --verify document.sig document.pdf</code>.
+        <code>gpg --verify document.sig document.txt</code>.
       </p>
     </footer>
     <script type="module" src="/src/main.ts"></script>

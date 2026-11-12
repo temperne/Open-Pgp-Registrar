@@ -19,28 +19,28 @@ connections with a Content-Security-Policy.
    notary, have a local law enforcement officer complete the attestation box, and
    file it with the Recorder. The Recorder calls the officer's agency to confirm
    before activating the key.
-3. **Sign a document.** Choose the deed (or any file). You get a verification page
-   to print and attach, with a QR code that carries the signature and a barcode
-   with the document ID. You also get a combined print copy and a `.sig` file.
-   Give the Recorder the original file as well. The signature covers that exact file.
+3. **Sign a document.** Start from a template (warranty, quitclaim or beneficiary
+   deed, or blank), fill in the details, and sign. The app prints the document
+   with the usual ink signature lines and notary block, plus a signature page
+   whose QR codes carry the digital signature *and the exact text signed*. Sign it
+   in ink before the notary as usual. The digital signature is an extra layer.
 
 ## What the Recorder does
 
-Use **Check a filing**. Scan the public-key code from the registration form (or
-load the form PDF, which has the key embedded), scan
-the QR code on the verification page, and load the filed document. The result is
-**good** (record as usual), **does not verify** (hold, suspected forgery) or
-**not checked yet** (the document file is still needed). A handheld barcode
-scanner works because it types into the boxes.
+Use **Check a filing**. Load the owner's registered key (scan the code on the
+registration form, or load the form PDF), then scan every QR code on the
+signature page. The tool checks the signature and shows exactly what the owner
+signed, so staff can compare it with the paper. Capital letters and spacing don't
+matter; every word and number does. The result is **good**, **does not verify**
+(hold, suspected forgery) or **not checked yet** (codes missing). A handheld 2D
+scanner works because it types into the box.
 
 Anyone can check a signature without this tool:
 
 ```sh
 gpg --import owner-public-key.asc
-gpg --verify deed.pdf.sig deed.pdf
+gpg --verify deed.txt.sig deed.txt   # the app saves both from the signed document
 ```
-
-The QR text is `PGPSIG1|<fingerprint>|<sha256>|<base64 detached signature>`.
 
 ## Development
 

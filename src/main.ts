@@ -8,6 +8,10 @@ import {
   isPrivate,
   signDocument,
   verifyFiling,
+  signText,
+  verifyScannedText,
+  scanProgress,
+  type SignedText,
   formatFingerprint,
   type AnyKey,
   type SignedDocument,
@@ -20,8 +24,11 @@ import {
   privateKeyPdf,
   keyTextFromPdf,
   isPdfBytes,
+  instrumentPdf,
   type SignaturePageInfo,
 } from './pdf';
+import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
+import { firstDifference, canonicalText } from './text';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -35,8 +42,10 @@ interface State {
   /** A freshly generated key that has not been downloaded yet. */
   unsaved: boolean;
   signed: { doc: SignedDocument; file: File; bytes: Uint8Array; info: SignaturePageInfo } | null;
+  /** Last signed text document. */
+  signedText: { result: SignedText; title: string; text: string; returnTo: string; signers: string } | null;
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, signedText: null };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -240,8 +249,23 @@ function refresh() {
     needEl.innerHTML = 'Unlock your private key with its passphrase in <a href="#key" data-goto="key">step 1</a> first.';
   }
   needEl.hidden = !!state.signer;
-  $('sign-form').hidden = !state.signer;
+  $('sign-area').hidden = !state.signer;
   if (!input('sign-parcels').value && input('reg-parcels').value) input('sign-parcels').value = input('reg-parcels').value;
+  // Carry details from the registration step into the document fields.
+  let carried = false;
+  for (const [from, to] of [
+    ['reg-parcels', 'f-parcels'],
+    ['reg-owner', 'f-grantor'],
+    ['reg-property', 'f-propertyAddress'],
+    ['reg-county', 'f-county'],
+  ] as const) {
+    const v = input(from).value.trim().replace(/\s+County$/i, '');
+    if (v && !input(to).value) {
+      input(to).value = v;
+      carried = true;
+    }
+  }
+  if (carried) syncTemplate();
 
   // Verify
   $('v-use-mine').hidden = !k;
@@ -256,7 +280,9 @@ function setKey(key: AnyKey, privateArmored: string | null, unsaved: boolean, si
   state.privateArmored = privateArmored;
   state.unsaved = unsaved;
   state.signed = null;
+  state.signedText = null;
   $('sign-result').hidden = true;
+  $('text-result').hidden = true;
   $('dl-note').textContent = '';
   input('reg-owner').value = '';
   refresh();
@@ -447,6 +473,125 @@ action('dl-sig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Step 3: sign document text (paper workflow)
+// ---------------------------------------------------------------------------
+const FIELD_IDS: (keyof TemplateFields)[] = ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date'];
+const fieldEl = (f: keyof TemplateFields) => document.getElementById(`f-${f}`) as HTMLInputElement | HTMLTextAreaElement;
+const tplSelect = $<HTMLSelectElement>('tpl');
+for (const t of TEMPLATES) tplSelect.append(new Option(t.label, t.id));
+input('f-date').value = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+$('disclaimer').textContent = DISCLAIMER;
+
+/** Fields the user typed into directly; templates stop overwriting them. */
+const edited = new Set<string>();
+const currentTemplate = () => TEMPLATES.find((t) => t.id === tplSelect.value) ?? TEMPLATES[0];
+
+function fields(): TemplateFields {
+  const f = {} as TemplateFields;
+  for (const id of FIELD_IDS) f[id] = fieldEl(id).value;
+  return f;
+}
+
+function updateCount() {
+  const n = canonicalText(textarea('doc-text').value).length;
+  $('doc-count').textContent = n ? `${n.toLocaleString()} characters signed.` : '';
+}
+
+/** Rebuilds the document text from the template, unless the user has edited it. */
+function syncTemplate(force = false) {
+  const t = currentTemplate();
+  $('tpl-note').textContent = t.note;
+  document.querySelectorAll<HTMLElement>('#tpl-fields [data-field]').forEach((el) => {
+    el.hidden = !t.uses.includes(el.dataset.field as keyof TemplateFields);
+  });
+  $('tpl-fields').hidden = t.uses.length === 0;
+  const f = fields();
+  if (force || !edited.has('doc-text')) {
+    textarea('doc-text').value = t.body(f);
+    if (force) edited.delete('doc-text');
+  }
+  if (!edited.has('doc-title')) input('doc-title').value = t.title ? t.title.replace(/\b\w+/g, (w) => w[0] + w.slice(1).toLowerCase()) : '';
+  if (!edited.has('doc-signers')) textarea('doc-signers').value = t.uses.includes('grantor') ? f.grantor.replace(/,.*$/, '').trim() : '';
+  if (!edited.has('doc-return')) {
+    textarea('doc-return').value = t.uses.includes('grantee')
+      ? [f.grantee.replace(/,.*$/, '').trim(), f.propertyAddress.trim()].filter(Boolean).join('\n')
+      : '';
+  }
+  $('rebuild').hidden = !edited.has('doc-text') || t.uses.length === 0;
+  updateCount();
+}
+
+tplSelect.addEventListener('change', () => {
+  const docText = textarea('doc-text').value.trim();
+  if (edited.has('doc-text') && docText && !confirm('Replace the document text you edited with the new template?')) return;
+  syncTemplate(true);
+});
+for (const id of FIELD_IDS) fieldEl(id).addEventListener('input', () => syncTemplate());
+for (const id of ['doc-text', 'doc-title', 'doc-signers', 'doc-return']) {
+  $(id).addEventListener('input', () => {
+    edited.add(id);
+    if (id === 'doc-text') {
+      $('rebuild').hidden = currentTemplate().uses.length === 0;
+      updateCount();
+    }
+  });
+}
+$('rebuild').addEventListener('click', () => syncTemplate(true));
+syncTemplate();
+
+action(
+  'text-sign-btn',
+  async () => {
+    if (!state.signer) return;
+    const text = textarea('doc-text').value;
+    if (!canonicalText(text)) throw new UserError('Write the document text first.');
+    const placeholder = text.match(/\[[A-Z][A-Z ]+\]/);
+    if (placeholder) throw new UserError(`Fill in ${placeholder[0]} before signing.`);
+    const result = await signText(state.signer, text);
+    state.signedText = {
+      result,
+      text,
+      title: input('doc-title').value.trim() || currentTemplate().title || 'Instrument',
+      returnTo: textarea('doc-return').value,
+      signers: textarea('doc-signers').value,
+    };
+    $('tr-id').textContent = result.documentId;
+    $('tr-codes').textContent = `${result.codes.length} QR code${result.codes.length === 1 ? '' : 's'} on the last page`;
+    $('text-result').hidden = false;
+    await downloadInstrument();
+    $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+  'Signing...',
+);
+
+async function downloadInstrument() {
+  const s = state.signedText;
+  if (!s) return;
+  const pdf = await instrumentPdf({
+    title: s.title,
+    text: s.text,
+    returnTo: s.returnTo,
+    signers: s.signers,
+    fingerprint: s.result.fingerprint,
+    userID: s.result.userID,
+    signedAt: s.result.signedAt,
+    documentId: s.result.documentId,
+    codes: s.result.codes,
+  });
+  download(pdf, `${fileSlug(s.title)}-signed-${s.result.documentId.slice(0, 8)}.pdf`, 'application/pdf');
+}
+
+action('dl-instrument', downloadInstrument, 'Preparing PDF...');
+action('dl-text-txt', () => {
+  const s = state.signedText;
+  if (s) download(s.result.canonical, `${fileSlug(s.title)}-${s.result.documentId.slice(0, 8)}.txt`, 'text/plain');
+});
+action('dl-text-sig', () => {
+  const s = state.signedText;
+  if (s) download(s.result.signature, `${fileSlug(s.title)}-${s.result.documentId.slice(0, 8)}.txt.sig`, 'application/pgp-signature');
+});
+
+// ---------------------------------------------------------------------------
 // Step 4: verify
 // ---------------------------------------------------------------------------
 let verifyKey: AnyKey | null = null;
@@ -501,15 +646,52 @@ $('v-use-mine').addEventListener('click', async () => {
   await loadVerifyKeyText(textarea('v-key').value);
 });
 
+let verifiedText = '';
+
+function compareWithPaper() {
+  const out = $('vr-compare-result');
+  const paper = textarea('vr-compare').value;
+  out.innerHTML = '';
+  if (!paper.trim() || !verifiedText) return;
+  const d = firstDifference(verifiedText, paper);
+  if (!d) {
+    out.className = 'hint ok';
+    out.textContent = 'Matches: the paper text is exactly what the owner signed.';
+    return;
+  }
+  out.className = 'hint error';
+  out.append(
+    `Different, starting at character ${d.index + 1}.`,
+    Object.assign(document.createElement('span'), { className: 'diff', textContent: `Signed: ${d.signed}` }),
+    Object.assign(document.createElement('span'), { className: 'diff', textContent: `Paper:  ${d.other}` }),
+  );
+}
+textarea('vr-compare').addEventListener('input', compareWithPaper);
+
+textarea('v-payload').addEventListener('input', () => {
+  const v = textarea('v-payload').value;
+  const p = scanProgress(v);
+  const el = $('v-progress');
+  if (!p.total) {
+    el.textContent = '';
+  } else if (p.groups.length > 1) {
+    el.textContent = 'Codes from more than one document were scanned. Clear the box and scan one document.';
+  } else if (p.missing.length) {
+    el.textContent = `Scanned ${p.have} of ${p.total} codes. Still need: ${p.missing.join(', ')}.`;
+  } else {
+    el.textContent = `All ${p.total} code${p.total === 1 ? '' : 's'} scanned.`;
+  }
+});
+
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
-  good: { title: 'GOOD SIGNATURE. Matches the registered key.', action: 'Record as usual.' },
+  good: { title: 'GOOD SIGNATURE. Matches the registered key.', action: 'Compare the signed text below with the paper. If it matches, record as usual.' },
   bad: {
     title: 'DOES NOT VERIFY.',
     action: 'Hold the filing. Flag as suspected forgery, preserve the submission, and notify the owner of record.',
   },
   incomplete: {
     title: 'NOT CHECKED YET.',
-    action: 'Load the signed document file to finish. Do not record a filing on a registered parcel until it passes.',
+    action: 'Scan the remaining codes (or, for an electronic filing, load the signed file). Do not record a filing on a registered parcel until it passes.',
   },
 };
 
@@ -519,17 +701,31 @@ action(
     if (!verifyKey && textarea('v-key').value.trim()) await loadVerifyKeyText(textarea('v-key').value);
     if (!verifyKey) throw new UserError('Scan, paste or choose the public key registered for the parcel.');
     const payload = textarea('v-payload').value;
+    $('vr-text-wrap').hidden = true;
     if (!payload.trim()) {
       throw new UserError(
-        'No signature code. If this filing is for a parcel with a registered key and has no signature page, hold it, notify the owner and investigate.',
+        'No signature codes. If this filing is for a parcel with a registered key and has no signature page, hold it, notify the owner and investigate.',
       );
     }
-    const file = input('v-doc').files?.[0];
-    const r = await verifyFiling({
-      payload,
-      registeredKey: verifyKey,
-      document: file ? new Uint8Array(await file.arrayBuffer()) : undefined,
-    });
+    let r;
+    if (payload.includes('PGPQ1|')) {
+      // Paper filing: the codes carry the signed text.
+      r = await verifyScannedText({ scanned: payload, registeredKey: verifyKey });
+      verifiedText = r.signedText ?? '';
+      if (r.signedText && r.verdict === 'good') {
+        $('vr-text').textContent = r.signedText;
+        $('vr-text-wrap').hidden = false;
+        compareWithPaper();
+      }
+    } else {
+      // Electronic filing: a PGPSIG1 code plus the signed file.
+      const file = input('v-doc').files?.[0];
+      r = await verifyFiling({
+        payload,
+        registeredKey: verifyKey,
+        document: file ? new Uint8Array(await file.arrayBuffer()) : undefined,
+      });
+    }
     const b = $('vr-banner');
     b.className = `verdict ${r.verdict}`;
     b.innerHTML = '';

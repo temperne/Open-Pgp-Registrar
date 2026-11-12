@@ -18,6 +18,7 @@ import {
 } from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
 import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX } from './crypto';
+import { safeText } from './text';
 
 const PAGE_W = 612; // US Letter
 const PAGE_H = 792;
@@ -50,16 +51,7 @@ async function newDoc(title: string) {
   return { doc, fonts };
 }
 
-/** Standard PDF fonts only cover WinAnsi; replace anything else so drawing never throws. */
-export function safeText(s: string) {
-  return s
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/\t/g, ' ')
-    .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '?');
-}
+export { safeText };
 
 function wrap(text: string, font: PDFFont, size: number, width: number): string[] {
   const out: string[] = [];
@@ -689,4 +681,190 @@ export async function keyTextFromPdf(bytes: Uint8Array): Promise<string> {
     );
   }
   return found;
+}
+
+// ---------------------------------------------------------------------------
+// Signed instrument (paper workflow): the document text, signature lines,
+// notary block, and a final page of QR codes that carry the signed text and
+// the owner's signature.
+// ---------------------------------------------------------------------------
+
+export interface InstrumentInfo {
+  title: string;
+  /** The document text exactly as entered (line breaks kept for printing). */
+  text: string;
+  /** "When recorded, mail to" block. */
+  returnTo?: string;
+  /** Names for the wet-ink signature lines, one per line. */
+  signers?: string;
+  fingerprint: string;
+  userID: string;
+  signedAt: Date;
+  documentId: string;
+  codes: string[];
+}
+
+export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
+  const title = info.title.trim() || 'Instrument';
+  const { doc, fonts } = await newDoc(title);
+  const bodySize = 11;
+  const lead = 15.5;
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  const contentPages: PDFPage[] = [page];
+  const BOTTOM = 64;
+
+  // Recording area: the top 2 inches of page 1 stay clear for the Recorder.
+  const recTop = PAGE_H - 36;
+  if (info.returnTo?.trim()) {
+    let ry = text(page, fonts, 'When recorded, mail to:', recTop, { size: 8.5, font: fonts.bold, color: MUTED, width: 250 });
+    text(page, fonts, info.returnTo.trim(), ry - 2, { size: 9.5, width: 250, leading: 12 });
+  }
+  const recLabel = 'Space above this line for Recorder’s use';
+  rule(page, PAGE_H - 144, M, PAGE_W - M, RULE);
+  page.drawText(recLabel, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(recLabel, 7), y: PAGE_H - 152, size: 7, font: fonts.reg, color: MUTED });
+
+  let y = PAGE_H - 170;
+  const tw = fonts.bold.widthOfTextAtSize(safeText(title.toUpperCase()), 15);
+  page.drawText(safeText(title.toUpperCase()), { x: (PAGE_W - tw) / 2, y: y - 15, size: 15, font: fonts.bold, color: INK });
+  y -= 36;
+
+  const newPage = () => {
+    page = doc.addPage([PAGE_W, PAGE_H]);
+    contentPages.push(page);
+    y = PAGE_H - M;
+  };
+  const ensure = (h: number) => {
+    if (y - h < BOTTOM) newPage();
+  };
+
+  for (const line of wrap(info.text.replace(/\s+$/, ''), fonts.reg, bodySize, CONTENT_W)) {
+    ensure(lead);
+    if (line) page.drawText(line, { x: M, y: y - bodySize, size: bodySize, font: fonts.reg, color: INK });
+    y -= line ? lead : lead * 0.7;
+  }
+
+  // Wet-ink signature lines.
+  const signers = (info.signers ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!signers.length) signers.push('');
+  y -= 12;
+  for (const name of signers) {
+    ensure(52);
+    y -= 32;
+    rule(page, y, M, M + 300, INK);
+    rule(page, y, M + 330, PAGE_W - M, INK);
+    text(page, fonts, name ? `${name}` : 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
+    text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+    y -= 20;
+  }
+
+  // Notary acknowledgment (completed by the notary on paper; not part of the signed text).
+  ensure(150);
+  y -= 16;
+  const venue: [string, string][] = [
+    ['STATE OF ARIZONA', ')'],
+    ['', ') ss.'],
+    ['COUNTY OF ______________________', ')'],
+  ];
+  for (const [left, right] of venue) {
+    if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    y -= 13;
+  }
+  y = text(
+    page,
+    fonts,
+    'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
+      '______________________________________________________.',
+    y - 8,
+    { size: 10, width: CONTENT_W },
+  );
+  y -= 34;
+  rule(page, y, M, M + 260, INK);
+  rule(page, y, M + 330, PAGE_W - M, INK);
+  text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
+  text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
+  text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
+
+  // ---- Signature page(s): QR codes ----
+  let sp = doc.addPage([PAGE_W, PAGE_H]);
+  const sigPages = [sp];
+  y = header(sp, fonts, 'OpenPGP signature page', 'Owner’s Digital Signature', `For: ${title}`);
+  const tableTop = y;
+  y = table(
+    sp,
+    fonts,
+    [
+      { label: 'Signed by', value: info.userID },
+      { label: 'Signing key fingerprint', value: fingerprintTwoLines(info.fingerprint), mono: true },
+      { label: 'Signed at', value: isoDateTime(info.signedAt) },
+      { label: 'Document ID', value: info.documentId, mono: true },
+    ],
+    tableTop,
+    CONTENT_W - 190,
+    140,
+  );
+  // Document ID barcode beside the table.
+  const bx = PAGE_W - M - 175;
+  const moduleW = Math.min(0.8, 175 / (code128Bits(info.documentId).length + 20));
+  const bw = drawCode128(sp, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
+  const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
+  sp.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+
+  y = text(
+    sp,
+    fonts,
+    `This digital signature is an extra layer. It does not replace the owner\u2019s ink signature or the notary ` +
+      `acknowledgment on the document, which are still required. ` +
+      `To check: open the Owner Key Registration tool, go to "Check a filing", load the key registered for the parcel, and scan ` +
+      `every code below, in any order. The tool shows the exact text the owner signed. Compare it with the pages of this ` +
+      `document. The signature covers every word, number and punctuation mark; capital letters, line breaks and spacing do not matter.`,
+    y - 12,
+    { size: 9 },
+  );
+  y -= 14;
+
+  const n = info.codes.length;
+  const perRow = 3;
+  const gap = (CONTENT_W - perRow * 150) / (perRow - 1);
+  const size = 150;
+  for (let i = 0; i < n; i++) {
+    const col = i % perRow;
+    if (col === 0) {
+      if (y - (size + 22) < BOTTOM) {
+        sp = doc.addPage([PAGE_W, PAGE_H]);
+        sigPages.push(sp);
+        y = header(sp, fonts, 'OpenPGP signature page (continued)', 'Owner’s Digital Signature');
+      }
+    }
+    const x = M + col * (size + gap);
+    const qr = bestQr(info.codes[i])!;
+    drawQr(sp, qr, x, y, size);
+    const label = `Code ${i + 1} of ${n}`;
+    sp.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+    if (col === perRow - 1 || i === n - 1) y -= size + 26;
+  }
+
+  y = text(
+    sp,
+    fonts,
+    'Without this tool: the codes hold the signed text and a standard OpenPGP signature. The tool can save them as document.txt ' +
+      'and document.sig, which check with: gpg --verify document.sig document.txt',
+    y - 4,
+    { size: 8, color: MUTED },
+  );
+
+  const total = doc.getPageCount();
+  const firstSig = contentPages.length + 1;
+  doc.getPages().forEach((pg, i) =>
+    footer(
+      pg,
+      fonts,
+      i < contentPages.length
+        ? `Document ID ${info.documentId}  |  Owner's digital signature for this text: page ${firstSig}`
+        : `Document ID ${info.documentId}  |  ${n} signature code${n === 1 ? '' : 's'}`,
+      i + 1,
+      total,
+    ),
+  );
+  return doc.save();
 }

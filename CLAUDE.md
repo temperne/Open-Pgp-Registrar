@@ -41,16 +41,28 @@ gives counter staff a way to check a filing.
    "Recorder use only" box. Page 2 attaches the full public key as text and as a
    `PGPKEY1|<base64 binary key>` QR code. The public key is also embedded as an
    attachment, so the Recorder's check can load it straight from the form PDF.
-3. **Sign** (Exhibit B): a detached signature over the exact bytes of the chosen
-   file. The outputs are a verification-page PDF, an original-plus-verification-page
-   print copy (PDF inputs only) and a `.sig` file. The verification page has a QR
-   code with `PGPSIG1|FINGERPRINT|sha256hex|base64sig`, a Code 128 barcode with the
-   document ID (first 24 hex digits of the SHA-256, uppercase), the payload as text
-   for manual entry, and GnuPG instructions.
-4. **Check a filing** (Exhibit C): takes the registered public key (scanned, pasted
-   or from a file), the signature code (scanned or pasted) and, optionally, the
-   document file. The result is good (record), bad (hold, suspected forgery), or
-   incomplete (document file still needed).
+3. **Sign** (Exhibit B): the signature covers the document's **text**, not a file,
+   so it can be checked from paper. The owner picks a template (warranty, quitclaim
+   or beneficiary deed, based on A.R.S. 33-402/33-405, or blank), fills in the
+   fields, and can edit the text freely. The signed bytes are the *canonical* text
+   (`src/text.ts`): mapped to printable WinAnsi characters, upper-cased, all
+   whitespace collapsed to single spaces. Words, numbers and punctuation count;
+   case, line breaks and spacing don't. The output is the printed instrument:
+   a 2-inch recording margin on page 1 ("when recorded, mail to"), the title and text,
+   **ink signature lines and a notary acknowledgment (still required; the digital
+   signature is only an extra layer)**, then a signature page. That page has the
+   fingerprint, the document ID (Code 128) and QR codes carrying
+   `PGPDOC1|FPR|base64sig|z|base64(deflate-raw(canonical text))`, split into
+   `PGPQ1|GROUP|i/n|chunk` codes of at most 700 characters. The `.txt` and `.sig`
+   files verify with stock `gpg`. Signing a file byte-for-byte (`PGPSIG1`) remains
+   as a secondary option for electronic filing.
+4. **Check a filing** (Exhibit C): load the registered public key (scan the form's
+   QR code, paste it, or load the registration PDF), then scan every QR code on the
+   signature page in any order. Progress shows which codes are missing. The tool
+   recovers the signed text, checks the signature, and shows the exact signed text
+   for the clerk to compare with the paper. An optional "compare with the paper"
+   box shows the first difference. The result is good, bad (hold: suspected
+   forgery) or incomplete (codes missing).
 
 ## Layout
 
@@ -58,6 +70,8 @@ gives counter staff a way to check a filing.
 - `src/pdf.ts`: pdf-lib layouts for the form, verification page, print copy and backup
 - `src/codes.ts`: QR (`qrcode`) and Code 128 (`jsbarcode` encoder) as module data,
   drawn as vector shapes
+- `src/text.ts`: printable-text mapping and the canonical form that gets signed
+- `src/templates.ts`: deed templates
 - `src/main.ts`, `index.html`, `src/style.css`: the UI (plain TypeScript, no framework)
 - `tests/`: vitest. Includes GnuPG interop and a test that rasterizes the PDFs and
   decodes the codes with `zbarimg` (both skipped if the tools are missing)
@@ -85,15 +99,11 @@ gives counter staff a way to check a filing.
 
 ## Open questions (for the owner of this project)
 
-1. **Paper vs. file.** The signature covers the exact file. At a paper counter, the
-   Recorder can confirm the key fingerprint from the QR alone, but checking the
-   signature needs the original file (on USB, by email, or through e-recording).
-   Is that acceptable? Or should the signature cover text that can be recovered from
-   the paper (for example, a canonical summary of grantor, grantee, parcel and date
-   printed on the page)?
-2. **Parcel binding.** The parcel number on the verification page is printed but
-   not signed. Should it go inside the signature (as an OpenPGP notation), so a
-   valid signature can't be moved to another parcel's filing?
+1. **Paper vs. file.** Resolved: the signature now covers the document's canonical
+   text, and the text travels in the QR codes.
+2. **Parcel binding.** Resolved for text documents: the parcel number is part of
+   the signed text. OCR (for example Tesseract.js, bundled for offline use) could
+   later fill the "compare with the paper" box automatically.
 3. **Notary certificate space.** Arizona acknowledgment wording is long. Keep the
    box, or put a loose notarial certificate on a separate page?
 4. **County wording and branding.** The form says "County Recorder", with an
