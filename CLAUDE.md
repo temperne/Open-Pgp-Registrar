@@ -43,7 +43,11 @@ gives counter staff a way to check a filing.
    replacement registration, owner, parcel, addresses, county, the key's type,
    creation date, user ID, fingerprint and fingerprint QR, the owner request, an
    owner signature line, two identity boxes (notary and law enforcement), the callback
-   rule and a "Recorder use only" box. Page 2 lists every key for the parcel, the key
+   rule and a "Recorder use only" box. **Everyone who signs the registration** (e.g.
+   both spouses sharing one key, a company's officers; "People signing this
+   registration", one per line with an optional capacity) gets their own signature
+   line, notary box, officer box and Recorder callback box: the first on page 1,
+   each additional person on an "Additional Signer" page. Page 2 lists every key for the parcel, the key
    list as `PGPR1|GROUP|i/n|chunk` codes (message
    `PGPREG1|b64(parcel)|ALL|b64(concatenated public keys)`), the registrant's
    `PGPKEY1` code and armored key. **Multiple keys are optional for any kind of
@@ -68,8 +72,8 @@ gives counter staff a way to check a filing.
    detached OpenPGP signatures, concatenated; codes carry
    `PGPDOC2|FPR1,FPR2|sigs|z|text` (one signer: `PGPDOC1`), split into `PGPQ1` codes of
    at most 320 characters. The printed instrument has a 2-inch recording margin, the
-   title and text, **ink signature lines and a notary acknowledgment (still
-   required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
+   title and text, **ink signature lines and a notary acknowledgment for each signer
+   (still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
    banner against the registration, the document ID barcode and the codes. The `.txt`
    and `.sig` files verify with stock `gpg` (it checks each signature). Signing a file
    byte for byte (`PGPSIG1`) remains for electronic filing (single signer).

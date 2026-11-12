@@ -551,6 +551,7 @@ action(
       ownerName: owner,
       parcels,
       coOwnerKeys: others,
+      signatories: textarea('reg-signers').value.split('\n').map((x) => x.trim()).filter(Boolean),
       keyLabels: Object.fromEntries([
         ...others.map((c) => [c.getFingerprint().toUpperCase(), (state.coLabels.get(c.getFingerprint().toUpperCase()) ?? '').trim()]),
         [s.fingerprint, input('reg-my-label').value.trim()],

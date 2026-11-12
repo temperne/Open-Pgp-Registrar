@@ -310,6 +310,14 @@
               <label for="reg-county">County <span class="opt">(printed in the heading)</span></label>
               <input id="reg-county" placeholder="e.g. Pima County" />
             </div>
+            <div class="span2">
+              <label for="reg-signers">People signing this registration <span class="opt">(one per line, optional capacity: "Jane Doe, Trustee")</span></label>
+              <textarea id="reg-signers" rows="2" class="prose" placeholder="Leave blank if only the owner above signs"></textarea>
+              <p class="hint">
+                Everyone who will hold or authorize this key signs it, for example both spouses sharing one key, or a
+                company's officers. Each person gets their own signature line, notary acknowledgment and officer check.
+              </p>
+            </div>
             <div id="reg-prev-wrap" hidden>
               <label for="reg-prev">Previous key fingerprint <span class="opt">(to retire)</span></label>
               <input id="reg-prev" spellcheck="false" />

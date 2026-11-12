@@ -252,6 +252,12 @@ export interface RegistrationInfo {
   coOwnerKeys?: openpgp.PublicKey[];
   /** Optional free description per key, by fingerprint (e.g. "Trustee", "Beneficiary"). */
   keyLabels?: Record<string, string>;
+  /**
+   * Everyone who signs this registration (e.g. both spouses sharing one key, or a
+   * company's officers), each with an optional capacity: "Jane Doe, Trustee".
+   * Each gets a signature line, notary box and officer box. Defaults to the owner.
+   */
+  signatories?: string[];
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -319,6 +325,81 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   return doc.save();
 }
 
+function signatoriesOf(info: RegistrationInfo) {
+  const list = (info.signatories ?? []).map((x) => x.trim()).filter(Boolean);
+  return list.length ? list : [info.ownerName.trim()];
+}
+
+/** Signature line, notary and officer boxes, callback rule and a Recorder box, starting at y. */
+function signAndVerify(p: PDFPage, fonts: Fonts, y: number, signer: string, tag: string, recFields: string[]) {
+  rule(p, y, M, M + 330, INK);
+  rule(p, y, M + 360, PAGE_W - M, INK);
+  text(p, fonts, `Signature of ${signer || 'owner'}${tag ? `  (${tag})` : ''}`, y - 3, { size: 8, color: MUTED, width: 330 });
+  text(p, fonts, 'Date', y - 3, { x: M + 360, size: 8, color: MUTED });
+  y -= 22;
+
+  y = text(p, fonts, `Identity verification of ${signer || 'the signer'} (both required)`, y - 4, { size: 10, font: fonts.bold });
+  y -= 6;
+  const colW = (CONTENT_W - 14) / 2;
+  // Fit the identity boxes to the space left above the callback note and Recorder box.
+  const boxH = Math.max(118, Math.min(150, y - 168));
+  box(p, M, y, colW, boxH);
+  box(p, M + colW + 14, y, colW, boxH);
+
+  const lx = M + 8;
+  let ly = text(p, fonts, '1. Notary acknowledgment', y - 8, { x: lx, size: 9, font: fonts.bold });
+  ly = text(p, fonts, 'Notarial certificate, signature and seal, in the form required by state law:', ly - 3, {
+    x: lx,
+    size: 8,
+    color: MUTED,
+    width: colW - 16,
+  });
+  const notaryBottom = y - boxH + 26;
+  rule(p, notaryBottom, lx, lx + colW - 16, INK);
+  text(p, fonts, 'Commission expires', notaryBottom - 3, { x: lx, size: 7.5, color: MUTED });
+
+  const rx = M + colW + 22;
+  const rw = colW - 16;
+  let ry = text(p, fonts, '2. Law enforcement attestation', y - 8, { x: rx, size: 9, font: fonts.bold });
+  ry = text(p, fonts, 'I met this signer in person and checked government photo ID.', ry - 3, { x: rx, size: 8, color: MUTED, width: rw });
+  const fieldRows: [string, string][] = [
+    ['Officer name', 'Badge no.'],
+    ['Agency', 'Agency phone'],
+    ['Signature', 'Date'],
+  ];
+  for (const [a, b] of fieldRows) {
+    ry -= 20;
+    const split = rx + rw * 0.62;
+    rule(p, ry, rx, split - 8, INK);
+    rule(p, ry, split, rx + rw, INK);
+    text(p, fonts, a, ry - 2, { x: rx, size: 7.5, color: MUTED });
+    text(p, fonts, b, ry - 2, { x: split, size: 7.5, color: MUTED });
+    ry -= 6;
+  }
+  y -= boxH + 8;
+
+  y = text(
+    p,
+    fonts,
+    'Callback rule: a notary stamp alone can be forged, so the officer step is also required. Before the key is activated, the Recorder ' +
+      "phones the officer's agency at its published number and confirms the officer met this signer and signed. The same two steps and " +
+      'callback apply to replacing a lost key.',
+    y,
+    { size: 8, color: MUTED },
+  );
+
+  y -= 8;
+  const recH = 52;
+  box(p, M, y, CONTENT_W, recH, INK);
+  text(p, fonts, 'RECORDER USE ONLY', y - 6, { x: M + 8, size: 7.5, font: fonts.bold, color: MUTED });
+  const fw = (CONTENT_W - 16 - (recFields.length - 1) * 12) / recFields.length;
+  recFields.forEach((label, i) => {
+    const fx = M + 8 + i * (fw + 12);
+    rule(p, y - recH + 16, fx, fx + fw, INK);
+    text(p, fonts, label, y - recH + 13, { x: fx, size: 7, color: MUTED, width: fw });
+  });
+}
+
 async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: RegistrationInfo, parcel: string, keys: openpgp.PublicKey[], labels: string[]) {
   const fpr = info.fingerprint.toUpperCase();
   // ---- Page 1: the form ----
@@ -369,81 +450,52 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
   y = text(
     p,
     fonts,
-    `I am an owner of record of the parcel above. I ask the Recorder to file my public key, with the fingerprint shown, ` +
-      `${keys.length > 1 ? `and the ${keys.length - 1} other owner key${keys.length > 2 ? 's' : ''} listed on page 2 ` : '(listed on page 2) '}against this parcel, and to hold for investigation, rather than record in the ` +
+    (signatoriesOf(info).length > 1
+      ? `We, the undersigned, are owners of record of the parcel above, or sign for one in the capacity shown. We ask the Recorder to file the public key with the fingerprint shown, `
+      : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the public key with the fingerprint shown, `) +
+      `${keys.length > 1 ? `and the ${keys.length - 1} other key${keys.length > 2 ? 's' : ''} listed on the key page ` : '(listed on the key page) '}against this parcel, and to hold for investigation, rather than record in the ` +
       'ordinary course, any instrument affecting it that does not carry a valid signature from every key listed.',
     y - 3,
     { size: 9.5 },
   );
 
-  y -= 28;
-  rule(p, y, M, M + 330, INK);
-  rule(p, y, M + 360, PAGE_W - M, INK);
-  text(p, fonts, 'Owner signature', y - 3, { size: 8, color: MUTED });
-  text(p, fonts, 'Date', y - 3, { x: M + 360, size: 8, color: MUTED });
-  y -= 22;
+  const signers = signatoriesOf(info);
+  signAndVerify(p, fonts, y - 28, signers[0], signers.length > 1 ? `Signer 1 of ${signers.length}` : '', [
+    'Callback confirmed by / date',
+    'Key activated (date)',
+    'Recording no.',
+  ]);
 
-  y = text(p, fonts, 'Identity verification (both required)', y - 4, { size: 10, font: fonts.bold });
-  y -= 6;
-  const colW = (CONTENT_W - 14) / 2;
-  // Fit the identity boxes to the space left above the callback note and Recorder box.
-  const boxH = Math.max(118, Math.min(150, y - 168));
-  box(p, M, y, colW, boxH);
-  box(p, M + colW + 14, y, colW, boxH);
-
-  const lx = M + 8;
-  let ly = text(p, fonts, '1. Notary acknowledgment', y - 8, { x: lx, size: 9, font: fonts.bold });
-  ly = text(p, fonts, 'Notarial certificate, signature and seal, in the form required by state law:', ly - 3, {
-    x: lx,
-    size: 8,
-    color: MUTED,
-    width: colW - 16,
-  });
-  const notaryBottom = y - boxH + 26;
-  rule(p, notaryBottom, lx, lx + colW - 16, INK);
-  text(p, fonts, 'Commission expires', notaryBottom - 3, { x: lx, size: 7.5, color: MUTED });
-
-  const rx = M + colW + 22;
-  const rw = colW - 16;
-  let ry = text(p, fonts, '2. Law enforcement attestation', y - 8, { x: rx, size: 9, font: fonts.bold });
-  ry = text(p, fonts, 'I met the owner in person and checked government photo ID.', ry - 3, { x: rx, size: 8, color: MUTED, width: rw });
-  const fieldRows: [string, string][] = [
-    ['Officer name', 'Badge no.'],
-    ['Agency', 'Agency phone'],
-    ['Signature', 'Date'],
-  ];
-  for (const [a, b] of fieldRows) {
-    ry -= 20;
-    const split = rx + rw * 0.62;
-    rule(p, ry, rx, split - 8, INK);
-    rule(p, ry, split, rx + rw, INK);
-    text(p, fonts, a, ry - 2, { x: rx, size: 7.5, color: MUTED });
-    text(p, fonts, b, ry - 2, { x: split, size: 7.5, color: MUTED });
-    ry -= 6;
+  // ---- One page per additional person signing this registration ----
+  for (let i = 1; i < signers.length; i++) {
+    const sp = doc.addPage([PAGE_W, PAGE_H]);
+    let sy = header(
+      sp,
+      fonts,
+      'Registration (continued)',
+      `Additional Signer ${i + 1} of ${signers.length}`,
+      'Each person signing this registration signs here, before a notary, and has their identity confirmed by an officer.',
+    );
+    sy = table(
+      sp,
+      fonts,
+      [
+        { label: 'Parcel number', value: parcel },
+        { label: 'Key fingerprint', value: fingerprintTwoLines(fpr), mono: true },
+        { label: 'Signer', value: signers[i] || '' },
+      ],
+      sy,
+      CONTENT_W,
+    );
+    sy = text(
+      sp,
+      fonts,
+      'I join in the owner request on page 1 of this registration for the parcel and key shown above, in the capacity stated.',
+      sy - 10,
+      { size: 9.5 },
+    );
+    signAndVerify(sp, fonts, sy - 28, signers[i], `Signer ${i + 1} of ${signers.length}`, ['Callback confirmed by / date', 'Signer verified (initials)']);
   }
-  y -= boxH + 8;
-
-  y = text(
-    p,
-    fonts,
-    'Callback rule: a notary stamp alone can be forged, so the officer step is also required. Before the key is activated, the Recorder ' +
-      "phones the officer's agency at its published number and confirms the officer met the owner and signed. The same two steps and " +
-      'callback apply to replacing a lost key.',
-    y,
-    { size: 8, color: MUTED },
-  );
-
-  y -= 8;
-  const recH = 52;
-  box(p, M, y, CONTENT_W, recH, INK);
-  text(p, fonts, 'RECORDER USE ONLY', y - 6, { x: M + 8, size: 7.5, font: fonts.bold, color: MUTED });
-  const recFields = ['Callback confirmed by / date', 'Key activated (date)', 'Recording no.'];
-  const fw = (CONTENT_W - 16 - 2 * 12) / 3;
-  recFields.forEach((label, i) => {
-    const fx = M + 8 + i * (fw + 12);
-    rule(p, y - recH + 16, fx, fx + fw, INK);
-    text(p, fonts, label, y - recH + 13, { x: fx, size: 7, color: MUTED, width: fw });
-  });
 
   // ---- Page 2+: the parcel's keys ----
   let page = doc.addPage([PAGE_W, PAGE_H]);
@@ -894,33 +946,38 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     y -= 20;
   }
 
-  // Notary acknowledgment (completed by the notary on paper; not part of the signed text).
-  ensure(150);
-  y -= 16;
-  const venue: [string, string][] = [
-    ['STATE OF ARIZONA', ')'],
-    ['', ') ss.'],
-    ['COUNTY OF ______________________', ')'],
-  ];
-  for (const [left, right] of venue) {
-    if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
-    page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
-    y -= 13;
+  // Notary acknowledgments (completed by notaries on paper; not part of the signed text).
+  // One per signer, since owners may sign at different times before different notaries.
+  const ackFor = signers.filter(Boolean).length ? signers.filter(Boolean) : [''];
+  for (const who of ackFor) {
+    ensure(150);
+    y -= 16;
+    const venue: [string, string][] = [
+      ['STATE OF ARIZONA', ')'],
+      ['', ') ss.'],
+      ['COUNTY OF ______________________', ')'],
+    ];
+    for (const [left, right] of venue) {
+      if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
+      page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
+      y -= 13;
+    }
+    y = text(
+      page,
+      fonts,
+      'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
+        (who ? `${who}.` : '______________________________________________________.'),
+      y - 8,
+      { size: 10, width: CONTENT_W },
+    );
+    y -= 34;
+    rule(page, y, M, M + 260, INK);
+    rule(page, y, M + 330, PAGE_W - M, INK);
+    text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
+    text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
+    text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
+    y -= 30;
   }
-  y = text(
-    page,
-    fonts,
-    'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
-      '______________________________________________________.',
-    y - 8,
-    { size: 10, width: CONTENT_W },
-  );
-  y -= 34;
-  rule(page, y, M, M + 260, INK);
-  rule(page, y, M + 330, PAGE_W - M, INK);
-  text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
-  text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
-  text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
 
   // ---- Signature page(s): QR codes ----
   let sp = doc.addPage([PAGE_W, PAGE_H]);

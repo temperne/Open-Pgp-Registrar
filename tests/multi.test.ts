@@ -261,3 +261,23 @@ describe('key descriptions', () => {
     expect(r.verdict).toBe('good');
   });
 });
+
+describe('several people signing one registration', () => {
+  it('gives each signer their own signature and identity blocks', async () => {
+    const { registrationPdf } = await import('../src/pdf');
+    const { PDFDocument } = await import('pdf-lib');
+    const base = {
+      ownerName: 'Jane Doe and John Doe',
+      parcels: '123-45-6789',
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    };
+    const one = await PDFDocument.load(await registrationPdf(base));
+    const three = await PDFDocument.load(await registrationPdf({ ...base, signatories: ['Jane Doe', 'John Doe', 'Pat Doe, Trustee'] }));
+    expect(three.getPageCount()).toBe(one.getPageCount() + 2);
+  });
+});
