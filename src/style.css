@@ -619,3 +619,9 @@ button.linklike {
 .foot a {
   color: var(--accent);
 }
+
+.cert {
+  margin-top: 18px;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+}

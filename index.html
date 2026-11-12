@@ -475,6 +475,22 @@
             <dt>Signed at</dt>
             <dd id="vr-when"></dd>
           </dl>
+          <div id="cert-wrap" class="cert" hidden>
+            <h3>Print a verification certificate</h3>
+            <p class="hint">
+              States that agency personnel found the parcel protected by the program and checked the owner's signature,
+              with the signed text and its codes. Print it, sign it in ink, and append it to the filing. Name and title
+              can also be left blank and handwritten.
+            </p>
+            <div class="grid2 tight">
+              <div><label for="c-name">Your name</label><input id="c-name" autocomplete="name" /></div>
+              <div><label for="c-title">Title</label><input id="c-title" autocomplete="organization-title" /></div>
+              <div><label for="c-agency">Agency</label><input id="c-agency" /></div>
+              <div><label for="c-parcels">Parcel number(s)</label><input id="c-parcels" /></div>
+            </div>
+            <button type="button" id="cert-btn" class="primary">Download verification certificate (PDF)</button>
+            <p class="error" data-error role="alert"></p>
+          </div>
         </div>
 
         <details class="card">

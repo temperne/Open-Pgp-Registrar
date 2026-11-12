@@ -12,6 +12,7 @@ import {
   verifyScannedText,
   keyFromCodes,
   codesHaveKey,
+  orderedCodes,
   scanProgress,
   type SignedText,
   formatFingerprint,
@@ -28,6 +29,7 @@ import {
   isPdfBytes,
   instrumentPdf,
   setBrandSeal,
+  certificatePdf,
   type SignaturePageInfo,
 } from './pdf';
 import { BRAND } from './brand';
@@ -723,6 +725,16 @@ $('v-use-mine').addEventListener('click', async () => {
 });
 
 let verifiedText = '';
+/** The last completed paper check, for the printable certificate. */
+let lastCheck: {
+  result: 'good' | 'bad';
+  checks: string[];
+  key: AnyKey;
+  documentId: string;
+  signedAt?: Date;
+  signedText: string;
+  codes: string[];
+} | null = null;
 
 function compareWithPaper() {
   const out = $('vr-compare-result');
@@ -759,6 +771,32 @@ textarea('v-payload').addEventListener('input', () => {
   }
 });
 
+action(
+  'cert-btn',
+  async () => {
+    const c = lastCheck;
+    if (!c) throw new UserError('Check a filing first.');
+    const s = summarize(c.key);
+    const pdf = await certificatePdf({
+      result: c.result,
+      checks: c.checks,
+      verifierName: input('c-name').value,
+      verifierTitle: input('c-title').value,
+      agency: input('c-agency').value,
+      parcels: input('c-parcels').value,
+      keyFingerprint: s.fingerprint,
+      keyUserID: s.userIDs[0] ?? '',
+      documentId: c.documentId,
+      signedAt: c.signedAt,
+      checkedAt: new Date(),
+      signedText: c.signedText,
+      codes: c.codes,
+    });
+    download(pdf, `verification-certificate-${c.documentId.slice(0, 12)}.pdf`, 'application/pdf');
+  },
+  'Preparing PDF...',
+);
+
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
   good: { title: 'GOOD SIGNATURE. Matches the registered key.', action: 'Compare the signed text below with the paper. If it matches, record as usual.' },
   bad: {
@@ -784,10 +822,27 @@ action(
       );
     }
     let r;
+    lastCheck = null;
+    $('cert-wrap').hidden = true;
     if (payload.includes('PGPQ1|')) {
       // Paper filing: the codes carry the signed text.
       r = await verifyScannedText({ scanned: payload, registeredKey: verifyKey });
       verifiedText = r.signedText ?? '';
+      if (r.verdict !== 'incomplete' && r.documentId && r.signedText) {
+        lastCheck = {
+          result: r.verdict === 'good' ? 'good' : 'bad',
+          checks: r.checks.map((c) => `${c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked'}: ${c.label}`),
+          key: verifyKey,
+          documentId: r.documentId,
+          signedAt: r.signedAt,
+          signedText: r.signedText,
+          codes: orderedCodes(payload),
+        };
+        if (!input('c-agency').value) input('c-agency').value = `${BRAND.county} Recorder`;
+        const parcel = /PARCEL NUMBERS?:\s*([0-9][0-9A-Z-]*(?:\s*,\s*[0-9][0-9A-Z-]*)*)/.exec(r.signedText);
+        input('c-parcels').value = parcel ? parcel[1] : '';
+        $('cert-wrap').hidden = false;
+      }
       if (r.signedText && r.verdict === 'good') {
         $('vr-text').textContent = r.signedText;
         $('vr-text-wrap').hidden = false;

@@ -914,3 +914,164 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   );
   return doc.save();
 }
+
+// ---------------------------------------------------------------------------
+// Verification certificate: printed by Recorder staff after checking a filing,
+// signed in ink and appended to the filing.
+// ---------------------------------------------------------------------------
+
+export interface CertificateInfo {
+  result: 'good' | 'bad';
+  /** One-line summary of each check, e.g. "Pass: Signature valid". */
+  checks: string[];
+  verifierName?: string;
+  verifierTitle?: string;
+  agency?: string;
+  parcels?: string;
+  keyFingerprint: string;
+  keyUserID: string;
+  documentId: string;
+  signedAt?: Date;
+  checkedAt: Date;
+  /** The exact text the owner signed (canonical form). */
+  signedText: string;
+  /** The signature codes as scanned, reprinted so this page can be checked again. */
+  codes: string[];
+}
+
+export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc(`Verification certificate - ${info.documentId}`);
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  const BOTTOM = 64;
+  let y = header(
+    page,
+    fonts,
+    'Verification certificate',
+    'S.T.O.P. Signature Verification',
+    'Completed by agency personnel and appended to the filing.',
+  );
+
+  const good = info.result === 'good';
+  const agency = info.agency?.trim() || 'the receiving agency';
+  y = text(
+    page,
+    fonts,
+    `The undersigned personnel of ${agency} determined that the parcel(s) below are protected by the ${BRAND.name} ` +
+      `(a public signing key is registered for them), and checked the owner's digital signature on the instrument ` +
+      `described below against that registered key, using the signature codes printed with the instrument.`,
+    y,
+    { size: 10 },
+  );
+  y -= 8;
+  const bannerH = 34;
+  page.drawRectangle({
+    x: M,
+    y: y - bannerH,
+    width: CONTENT_W,
+    height: bannerH,
+    color: good ? rgb(0.9, 0.96, 0.92) : rgb(0.98, 0.91, 0.91),
+    borderColor: good ? rgb(0.08, 0.42, 0.18) : WARN,
+    borderWidth: 1,
+  });
+  const verdict = good
+    ? 'RESULT: GOOD SIGNATURE. The text below was signed with the registered key.'
+    : 'RESULT: DOES NOT VERIFY. Hold the filing; suspected forgery.';
+  page.drawText(verdict, { x: M + 10, y: y - 21, size: 11, font: fonts.bold, color: good ? rgb(0.08, 0.42, 0.18) : WARN });
+  y -= bannerH + 10;
+
+  const tableTop = y;
+  const rows: Row[] = [
+    { label: 'Parcel number(s)', value: info.parcels?.trim() || '' },
+    { label: 'Registered key', value: fingerprintTwoLines(info.keyFingerprint), mono: true },
+    { label: 'Key holder', value: info.keyUserID },
+    { label: 'Document ID', value: info.documentId, mono: true },
+  ];
+  if (info.signedAt) rows.push({ label: 'Signed by owner at', value: isoDateTime(info.signedAt) });
+  rows.push({ label: 'Checked at', value: isoDateTime(info.checkedAt) });
+  y = table(page, fonts, rows, tableTop, CONTENT_W - 190, 120);
+  const bx = PAGE_W - M - 175;
+  const moduleW = Math.min(0.8, 175 / (code128Bits(info.documentId).length + 20));
+  const bw = drawCode128(page, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
+  const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
+  page.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y = text(page, fonts, info.checks.join('   |   '), y - 6, { size: 8, color: MUTED });
+
+  // Verifier block: typed name/title if given, signed in ink.
+  const blockH = 118;
+  if (y - blockH < BOTTOM) {
+    page = doc.addPage([PAGE_W, PAGE_H]);
+    y = PAGE_H - M;
+  }
+  y = text(page, fonts, 'Verified by', y - 14, { size: 10, font: fonts.bold });
+  const half = (CONTENT_W - 30) / 2;
+  const line = (label: string, value: string, x: number, w: number) => {
+    if (value.trim()) page.drawText(safeText(value.trim()), { x: x + 2, y: y + 4, size: 10.5, font: fonts.reg, color: INK });
+    rule(page, y, x, x + w, INK);
+    page.drawText(label, { x, y: y - 10, size: 7.5, font: fonts.reg, color: MUTED });
+  };
+  y -= 26;
+  line('Name', info.verifierName ?? '', M, half);
+  line('Title', info.verifierTitle ?? '', M + half + 30, half);
+  y -= 32;
+  line('Agency', info.agency ?? '', M, half);
+  line('Date', '', M + half + 30, half);
+  y -= 36;
+  line('Signature', '', M, half);
+  y -= 22;
+
+  // The signed text, in full.
+  const drawLines = (lines: string[], size: number, font: PDFFont, lead: number) => {
+    for (const l of lines) {
+      if (y - lead < BOTTOM) {
+        page = doc.addPage([PAGE_W, PAGE_H]);
+        y = header(page, fonts, 'Verification certificate (continued)', 'S.T.O.P. Signature Verification');
+      }
+      page.drawText(l, { x: M, y: y - size, size, font, color: INK });
+      y -= lead;
+    }
+  };
+  if (y - 60 < BOTTOM) {
+    page = doc.addPage([PAGE_W, PAGE_H]);
+    y = header(page, fonts, 'Verification certificate (continued)', 'S.T.O.P. Signature Verification');
+  }
+  y = text(page, fonts, 'Exactly what the owner signed', y - 4, { size: 10, font: fonts.bold });
+  y = text(
+    page,
+    fonts,
+    'Recovered from the signature codes. Capital letters, spacing and line breaks are not significant; every word, number and punctuation mark is.',
+    y - 2,
+    { size: 8, color: MUTED },
+  );
+  y -= 6;
+  drawLines(wrap(info.signedText, fonts.mono, 8.5, CONTENT_W), 8.5, fonts.mono, 11.5);
+
+  // The signature codes again, so this certificate can be re-checked by scanning.
+  if (info.codes.length) {
+    const size = 120;
+    const perRow = 3;
+    const gap = (CONTENT_W - perRow * size) / (perRow - 1);
+    if (y - 40 - size < BOTTOM) {
+      page = doc.addPage([PAGE_W, PAGE_H]);
+      y = header(page, fonts, 'Verification certificate (continued)', 'S.T.O.P. Signature Verification');
+    }
+    y = text(page, fonts, 'Owner’s signature codes (as scanned)', y - 14, { size: 10, font: fonts.bold });
+    y -= 10;
+    info.codes.forEach((code, i) => {
+      const col = i % perRow;
+      if (col === 0 && y - size - 20 < BOTTOM) {
+        page = doc.addPage([PAGE_W, PAGE_H]);
+        y = header(page, fonts, 'Verification certificate (continued)', 'S.T.O.P. Signature Verification');
+      }
+      const x = M + col * (size + gap);
+      const qr = bestQr(code);
+      if (qr) drawQr(page, qr, x, y, size);
+      const label = `Code ${i + 1} of ${info.codes.length}`;
+      page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+      if (col === perRow - 1 || i === info.codes.length - 1) y -= size + 50;
+    });
+  }
+
+  const total = doc.getPageCount();
+  doc.getPages().forEach((pg, i) => footer(pg, fonts, `Verification certificate  |  Document ID ${info.documentId}`, i + 1, total));
+  return doc.save();
+}

@@ -605,3 +605,13 @@ export function codesHaveKey(codes: string[]) {
   if (p.total > 0) return p.missing.length === 0 && p.groups.length === 1;
   return codes.some((c) => /-----BEGIN PGP (PRIVATE|PUBLIC) KEY BLOCK-----/.test(c) || c.replace(/\s+/g, '').startsWith(`${PUBKEY_QR_PREFIX}|`));
 }
+
+/** The signature codes from a scan, one per part, in order (for reprinting). */
+export function orderedCodes(scanned: string): string[] {
+  const parts = parseParts(scanned);
+  const group = parts[0]?.group;
+  const byIndex = new Map(parts.filter((p) => p.group === group).map((p) => [p.index, p]));
+  return [...byIndex.values()]
+    .sort((a, b) => a.index - b.index)
+    .map((p) => `${PART_PREFIX}|${p.group}|${p.index}/${p.total}|${p.chunk}`);
+}

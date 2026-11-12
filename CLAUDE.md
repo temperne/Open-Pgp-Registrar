@@ -32,7 +32,9 @@ gives counter staff a way to check a filing.
    with its passphrase. **The key's main output is a PDF.** The private key PDF
    embeds the passphrase-protected key file as a PDF attachment (so the tool can
    load it back to sign) and prints it as a QR code and as text. `.asc` downloads
-   are a secondary "for GnuPG users" option.
+   are a secondary "for GnuPG users" option. The printed page carries the key as
+   a few large `PGPK1|GROUP|i/n|chunk` codes, so it loads back from a phone photo
+   or a scan (the picker accepts images and offers the camera on phones).
 2. **Register** (Exhibit A): a PDF registration form. It covers new or replacement
    registration, owner, parcels, addresses and county, and shows the key type,
    creation date, user ID, fingerprint and a fingerprint QR code. It has an owner
@@ -63,6 +65,15 @@ gives counter staff a way to check a filing.
    for the clerk to compare with the paper. An optional "compare with the paper"
    box shows the first difference. The result is good, bad (hold: suspected
    forgery) or incomplete (codes missing).
+   Codes can also come from a file: the signed PDF, the Recorder's scan, or a phone
+   photo (the picker offers the camera on phones). After a good or bad result, staff
+   can print a **verification certificate** (`certificatePdf`). It has their
+   (optional) typed name, title and agency, ink signature and date lines, a
+   statement that agency personnel determined the parcel is protected by the
+   program and checked the owner's signature against the registered key, the
+   result, document ID barcode, the full signed text, and the signature codes
+   reprinted so the certificate itself can be re-checked. It is appended to the
+   filing.
 
 5. **About the program** (first tab, the default): explains the problem (deed
    fraud and the cost of quiet title), why the program exists, how it works, how it

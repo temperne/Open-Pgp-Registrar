@@ -35,6 +35,13 @@ matter; every word and number does. The result is **good**, **does not verify**
 (hold, suspected forgery) or **not checked yet** (codes missing). A handheld 2D
 scanner works because it types into the box.
 
+Staff can also load the Recorder's scan of the filing, or take a phone photo,
+instead of scanning codes one by one. After the check, **print a verification
+certificate**: it states that agency personnel found the parcel protected by the
+program and checked the owner's signature, shows the result, the document ID
+barcode and the full signed text, and has lines for the checker's name, title,
+signature and date. Sign it and append it to the filing.
+
 Anyone can check a signature without this tool:
 
 ```sh
