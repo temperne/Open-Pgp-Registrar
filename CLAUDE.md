@@ -181,7 +181,8 @@ at fractional pixel sizes, which real scans and photos produce.
   `history`/`top` access. Failures must show visibly (the `#boot` banner or the
   form's `[data-error]` slot), never silently.
 
-- Commit after each milestone.
+- Commit after each milestone, and add user-visible changes to `CHANGELOG.md`
+  (Unreleased section). Refresh `docs/images` screenshots when the screens change.
 - Keep the PDFs on US Letter, and use only the standard fonts (WinAnsi). User text is
   passed through `safeText`.
 - After any layout change, regenerate the PDFs and look at them, including the
