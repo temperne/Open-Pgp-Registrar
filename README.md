@@ -13,7 +13,8 @@ connections with a Content-Security-Policy.
 
 1. **Your key.** Create a new key (protected by a passphrase) and download it as
    a PDF. Print it for your safe and keep the file on a USB drive. To sign later,
-   load that PDF and enter your passphrase. Keys from GnuPG, Kleopatra or similar
+   load that PDF, or on a phone take a photo of the printed page, and enter your
+   passphrase. Keys from GnuPG, Kleopatra or similar
    work too.
 2. **Register.** Download the registration form (PDF). Print it, sign it before a
    notary, have a local law enforcement officer complete the attestation box, and
