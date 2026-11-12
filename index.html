@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Owner Key Registration</title>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <h1>Owner Key Registration</h1>
+        <p class="lede">
+          Make a signature key, print the registration form for the Recorder, and sign documents with a printable
+          verification page.
+        </p>
+        <p class="privacy" role="note">
+          <strong>Nothing leaves this page.</strong> Everything runs in this browser tab. Nothing is uploaded or
+          saved, and closing the tab forgets your key, so download what you need.
+        </p>
+      </div>
+    </header>
+
+    <nav class="tabs wrap" role="tablist" aria-label="Steps">
+      <button role="tab" id="tab-key" aria-controls="panel-key" aria-selected="true"><span>1</span> Your key</button>
+      <button role="tab" id="tab-register" aria-controls="panel-register" aria-selected="false"><span>2</span> Register</button>
+      <button role="tab" id="tab-sign" aria-controls="panel-sign" aria-selected="false"><span>3</span> Sign a document</button>
+      <button role="tab" id="tab-verify" aria-controls="panel-verify" aria-selected="false"><span>4</span> Check a filing</button>
+    </nav>
+
+    <main class="wrap">
+      <!-- 1. KEY -->
+      <section role="tabpanel" id="panel-key" aria-labelledby="tab-key">
+        <div id="key-current" hidden>
+          <div class="card keycard">
+            <div class="keycard-head">
+              <h2>Your key</h2>
+              <span id="key-status" class="pill"></span>
+            </div>
+            <p class="label">Fingerprint</p>
+            <p id="key-fpr" class="fpr"></p>
+            <dl class="facts">
+              <dt>Name on key</dt>
+              <dd id="key-uid"></dd>
+              <dt>Type</dt>
+              <dd id="key-alg"></dd>
+              <dt>Created</dt>
+              <dd id="key-created"></dd>
+            </dl>
+
+            <form id="unlock-form" class="inline-form" hidden>
+              <label for="unlock-pass">This private key is locked. Enter its passphrase to sign with it.</label>
+              <div class="row">
+                <input id="unlock-pass" type="password" autocomplete="current-password" required />
+                <button type="submit" class="primary">Unlock</button>
+              </div>
+            </form>
+
+            <div id="save-warning" class="callout warn" hidden>
+              <strong>Save your private key now.</strong> This page does not keep it. If you close the tab without
+              downloading it, the key is gone and you would have to register again.
+            </div>
+            <div id="nopass-warning" class="callout warn" hidden>
+              This private key has no passphrase. Anyone who gets a copy of the file can sign as you.
+            </div>
+
+            <div class="actions">
+              <button id="dl-private" class="primary" hidden>Download private key</button>
+              <button id="dl-backup" hidden>Print paper backup</button>
+              <button id="dl-public">Download public key</button>
+              <button id="forget-key" class="ghost">Forget this key</button>
+            </div>
+            <p class="hint" id="next-hint">Next: <a href="#register" data-goto="register">fill in the registration form</a>.</p>
+          </div>
+        </div>
+
+        <div id="key-choose" class="grid2">
+          <form id="gen-form" class="card">
+            <h2>Create a new key</h2>
+            <p class="muted">For owners who don't have a PGP key yet. Takes a second.</p>
+            <label for="gen-name">Your full name, as on the deed</label>
+            <input id="gen-name" autocomplete="name" required />
+            <label for="gen-email">Email <span class="opt">(optional)</span></label>
+            <input id="gen-email" type="email" autocomplete="email" />
+            <label for="gen-pass">Passphrase <span class="opt">(at least 8 characters)</span></label>
+            <input id="gen-pass" type="password" autocomplete="new-password" minlength="8" required />
+            <label for="gen-pass2">Repeat passphrase</label>
+            <input id="gen-pass2" type="password" autocomplete="new-password" minlength="8" required />
+            <p class="hint">
+              The passphrase locks the private key file. Write it down and keep it apart from the key. It can't be
+              recovered.
+            </p>
+            <button type="submit" class="primary">Create key</button>
+          </form>
+
+          <form id="load-form" class="card">
+            <h2>Use a key I already have</h2>
+            <p class="muted">A private key to sign, or a public key just to register. From GnuPG, Kleopatra, etc.</p>
+            <label for="load-file">Key file <span class="opt">(.asc, .key, .gpg)</span></label>
+            <input id="load-file" type="file" accept=".asc,.key,.gpg,.pgp,.txt,application/pgp-keys" />
+            <label for="load-text">or paste it</label>
+            <textarea id="load-text" rows="6" spellcheck="false" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+            <button type="submit" class="primary">Load key</button>
+          </form>
+        </div>
+        <p id="key-error" class="error" role="alert"></p>
+      </section>
+
+      <!-- 2. REGISTER -->
+      <section role="tabpanel" id="panel-register" aria-labelledby="tab-register" hidden>
+        <div class="needs-key callout" hidden>First <a href="#key" data-goto="key">create or load a key</a>.</div>
+        <form id="reg-form" class="card">
+          <h2>Registration form</h2>
+          <p class="muted">
+            Fills in the form the Recorder files with your parcel. Only your public key goes on it.
+          </p>
+          <fieldset class="choice">
+            <legend>This is a</legend>
+            <label><input type="radio" name="reg-kind" value="new" checked /> New registration</label>
+            <label><input type="radio" name="reg-kind" value="replacement" /> Replacement of a lost or retired key</label>
+          </fieldset>
+          <div class="grid2 tight">
+            <div>
+              <label for="reg-owner">Owner(s) of record</label>
+              <input id="reg-owner" required />
+            </div>
+            <div>
+              <label for="reg-parcels">Parcel number(s)</label>
+              <input id="reg-parcels" required placeholder="e.g. 123-45-6789" />
+            </div>
+            <div>
+              <label for="reg-property">Property address</label>
+              <input id="reg-property" />
+            </div>
+            <div>
+              <label for="reg-mailing">Mailing address</label>
+              <input id="reg-mailing" />
+            </div>
+            <div>
+              <label for="reg-county">County <span class="opt">(printed in the heading)</span></label>
+              <input id="reg-county" placeholder="e.g. Pima County" />
+            </div>
+            <div id="reg-prev-wrap" hidden>
+              <label for="reg-prev">Previous key fingerprint <span class="opt">(to retire)</span></label>
+              <input id="reg-prev" spellcheck="false" />
+            </div>
+          </div>
+          <button type="submit" class="primary">Download registration form (PDF)</button>
+          <ol class="steps">
+            <li>Print it. Sign in front of a notary, who completes box 1.</li>
+            <li>Meet a local law enforcement officer, who completes and signs box 2.</li>
+            <li>File it with the Recorder. They call the officer's agency to confirm before activating your key.</li>
+          </ol>
+        </form>
+        <p id="reg-error" class="error" role="alert"></p>
+      </section>
+
+      <!-- 3. SIGN -->
+      <section role="tabpanel" id="panel-sign" aria-labelledby="tab-sign" hidden>
+        <div class="needs-private callout" hidden></div>
+        <form id="sign-form" class="card">
+          <h2>Sign a document</h2>
+          <p class="muted">
+            Signs the exact file you choose, usually the PDF of the deed. You get a verification page to print and
+            attach.
+          </p>
+          <label for="sign-file">Document file</label>
+          <input id="sign-file" type="file" required />
+          <div class="grid2 tight">
+            <div>
+              <label for="sign-title">Document title <span class="opt">(printed on the page)</span></label>
+              <input id="sign-title" placeholder="e.g. Warranty Deed" />
+            </div>
+            <div>
+              <label for="sign-parcels">Parcel number(s)</label>
+              <input id="sign-parcels" />
+            </div>
+          </div>
+          <button type="submit" class="primary">Sign</button>
+        </form>
+        <p id="sign-error" class="error" role="alert"></p>
+
+        <div id="sign-result" class="card" hidden>
+          <div class="keycard-head">
+            <h2>Signed</h2>
+            <span class="pill good">Good signature</span>
+          </div>
+          <dl class="facts">
+            <dt>File</dt>
+            <dd id="sr-file"></dd>
+            <dt>Document ID</dt>
+            <dd id="sr-id" class="mono"></dd>
+            <dt>SHA-256</dt>
+            <dd id="sr-hash" class="mono small"></dd>
+          </dl>
+          <div class="actions">
+            <button id="dl-sigpage" class="primary">Verification page (PDF)</button>
+            <button id="dl-printcopy" hidden>Document + verification page (PDF)</button>
+            <button id="dl-sig">Signature file (.sig)</button>
+          </div>
+          <p id="printcopy-note" class="hint"></p>
+          <div class="callout">
+            <strong>Keep the original file exactly as it is.</strong> The signature covers that file byte for byte.
+            Re-saving or editing it, even without visible changes, makes the check fail. Give the Recorder that original
+            file along with the paper.
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. VERIFY -->
+      <section role="tabpanel" id="panel-verify" aria-labelledby="tab-verify" hidden>
+        <form id="verify-form" class="card">
+          <h2>Check a filing</h2>
+          <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner types straight into these boxes.</p>
+
+          <label for="v-key">Registered public key for the parcel</label>
+          <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on the registration form, or paste the key"></textarea>
+          <div class="row small-gap">
+            <input id="v-key-file" type="file" accept=".asc,.key,.gpg,.pgp,.txt" aria-label="Public key file" />
+            <button type="button" id="v-use-mine" class="ghost" hidden>Use the key from step 1</button>
+          </div>
+          <p id="v-key-info" class="hint"></p>
+
+          <label for="v-payload">Signature code from the verification page</label>
+          <textarea id="v-payload" rows="3" spellcheck="false" placeholder="Scan the QR code. It starts with PGPSIG1|"></textarea>
+
+          <label for="v-doc">Signed document file <span class="opt">(needed to finish the check)</span></label>
+          <input id="v-doc" type="file" />
+
+          <button type="submit" class="primary">Check</button>
+        </form>
+        <p id="verify-error" class="error" role="alert"></p>
+
+        <div id="verify-result" class="card" hidden aria-live="polite">
+          <div id="vr-banner" class="verdict"></div>
+          <ul id="vr-checks" class="checks"></ul>
+          <dl class="facts">
+            <dt>Document ID</dt>
+            <dd id="vr-id" class="mono"></dd>
+            <dt>Signed at</dt>
+            <dd id="vr-when"></dd>
+          </dl>
+        </div>
+
+        <details class="card">
+          <summary>What the Recorder does with each result</summary>
+          <table class="handling">
+            <thead>
+              <tr><th>What is filed</th><th>Result</th><th>Recorder action</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Signed by the registered key</td><td>Good</td><td>Record as usual.</td></tr>
+              <tr><td>No signature on a registered parcel</td><td>Missing</td><td>Hold. Notify the owner of record. Investigate.</td></tr>
+              <tr><td>Signed by another key, or edited after signing</td><td>Bad</td><td>Hold. Flag as suspected forgery. Preserve the submission.</td></tr>
+              <tr><td>Owner lost the private key</td><td>Cannot sign</td><td>Same notary + officer check with callback, then register a new key and retire the old one.</td></tr>
+              <tr><td>Parcel with no registered key</td><td>Not applicable</td><td>Process as today. The program is voluntary.</td></tr>
+            </tbody>
+          </table>
+        </details>
+      </section>
+    </main>
+
+    <footer class="wrap foot">
+      <p>
+        Uses standard OpenPGP (RFC 4880) signatures. Every signature can also be checked with GnuPG:
+        <code>gpg --verify document.sig document.pdf</code>.
+      </p>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
