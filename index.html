@@ -163,12 +163,13 @@
           <details><summary>Is my key or my document sent anywhere?</summary>
             <p>No. This website runs entirely in your browser and is blocked from making network connections. You can
               even save it and use it offline.</p></details>
-          <details><summary>We own the property together. How does that work?</summary>
-            <p>Each owner makes their own key and files their own registration form for each parcel, listing every
-              co-owner's key (swap public key cards to do this). One key can be registered on any number of parcels.
-              Every listed owner then has to sign a deed: together on one computer, or one after another by passing the
-              partly signed PDF along ("Sign exactly as others"). The Recorder's check requires every registered owner's
-              signature on exactly the same text.</p></details>
+          <details><summary>We own the property together, or through a trust or company. How does that work?</summary>
+            <p>It's your choice. One key can cover everyone: name it with a list of the owners or the entity's name. Or
+              register several keys, for example the trust and its beneficiary, or each spouse, and describe each key
+              however you like. Each key holder files their own registration form for each parcel, listing every key (swap
+              public key cards to do this), and one key can be registered on any number of parcels. Every listed key must
+              then sign a deed: together on one computer, or one after another by passing the partly signed PDF along
+              ("Sign exactly as others"). A person at the Recorder judges whether the structure fits the deed.</p></details>
           <details><summary>What if I don't sign up?</summary>
             <p>Nothing changes for you. The program is voluntary.</p></details>
           <details><summary>What technology does it use?</summary>
@@ -238,8 +239,12 @@
           <form id="gen-form" class="card">
             <h2>Create a new key</h2>
             <p class="muted">For owners who don't have a PGP key yet. Takes a second.</p>
-            <label for="gen-name">Your full name, as on the deed</label>
+            <label for="gen-name">Name on the key</label>
             <input id="gen-name" autocomplete="name" required />
+            <p class="hint">
+              A person, a list of owners (e.g. "Jane Doe and John Doe"), or an entity (e.g. "Doe Family Trust"). One key
+              can cover several owners, or each owner can have their own; it's your choice.
+            </p>
             <label for="gen-email">Email <span class="opt">(optional)</span></label>
             <input id="gen-email" type="email" autocomplete="email" />
             <label for="gen-pass">Passphrase <span class="opt">(at least 8 characters)</span></label>
@@ -311,13 +316,18 @@
             </div>
           </div>
           <fieldset class="coowners">
-            <legend>Co-owners of these parcels</legend>
+            <legend>Keys for these parcels</legend>
             <p class="hint">
-              If others own the parcels with you, add each co-owner's public key. Every key listed must sign any deed for
-              the parcel. Each co-owner files their own form with the same list.
+              <strong>Optional.</strong> One key is enough for any owner: a person, a family, a trust or a company (name it
+              with a list of names or the entity's name). You can also register several keys, for example the trust and its
+              beneficiary, or each spouse, and describe each one however you like. Every key listed must sign any deed for
+              the parcel; a person at the Recorder judges whether the structure fits. Each key holder files their own form
+              with the same list.
             </p>
+            <label for="reg-my-label">Description of your key <span class="opt">(optional, e.g. "Trustee", "Owner", "Doe Family Trust")</span></label>
+            <input id="reg-my-label" />
             <ul id="co-list" class="keylist"></ul>
-            <label for="co-file">Add a co-owner's key <span class="opt">(their public key card, registration form, a photo of either, or a .asc file)</span></label>
+            <label for="co-file">Add another key <span class="opt">(its public key card, registration form, a photo of either, or a .asc file)</span></label>
             <input id="co-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
             <p id="co-status" class="hint" role="status"></p>
           </fieldset>

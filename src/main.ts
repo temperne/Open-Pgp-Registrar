@@ -20,6 +20,7 @@ import {
   decodeRegistrationCodes,
   mergeRegistrations,
   parcelKey,
+  keyLabel,
   parsePayload,
   toBase64,
   fromBase64,
@@ -71,10 +72,12 @@ interface State {
   draft: { signed: SignedText; title: string; text: string; returnTo: string; signers: string } | null;
   /** Registration of the parcel being signed for (who must sign). */
   signReg: Registration | null;
-  /** Co-owners' public keys to list on this owner's registration forms. */
+  /** Other keys to list on this owner's registration forms (co-owners, trust, beneficiary...). */
   coOwners: openpgp.PublicKey[];
+  /** Optional description of each co-owner key, by fingerprint. */
+  coLabels: Map<string, string>;
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [] };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map() };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -344,6 +347,11 @@ function setKey(key: AnyKey, privateArmored: string | null, unsaved: boolean, si
   $('sign-result').hidden = true;
   $('dl-note').textContent = '';
   input('reg-owner').value = '';
+  // Your own key is listed automatically; it never belongs in the co-owner list.
+  const mine = key.getFingerprint().toUpperCase();
+  state.coOwners = state.coOwners.filter((k) => k.getFingerprint().toUpperCase() !== mine);
+  state.coLabels.delete(mine);
+  renderCoOwners();
   refresh();
 }
 
@@ -468,10 +476,10 @@ window.addEventListener('beforeunload', (e) => {
 // ---------------------------------------------------------------------------
 document.querySelectorAll('input[name="reg-kind"]').forEach((r) => r.addEventListener('change', refresh));
 
-function keyItem(k: openpgp.PublicKey, extra?: Node) {
+function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
   const li = document.createElement('li');
   li.append(
-    Object.assign(document.createElement('strong'), { textContent: k.getUserIDs()[0] ?? '(no name)' }),
+    Object.assign(document.createElement('strong'), { textContent: `${label ? `${label}: ` : ''}${k.getUserIDs()[0] ?? '(no name)'}` }),
     Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
   );
   if (extra) li.append(extra);
@@ -482,12 +490,23 @@ function renderCoOwners() {
   const list = $('co-list');
   list.innerHTML = '';
   state.coOwners.forEach((k, i) => {
+    const fpr = k.getFingerprint().toUpperCase();
+    const controls = document.createElement('span');
+    controls.className = 'keyctl';
+    const desc = Object.assign(document.createElement('input'), {
+      value: state.coLabels.get(fpr) ?? '',
+      placeholder: 'Description (optional)',
+    });
+    desc.setAttribute('aria-label', `Description of ${k.getUserIDs()[0] ?? 'this key'}`);
+    desc.addEventListener('input', () => state.coLabels.set(fpr, desc.value));
     const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
     remove.addEventListener('click', () => {
       state.coOwners.splice(i, 1);
+      state.coLabels.delete(fpr);
       renderCoOwners();
     });
-    list.append(keyItem(k, remove));
+    controls.append(desc, remove);
+    list.append(keyItem(k, controls));
   });
 }
 
@@ -501,6 +520,13 @@ input('co-file').addEventListener('change', async () => {
     const fpr = key.getFingerprint().toUpperCase();
     if (state.key && state.key.getFingerprint().toUpperCase() === fpr) throw new Error('That is your own key; it is listed automatically.');
     if (state.coOwners.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already listed.');
+    // A registration form may already describe this key.
+    if (isPdfBytes(new Uint8Array(await f.arrayBuffer()))) {
+      for (const r of await registrationsFromPdf(new Uint8Array(await f.arrayBuffer()))) {
+        const l = keyLabel(r, fpr);
+        if (l) state.coLabels.set(fpr, l);
+      }
+    }
     state.coOwners.push(key);
     renderCoOwners();
     status.textContent = `Added ${key.getUserIDs()[0] ?? 'key'}. Check the fingerprint with your co-owner.`;
@@ -520,10 +546,15 @@ action(
     const owner = need(input('reg-owner').value, 'Enter the owner(s) of record.');
     const parcels = need(textarea('reg-parcels').value, 'Enter the parcel number.');
     const s = summarize(k);
+    const others = state.coOwners.filter((c) => c.getFingerprint().toUpperCase() !== s.fingerprint);
     const pdf = await registrationPdf({
       ownerName: owner,
       parcels,
-      coOwnerKeys: state.coOwners,
+      coOwnerKeys: others,
+      keyLabels: Object.fromEntries([
+        ...others.map((c) => [c.getFingerprint().toUpperCase(), (state.coLabels.get(c.getFingerprint().toUpperCase()) ?? '').trim()]),
+        [s.fingerprint, input('reg-my-label').value.trim()],
+      ]),
       propertyAddress: input('reg-property').value.trim(),
       mailingAddress: input('reg-mailing').value.trim(),
       county: input('reg-county').value.trim(),
@@ -570,7 +601,7 @@ function describeRegistration(r: Registration) {
   const frag = document.createDocumentFragment();
   frag.append(r.parcel ? `Parcel ${r.parcel}: ` : 'Key(s) without a parcel number: ', `${r.keys.length} key${r.keys.length === 1 ? '' : 's'}, all must sign.`);
   const ul = Object.assign(document.createElement('ul'), { className: 'keylist' });
-  for (const k of r.keys) ul.append(keyItem(k));
+  for (const k of r.keys) ul.append(keyItem(k, undefined, keyLabel(r, k.getFingerprint())));
   frag.append(ul);
   return frag;
 }
@@ -756,7 +787,9 @@ function renderDraft() {
     const li = document.createElement('li');
     li.className = 'signed';
     li.append(
-      Object.assign(document.createElement('strong'), { textContent: `Signed: ${sig.userID || names.get(sig.fingerprint) || '(name not given)'}` }),
+      Object.assign(document.createElement('strong'), {
+        textContent: `Signed: ${keyLabel(state.signReg, sig.fingerprint) ? `${keyLabel(state.signReg, sig.fingerprint)}: ` : ''}${sig.userID || names.get(sig.fingerprint) || '(name not given)'}`,
+      }),
       Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(sig.fingerprint) }),
       Object.assign(document.createElement('span'), { textContent: sig.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') }),
     );
@@ -767,7 +800,9 @@ function renderDraft() {
     const li = document.createElement('li');
     li.className = 'waiting';
     li.append(
-      Object.assign(document.createElement('strong'), { textContent: `Still needed: ${k.getUserIDs()[0] ?? '(no name)'}` }),
+      Object.assign(document.createElement('strong'), {
+        textContent: `Still needed: ${keyLabel(state.signReg, k.getFingerprint()) ? `${keyLabel(state.signReg, k.getFingerprint())}: ` : ''}${k.getUserIDs()[0] ?? '(no name)'}`,
+      }),
       Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
     );
     list.append(li);
@@ -780,7 +815,7 @@ function renderDraft() {
     status.textContent = `Not complete: ${d.signed.signatures.length} of ${state.signReg.keys.length}`;
     status.className = 'pill warn';
   } else {
-    status.textContent = 'Complete: every registered owner signed';
+    status.textContent = 'Complete: every registered key signed';
     status.className = 'pill good';
   }
   $('tr-id').textContent = d.signed.documentId;
@@ -871,7 +906,7 @@ input('continue-file').addEventListener('change', async () => {
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
       if (embedded.registration && !state.signReg) {
         const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
-        useSignRegistration([{ parcel: embedded.registration.parcel, keys }]);
+        useSignRegistration([{ parcel: embedded.registration.parcel, keys, labels: embedded.registration.labels }]);
       }
       setDraft({ signed, title: embedded.title, text: embedded.text, returnTo: embedded.returnTo, signers: embedded.signers });
     } else {
@@ -902,7 +937,7 @@ action(
     const me = state.signer.getFingerprint().toUpperCase();
     if (state.signReg && !state.signReg.keys.some((k) => k.getFingerprint().toUpperCase() === me)) {
       throw new UserError(
-        `Your key is not registered for ${state.signReg.parcel ? `parcel ${state.signReg.parcel}` : 'this parcel'}. Load the key of an owner listed on the registration.`,
+        `Your key is not registered for ${state.signReg.parcel ? `parcel ${state.signReg.parcel}` : 'this parcel'}. Load one of the keys listed on the registration.`,
       );
     }
     if (state.draft) {
@@ -936,7 +971,9 @@ function draftForPdf(): DocumentDraft | undefined {
     returnTo: textarea('doc-return').value,
     signers: textarea('doc-signers').value,
     signatures: d.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
-    registration: state.signReg ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()) } : undefined,
+    registration: state.signReg
+      ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()), labels: state.signReg.labels }
+      : undefined,
   };
 }
 
@@ -952,7 +989,14 @@ async function downloadInstrument() {
     documentId: d.signed.documentId,
     codes: d.signed.codes,
     required: state.signReg
-      ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '' })) }
+      ? {
+          parcel: state.signReg.parcel,
+          keys: state.signReg.keys.map((k) => ({
+            fingerprint: k.getFingerprint().toUpperCase(),
+            userID: k.getUserIDs()[0] ?? '',
+            label: keyLabel(state.signReg, k.getFingerprint()),
+          })),
+        }
       : undefined,
     draft: draftForPdf(),
   });
@@ -1141,7 +1185,7 @@ action(
 
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
   good: {
-    title: 'GOOD. Every registered owner signed.',
+    title: 'GOOD. Every registered key signed.',
     action: 'Compare the signed text below with the paper. If it matches, record as usual.',
   },
   bad: {
@@ -1177,7 +1221,7 @@ action(
           result: r.verdict === 'good' ? 'good' : 'bad',
           checks: r.checks.map((c) => `${c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked'}: ${c.label}`),
           owners: (r.signers ?? []).map((x) => ({
-            userID: x.userID || (x.registered ? '' : 'NOT REGISTERED'),
+            userID: `${x.label ? `${x.label}: ` : ''}${x.userID || (x.registered ? '' : 'NOT REGISTERED')}`,
             fingerprint: x.fingerprint,
             result: x.state === 'pass' ? 'Valid signature' : x.detail,
             signedAt: x.signedAt,

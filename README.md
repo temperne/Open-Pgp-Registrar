@@ -19,8 +19,11 @@ connections with a Content-Security-Policy.
 2. **Register.** Enter your parcel numbers (one form per parcel) and add each
    co-owner's public key (they give you their *public key card*). Print, sign before
    a notary, have a local law enforcement officer complete the attestation box, and
-   file it with the Recorder, who calls the officer's agency to confirm. Each
-   co-owner files their own form listing the same keys. Every listed key must sign.
+   file it with the Recorder, who calls the officer's agency to confirm. Multiple
+   keys are optional for any owner (a family, trust or company can use one key
+   named for everyone, or several keys described however they like, such as the
+   trust and its beneficiary). Each key holder files their own form listing the
+   same keys, and every listed key must sign.
 3. **Sign a document.** Load the parcel's registration, start from a template, and
    sign. Co-owners sign the same text: on the same computer ("Next owner signs on
    this computer"), or later with **Sign exactly as others** (load the partly signed

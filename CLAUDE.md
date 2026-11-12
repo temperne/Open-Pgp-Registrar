@@ -46,7 +46,12 @@ gives counter staff a way to check a filing.
    rule and a "Recorder use only" box. Page 2 lists every key for the parcel, the key
    list as `PGPR1|GROUP|i/n|chunk` codes (message
    `PGPREG1|b64(parcel)|ALL|b64(concatenated public keys)`), the registrant's
-   `PGPKEY1` code and armored key. The PDF embeds `public-key.asc` (the registrant)
+   `PGPKEY1` code and armored key. **Multiple keys are optional for any kind of
+   owner** (person, family, trust, company): one key named with a list of names or
+   the entity's name is enough, or several keys, each with an optional free
+   **description** ("Trustee", "Beneficiary"...) carried in the codes (a fifth field,
+   `b64(JSON labels)`), the embedded JSON (`labels`), signer lists and the
+   certificate. A person at the Recorder judges whether the structure fits. The PDF embeds `public-key.asc` (the registrant)
    and `stop-registration-N.json` per parcel. The key tab also offers a **public key
    card** PDF for sharing with co-owners.
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus

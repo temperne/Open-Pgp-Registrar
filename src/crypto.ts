@@ -585,6 +585,19 @@ export interface Registration {
   parcel: string;
   /** Every key registered for the parcel. All must sign. */
   keys: openpgp.PublicKey[];
+  /**
+   * Optional free description of each key, in the same order (e.g. "Trustee",
+   * "Beneficiary"). Owners may use one key for everyone or several, described
+   * however they like; a person at the Recorder judges the structure.
+   */
+  labels?: string[];
+}
+
+/** Description of a registered key, if the registration gives one. */
+export function keyLabel(reg: Registration | null | undefined, fingerprint: string) {
+  if (!reg?.labels) return '';
+  const i = reg.keys.findIndex((k) => k.getFingerprint().toUpperCase() === fingerprint.toUpperCase());
+  return i >= 0 ? (reg.labels[i] ?? '').trim() : '';
 }
 
 export function parcelKey(parcel: string) {
@@ -593,7 +606,9 @@ export function parcelKey(parcel: string) {
 
 export async function encodeRegistrationCodes(reg: Registration): Promise<string[]> {
   const keys = concatBytes(reg.keys.map((k) => k.toPublic().write()));
-  const message = [REG_PREFIX, toBase64(new TextEncoder().encode(reg.parcel.trim())), 'ALL', toBase64(keys)].join('|');
+  const fields = [REG_PREFIX, toBase64(new TextEncoder().encode(reg.parcel.trim())), 'ALL', toBase64(keys)];
+  if (reg.labels?.some((l) => l.trim())) fields.push(toBase64(new TextEncoder().encode(JSON.stringify(reg.labels.map((l) => l.trim())))));
+  const message = fields.join('|');
   const group = (await sha256Hex(new TextEncoder().encode(message))).slice(0, 12).toUpperCase();
   const n = Math.ceil(message.length / PART_SIZE);
   return Array.from({ length: n }, (_, i) => `${REG_PART_PREFIX}|${group}|${i + 1}/${n}|${message.slice(i * PART_SIZE, (i + 1) * PART_SIZE)}`);
@@ -609,10 +624,18 @@ export async function decodeRegistrationCodes(scanned: string): Promise<Registra
     throw new Error('The registration codes are damaged. Try another photo or scan.');
   }
   const f = message.split('|');
-  if (f.length !== 4 || f[0] !== REG_PREFIX) throw new Error('The registration codes are damaged. Try another photo or scan.');
+  if ((f.length !== 4 && f.length !== 5) || f[0] !== REG_PREFIX) throw new Error('The registration codes are damaged. Try another photo or scan.');
   const parcel = new TextDecoder().decode(fromBase64(f[1]));
   const keys = await openpgp.readKeys({ binaryKeys: fromBase64(f[3]) });
-  return { parcel, keys: keys.map((k) => k.toPublic()) };
+  let labels: string[] | undefined;
+  if (f[4]) {
+    try {
+      labels = (JSON.parse(new TextDecoder().decode(fromBase64(f[4]))) as unknown[]).map((x) => String(x ?? ''));
+    } catch {
+      labels = undefined;
+    }
+  }
+  return { parcel, keys: keys.map((k) => k.toPublic()), labels };
 }
 
 /** Merges registrations (e.g. each co-owner's form). They must agree on the parcel and key list. */
@@ -626,8 +649,21 @@ export function mergeRegistrations(regs: Registration[]): Registration {
     throw new Error('These registrations list different keys for the same parcel. Every owner’s form must list the same keys; ask the Recorder which is current.');
   }
   const keys = new Map<string, openpgp.PublicKey>();
-  for (const r of regs) for (const k of r.keys) keys.set(k.getFingerprint().toUpperCase(), k.toPublic());
-  return { parcel: withParcel[0]?.parcel ?? '', keys: [...keys.values()] };
+  const labels = new Map<string, string>();
+  for (const r of regs) {
+    r.keys.forEach((k, i) => {
+      const fpr = k.getFingerprint().toUpperCase();
+      keys.set(fpr, k.toPublic());
+      const l = r.labels?.[i]?.trim();
+      if (l && !labels.has(fpr)) labels.set(fpr, l);
+    });
+  }
+  const list = [...keys.entries()];
+  return {
+    parcel: withParcel[0]?.parcel ?? '',
+    keys: list.map(([, k]) => k),
+    labels: labels.size ? list.map(([f]) => labels.get(f) ?? '') : undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +672,8 @@ export function mergeRegistrations(regs: Registration[]): Registration {
 export interface SignerResult {
   fingerprint: string;
   userID: string;
+  /** The registration's description of this key, if any. */
+  label: string;
   registered: boolean;
   state: CheckState;
   signedAt?: Date;
@@ -712,8 +750,9 @@ export async function verifyScannedText(input: {
     const ids = [key, ...key.getSubkeys()].map((k) => k.getKeyID().toHex().toUpperCase());
     const idx = results.findIndex((r, i) => !used.has(i) && ids.includes(r.keyHex));
     const uid = key.getUserIDs()[0] ?? '';
+    const label = keyLabel(reg, fpr);
     if (idx < 0) {
-      signers.push({ fingerprint: fpr, userID: uid, registered: true, state: 'fail', detail: 'No signature from this registered owner.' });
+      signers.push({ fingerprint: fpr, userID: uid, label, registered: true, state: 'fail', detail: 'No signature from this registered key.' });
       continue;
     }
     used.add(idx);
@@ -721,6 +760,7 @@ export async function verifyScannedText(input: {
     signers.push({
       fingerprint: fpr,
       userID: uid,
+      label,
       registered: true,
       state: r.ok ? 'pass' : 'fail',
       signedAt: r.signedAt,
@@ -733,6 +773,7 @@ export async function verifyScannedText(input: {
     signers.push({
       fingerprint: listed ?? r.keyHex,
       userID: '',
+      label: '',
       registered: false,
       state: 'fail',
       signedAt: r.signedAt,
@@ -742,7 +783,7 @@ export async function verifyScannedText(input: {
 
   for (const s of signers) {
     checks.push({
-      label: s.registered ? `Signed by ${s.userID || 'registered owner'}` : 'Unregistered signer',
+      label: s.registered ? `Signed by ${s.userID || 'registered key'}${s.label ? ` (${s.label})` : ''}` : 'Unregistered signer',
       state: s.state,
       detail: `${formatFingerprint(s.fingerprint)}: ${s.detail}`,
     });

@@ -226,3 +226,38 @@ describe('multi-owner PDFs', () => {
     }
   });
 });
+
+describe('key descriptions', () => {
+  it('travel in the codes, the embedded registration, and the check results', async () => {
+    const labelled: Registration = { parcel: '123-45-6789', keys: [a.toPublic(), b.toPublic()], labels: ['Doe Family Trust', 'Beneficiary'] };
+    const back = await decodeRegistrationCodes((await encodeRegistrationCodes(labelled)).join('\n'));
+    expect(back.labels).toEqual(['Doe Family Trust', 'Beneficiary']);
+    const merged = mergeRegistrations([back, { parcel: '123-45-6789', keys: [b.toPublic(), a.toPublic()] }]);
+    expect(merged.labels).toEqual(['Doe Family Trust', 'Beneficiary']);
+    const both = await signText(b, text, await signText(a, text));
+    const r = await verifyScannedText({ scanned: both.codes.join('\n'), registration: merged });
+    expect(r.verdict).toBe('good');
+    expect(r.checks.map((c) => c.label)).toContain('Signed by Example Owner (Doe Family Trust)');
+
+    const { registrationPdf, registrationsFromPdf } = await import('../src/pdf');
+    const pdf = await registrationPdf({
+      ownerName: 'Doe Family Trust',
+      parcels: '123-45-6789',
+      coOwnerKeys: [b.toPublic()],
+      keyLabels: { [a.getFingerprint().toUpperCase()]: 'Doe Family Trust', [b.getFingerprint().toUpperCase()]: 'Beneficiary' },
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    });
+    expect((await registrationsFromPdf(pdf))[0].labels).toEqual(['Doe Family Trust', 'Beneficiary']);
+  });
+
+  it('one key on its own is a complete registration', async () => {
+    const solo = await signText(a, text);
+    const r = await verifyScannedText({ scanned: solo.codes.join('\n'), registration: { parcel: '123-45-6789', keys: [a.toPublic()] } });
+    expect(r.verdict).toBe('good');
+  });
+});

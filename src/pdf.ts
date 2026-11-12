@@ -250,6 +250,8 @@ export interface RegistrationInfo {
   parcels: string;
   /** The other owners' public keys for these parcels. Every key listed must sign. */
   coOwnerKeys?: openpgp.PublicKey[];
+  /** Optional free description per key, by fingerprint (e.g. "Trustee", "Beneficiary"). */
+  keyLabels?: Record<string, string>;
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -284,6 +286,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   const me = (await readAnyKey(info.publicArmored)).toPublic();
   const others = (info.coOwnerKeys ?? []).filter((k) => k.getFingerprint().toUpperCase() !== fpr);
   const keys = [me, ...others];
+  const labels = keys.map((k) => (info.keyLabels?.[k.getFingerprint().toUpperCase()] ?? '').trim());
   // The Recorder's tool can read the key straight from this PDF.
   await doc.attach(new TextEncoder().encode(info.publicArmored), PUBLIC_KEY_ATTACHMENT, {
     mimeType: 'application/pgp-keys',
@@ -299,6 +302,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       required: 'all',
       registrant: fpr,
       keys: keys.map((k) => k.armor()),
+      labels,
     };
     await doc.attach(new TextEncoder().encode(JSON.stringify(json, null, 1)), `${REGISTRATION_ATTACHMENT}-${n + 1}.json`, {
       mimeType: 'application/json',
@@ -306,7 +310,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       creationDate: info.created,
     });
     const before = doc.getPageCount();
-    await drawRegistration(doc, fonts, info, parcel, keys);
+    await drawRegistration(doc, fonts, info, parcel, keys, labels);
     const label = `Registration for parcel ${parcel || '(not given)'}  |  Registrant ${formatFingerprint(fpr)}`;
     for (let i = before; i < doc.getPageCount(); i++) footers[i] = label;
   }
@@ -315,7 +319,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   return doc.save();
 }
 
-async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: RegistrationInfo, parcel: string, keys: openpgp.PublicKey[]) {
+async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: RegistrationInfo, parcel: string, keys: openpgp.PublicKey[], labels: string[]) {
   const fpr = info.fingerprint.toUpperCase();
   // ---- Page 1: the form ----
   const p = doc.addPage([PAGE_W, PAGE_H]);
@@ -448,14 +452,14 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
     fonts,
     'Attachment to registration',
     'Keys Registered for This Parcel',
-    'Every key listed must sign any instrument affecting the parcel. Public keys are safe to publish: they check signatures but cannot create them.',
+    'Every key listed must sign any instrument affecting the parcel. The owners chose how many keys to use and how to describe them. Public keys are safe to publish: they check signatures but cannot create them.',
   );
   const keyRows: Row[] = [{ label: 'Parcel number', value: parcel }];
   keys.forEach((k, i) => {
     const kf = k.getFingerprint().toUpperCase();
     keyRows.push({
       label: `Key ${i + 1}${kf === fpr ? ' (this registrant)' : ''}`,
-      value: `${k.getUserIDs()[0] ?? ''}\n${formatFingerprint(kf)}`,
+      value: `${labels[i] ? `${labels[i]}: ` : ''}${k.getUserIDs()[0] ?? ''}\n${formatFingerprint(kf)}`,
     });
   });
   y = table(page, fonts, keyRows, y, CONTENT_W, 150);
@@ -467,7 +471,7 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
       y = header(page, fonts, 'Attachment to registration (continued)', 'Keys Registered for This Parcel');
     }
   };
-  const regCodes = await encodeRegistrationCodes({ parcel, keys });
+  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels });
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
@@ -808,7 +812,7 @@ export interface InstrumentInfo {
   documentId: string;
   codes: string[];
   /** The parcel's registered keys, when known: shows who still has to sign. */
-  required?: { parcel: string; keys: { fingerprint: string; userID: string }[] };
+  required?: { parcel: string; keys: { fingerprint: string; userID: string; label?: string }[] };
   /** Embedded so the next owner can load this PDF and sign exactly the same text. */
   draft?: DocumentDraft;
 }
@@ -823,7 +827,7 @@ export interface DocumentDraft {
   /** Base64 of each owner's detached signature, in signing order. */
   signatures: { fingerprint: string; userID: string; signedAt: string; sig: string }[];
   /** The parcel's registration, when one was loaded. */
-  registration?: { parcel: string; keys: string[] };
+  registration?: { parcel: string; keys: string[]; labels?: string[] };
 }
 
 export const DOCUMENT_ATTACHMENT = 'stop-document.json';
@@ -936,8 +940,8 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     const done = missing.length === 0;
     const msg = done
       ? `COMPLETE: signed by all ${info.required.keys.length} key${info.required.keys.length > 1 ? 's' : ''} registered for parcel ${info.required.parcel}.`
-      : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered owners have signed. Still needed: ` +
-        missing.map((k) => `${k.userID || 'owner'} (${k.fingerprint.slice(-16)})`).join(', ') +
+      : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered keys have signed. Still needed: ` +
+        missing.map((k) => `${k.label ? `${k.label}: ` : ''}${k.userID || 'owner'} (${k.fingerprint.slice(-16)})`).join(', ') +
         '. Do not file until every owner has signed.';
     const lines = wrap(msg, fonts.bold, 9.5, CONTENT_W - 20);
     const h = lines.length * 12.5 + 14;
@@ -955,9 +959,10 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   }
 
   const tableTop = y;
+  const roleOf = (f: string) => info.required?.keys.find((k) => k.fingerprint.toUpperCase() === f.toUpperCase())?.label ?? '';
   const rows: Row[] = sigs.map((x, i) => ({
     label: sigs.length > 1 ? `Signer ${i + 1}` : 'Signed by',
-    value: `${x.userID || '(name not given)'}\n${formatFingerprint(x.fingerprint)}\n${isoDateTime(x.signedAt)}`,
+    value: `${roleOf(x.fingerprint) ? `${roleOf(x.fingerprint)}: ` : ''}${x.userID || '(name not given)'}\n${formatFingerprint(x.fingerprint)}\n${isoDateTime(x.signedAt)}`,
   }));
   rows.push({ label: 'Document ID', value: info.documentId, mono: true });
   y = table(sp, fonts, rows, tableTop, CONTENT_W - 190, 110);
@@ -1087,7 +1092,7 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
     borderWidth: 1,
   });
   const verdict = good
-    ? `RESULT: GOOD. Every registered owner signed the text below.`
+    ? `RESULT: GOOD. Every registered key signed the text below.`
     : 'RESULT: DOES NOT VERIFY. Hold the filing; suspected forgery.';
   page.drawText(verdict, { x: M + 10, y: y - 21, size: 11, font: fonts.bold, color: good ? rgb(0.08, 0.42, 0.18) : WARN });
   y -= bannerH + 10;
@@ -1096,7 +1101,7 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
   const rows: Row[] = [
     { label: 'Parcel number', value: info.parcels?.trim() || '' },
     ...info.owners.map((o, i) => ({
-      label: info.owners.length > 1 ? `Owner ${i + 1}` : 'Owner',
+      label: info.owners.length > 1 ? `Key ${i + 1}` : 'Key',
       value: `${o.userID || '(name not given)'}\n${formatFingerprint(o.fingerprint)}\n${o.result}${o.signedAt ? `, signed ${isoDateTime(o.signedAt)}` : ''}`,
     })),
     { label: 'Document ID', value: info.documentId, mono: true },
@@ -1254,7 +1259,8 @@ export async function registrationsFromPdf(bytes: Uint8Array): Promise<Registrat
       const j = JSON.parse(new TextDecoder().decode(f.data));
       if (j.format !== 'stop-registration-1') continue;
       const keys = await Promise.all((j.keys as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
-      out.push({ parcel: String(j.parcel ?? ''), keys });
+      const labels = Array.isArray(j.labels) ? (j.labels as unknown[]).map((x) => String(x ?? '')) : undefined;
+      out.push({ parcel: String(j.parcel ?? ''), keys, labels });
     } catch {
       /* skip damaged entries */
     }
