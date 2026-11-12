@@ -128,7 +128,7 @@ describe('verifying a paper filing', () => {
     const codes = await encodeCodes(signed.fingerprint, signed.signature, altered, sha);
     const r = await verifyScannedText({ scanned: codes.join('\n'), registeredKey: key.toPublic() });
     expect(r.verdict).toBe('bad');
-    expect(r.checks.find((c) => c.label === 'Signature valid')?.state).toBe('fail');
+    expect(r.signers?.[0].state).toBe('fail');
   });
 
   it('bad: garbage', async () => {

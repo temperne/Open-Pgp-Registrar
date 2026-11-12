@@ -328,36 +328,51 @@ export function fromBase64(b64: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Signing document TEXT (the paper workflow)
+// Signing document TEXT (the paper workflow), by one owner or several
 //
 // The signature covers the canonical text of the document (see text.ts), so it
-// can be checked from paper. The QR codes printed on the document carry the
-// signature AND the signed text itself (compressed), split across as many codes
-// as needed:
+// can be checked from paper. Several owners can sign the same text; their
+// standard detached OpenPGP signatures are simply concatenated. The QR codes
+// printed on the document carry the signatures AND the signed text itself
+// (compressed), split across as many codes as needed:
 //
-//   whole message:  PGPDOC1|FINGERPRINT|BASE64SIG|z|BASE64(deflate-raw(text))
+//   one signer:     PGPDOC1|FINGERPRINT|BASE64SIG|z|BASE64(deflate-raw(text))
+//   several:        PGPDOC2|FPR1,FPR2,...|BASE64(SIG1 SIG2 ...)|z|BASE64(...)
 //                   ("t" instead of "z" means the text is not compressed)
 //   each QR code:   PGPQ1|GROUP|i/n|CHUNK   (GROUP = first 12 hex of the text's SHA-256)
 //
 // The recovered text is a plain file: `gpg --verify document.sig document.txt`
-// works when document.txt holds exactly the canonical text (no trailing newline).
+// checks every signature when document.txt holds exactly the canonical text.
 // ---------------------------------------------------------------------------
 
 export const DOC_PREFIX = 'PGPDOC1';
+export const MULTI_DOC_PREFIX = 'PGPDOC2';
 export const PART_PREFIX = 'PGPQ1';
 /** Characters of the message per QR code. Small codes (about version 14) read reliably from scans and photos at any resolution; big dense ones do not. */
 export const PART_SIZE = 320;
 /** Longest canonical text accepted, to keep the number of codes reasonable. */
 export const MAX_TEXT = 30000;
 
-export interface SignedText {
+export interface DocSignature {
   fingerprint: string;
   userID: string;
+  signedAt: Date;
+  /** One standard detached OpenPGP signature. */
+  bytes: Uint8Array;
+}
+
+export interface SignedText {
   canonical: string;
   sha256: string;
   documentId: string;
-  signedAt: Date;
+  /** Every signature so far, in signing order. */
+  signatures: DocSignature[];
+  /** All signatures concatenated: a valid detached signature file for gpg. */
   signature: Uint8Array;
+  /** First signer (kept for single-owner callers). */
+  fingerprint: string;
+  userID: string;
+  signedAt: Date;
   /** Text for each QR code, in order. */
   codes: string[];
 }
@@ -367,34 +382,65 @@ async function pipeBytes(bytes: Uint8Array, stream: CompressionStream | Decompre
   return new Uint8Array(await new Response(out).arrayBuffer());
 }
 
-export async function signText(key: openpgp.PrivateKey, text: string): Promise<SignedText> {
+function concatBytes(parts: Uint8Array[]) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+/** Builds the full signed-document record from the text and its signatures. */
+export async function assembleSigned(canonical: string, signatures: DocSignature[]): Promise<SignedText> {
+  const sha256 = await sha256Hex(new TextEncoder().encode(canonical));
+  const signature = concatBytes(signatures.map((s) => s.bytes));
+  return {
+    canonical,
+    sha256,
+    documentId: documentId(sha256),
+    signatures,
+    signature,
+    fingerprint: signatures[0]?.fingerprint ?? '',
+    userID: signatures[0]?.userID ?? '',
+    signedAt: signatures[0]?.signedAt ?? new Date(),
+    codes: signatures.length ? await encodeCodes(signatures.map((s) => s.fingerprint), signature, canonical, sha256) : [],
+  };
+}
+
+/**
+ * Signs the text with one key. Pass `existing` to add another owner's signature
+ * to a document already signed by others; the text must be exactly the same.
+ */
+export async function signText(key: openpgp.PrivateKey, text: string, existing?: SignedText): Promise<SignedText> {
   if (!key.isDecrypted()) throw new Error('Unlock the private key with its passphrase first.');
-  const canonical = canonicalText(text);
+  const canonical = existing ? existing.canonical : canonicalText(text);
+  if (existing && canonicalText(text) !== existing.canonical) {
+    throw new Error('The text is different from the text the other owners signed. Everyone must sign exactly the same text.');
+  }
   if (!canonical) throw new Error('There is no document text to sign.');
   if (canonical.length > MAX_TEXT) throw new Error(`The document is too long (${canonical.length} characters; the limit is ${MAX_TEXT}).`);
-  const bytes = new TextEncoder().encode(canonical);
-  const signature = (await openpgp.sign({
-    message: await openpgp.createMessage({ binary: bytes }),
+  const fingerprint = key.getFingerprint().toUpperCase();
+  if (existing?.signatures.some((s) => s.fingerprint === fingerprint)) throw new Error('This key has already signed this document.');
+  const bytes = (await openpgp.sign({
+    message: await openpgp.createMessage({ binary: new TextEncoder().encode(canonical) }),
     signingKeys: key,
     detached: true,
     format: 'binary',
   })) as Uint8Array;
-  const sigObj = await openpgp.readSignature({ binarySignature: signature });
-  const sha256 = await sha256Hex(bytes);
-  const fingerprint = key.getFingerprint().toUpperCase();
-  return {
+  const sigObj = await openpgp.readSignature({ binarySignature: bytes });
+  const sig: DocSignature = {
     fingerprint,
     userID: key.getUserIDs()[0] ?? '',
-    canonical,
-    sha256,
-    documentId: documentId(sha256),
     signedAt: sigObj.packets[0]?.created ?? new Date(),
-    signature,
-    codes: await encodeCodes(fingerprint, signature, canonical, sha256),
+    bytes,
   };
+  return assembleSigned(canonical, [...(existing?.signatures ?? []), sig]);
 }
 
-export async function encodeCodes(fingerprint: string, signature: Uint8Array, canonical: string, sha256: string) {
+export async function encodeCodes(fingerprints: string | string[], signature: Uint8Array, canonical: string, sha256: string) {
+  const fprs = Array.isArray(fingerprints) ? fingerprints : [fingerprints];
   const raw = new TextEncoder().encode(canonical);
   let enc = 't';
   let body = raw;
@@ -405,7 +451,8 @@ export async function encodeCodes(fingerprint: string, signature: Uint8Array, ca
       body = z;
     }
   }
-  const message = [DOC_PREFIX, fingerprint, toBase64(signature), enc, toBase64(body)].join('|');
+  const prefix = fprs.length === 1 ? DOC_PREFIX : MULTI_DOC_PREFIX;
+  const message = [prefix, fprs.join(','), toBase64(signature), enc, toBase64(body)].join('|');
   const group = sha256.slice(0, 12).toUpperCase();
   const n = Math.ceil(message.length / PART_SIZE);
   return Array.from({ length: n }, (_, i) => `${PART_PREFIX}|${group}|${i + 1}/${n}|${message.slice(i * PART_SIZE, (i + 1) * PART_SIZE)}`);
@@ -440,7 +487,7 @@ interface Part {
 function parseParts(scanned: string, prefix = PART_PREFIX): Part[] {
   const out: Part[] = [];
   // A scanner usually ends each code with Enter; also accept codes run together.
-  const re = new RegExp(`${prefix}\\|([0-9A-F]{12})\\|(\\d{1,3})\\/(\\d{1,3})\\|([A-Za-z0-9+/=|tz]*?)(?=${prefix}\\||\\s|$)`, 'g');
+  const re = new RegExp(`${prefix}\\|([0-9A-F]{12})\\|(\\d{1,3})\\/(\\d{1,3})\\|([A-Za-z0-9+/=|,tz]*?)(?=${prefix}\\||\\s|$)`, 'g');
   for (const m of scanned.replace(/\r/g, '\n').matchAll(re)) {
     const index = Number(m[2]);
     const total = Number(m[3]);
@@ -449,25 +496,36 @@ function parseParts(scanned: string, prefix = PART_PREFIX): Part[] {
   return out;
 }
 
+function joinParts(scanned: string, prefix: string, what: string) {
+  const parts = parseParts(scanned, prefix);
+  const p = scanProgress(scanned, prefix);
+  if (p.groups.length > 1) throw new Error(`These codes come from more than one ${what}. Use one ${what} at a time.`);
+  if (p.missing.length) throw new Error(`Read ${p.have} of ${p.total} codes. Still missing code ${p.missing.join(', ')}.`);
+  const byIndex = new Map(parts.map((x) => [x.index, x.chunk]));
+  return { message: Array.from({ length: p.total }, (_, i) => byIndex.get(i + 1)!).join(''), group: p.groups[0] };
+}
+
 export interface DecodedText {
+  /** Fingerprints listed in the codes, one per signature. */
+  fingerprints: string[];
+  /** First listed fingerprint (single-owner documents). */
   fingerprint: string;
+  /** All signatures, concatenated. */
   signature: Uint8Array;
   canonical: string;
   sha256: string;
   documentId: string;
 }
 
-/** Reassembles the scanned codes into the signed text and its signature. */
+const FPR_RE = /^[0-9A-F]{40}([0-9A-F]{24})?$/;
+
+/** Reassembles the scanned codes into the signed text and its signatures. */
 export async function decodeCodes(scanned: string): Promise<DecodedText> {
-  const parts = parseParts(scanned);
-  if (!parts.length) throw new Error('No document signature codes found. Scan the QR codes on the signature page; they start with PGPQ1|.');
-  const p = scanProgress(scanned);
-  if (p.groups.length > 1) throw new Error('These codes come from more than one document. Clear the box and scan one document at a time.');
-  if (p.missing.length) throw new Error(`Scanned ${p.have} of ${p.total} codes. Still missing code ${p.missing.join(', ')}.`);
-  const byIndex = new Map(parts.map((x) => [x.index, x.chunk]));
-  const message = Array.from({ length: p.total }, (_, i) => byIndex.get(i + 1)!).join('');
+  if (!parseParts(scanned).length) throw new Error('No document signature codes found. Scan the QR codes on the signature page; they start with PGPQ1|.');
+  const { message, group } = joinParts(scanned, PART_PREFIX, 'document');
   const f = message.split('|');
-  if (f.length !== 5 || f[0] !== DOC_PREFIX || !/^[0-9A-F]{40}([0-9A-F]{24})?$/.test(f[1]) || !/^[zt]$/.test(f[3])) {
+  const fprs = (f[1] ?? '').split(',');
+  if (f.length !== 5 || (f[0] !== DOC_PREFIX && f[0] !== MULTI_DOC_PREFIX) || !fprs.every((x) => FPR_RE.test(x)) || !/^[zt]$/.test(f[3])) {
     throw new Error('The codes are damaged or incomplete. Try scanning them again.');
   }
   let signature: Uint8Array;
@@ -482,65 +540,236 @@ export async function decodeCodes(scanned: string): Promise<DecodedText> {
   if (body.length > MAX_TEXT * 4) throw new Error('The text in the codes is too long.');
   const canonical = new TextDecoder().decode(body);
   const sha256 = await sha256Hex(body);
-  if (!sha256.toUpperCase().startsWith(parts[0].group)) {
+  if (!sha256.toUpperCase().startsWith(group)) {
     throw new Error('The codes do not fit together (the text does not match the document ID). Scan one document at a time.');
   }
-  return { fingerprint: f[1], signature, canonical, sha256, documentId: documentId(sha256) };
+  return { fingerprints: fprs, fingerprint: fprs[0], signature, canonical, sha256, documentId: documentId(sha256) };
+}
+
+/** Splits decoded codes back into one record per signature (to continue signing, or to list signers). */
+export async function signedFromCodes(scanned: string): Promise<SignedText> {
+  const d = await decodeCodes(scanned);
+  const sigObj = await openpgp.readSignature({ binarySignature: d.signature });
+  const signatures: DocSignature[] = sigObj.packets.map((packet, i) => {
+    const list = new openpgp.PacketList<openpgp.SignaturePacket>();
+    list.push(packet as openpgp.SignaturePacket);
+    const issuer = (packet as openpgp.SignaturePacket).issuerFingerprint;
+    return {
+      fingerprint: issuer ? bytesToHex(issuer) : (d.fingerprints[i] ?? ''),
+      userID: '',
+      signedAt: (packet as openpgp.SignaturePacket).created ?? new Date(),
+      bytes: list.write(),
+    };
+  });
+  return assembleSigned(d.canonical, signatures);
+}
+
+function bytesToHex(b: Uint8Array) {
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// ---------------------------------------------------------------------------
+// Parcel registration: the keys registered for one parcel
+//
+// Each owner files their own registration form for each parcel. Every form
+// carries the parcel's complete key list (the "configuration"); every key on it
+// must sign. Printed as codes, and embedded in the PDF:
+//   whole message:  PGPREG1|BASE64(parcel)|ALL|BASE64(public keys, concatenated)
+//   each QR code:   PGPR1|GROUP|i/n|CHUNK
+// ---------------------------------------------------------------------------
+export const REG_PREFIX = 'PGPREG1';
+export const REG_PART_PREFIX = 'PGPR1';
+
+export interface Registration {
+  /** Parcel number as written on the form; empty when only bare keys were loaded. */
+  parcel: string;
+  /** Every key registered for the parcel. All must sign. */
+  keys: openpgp.PublicKey[];
+}
+
+export function parcelKey(parcel: string) {
+  return parcel.toUpperCase().replace(/[^0-9A-Z]/g, '');
+}
+
+export async function encodeRegistrationCodes(reg: Registration): Promise<string[]> {
+  const keys = concatBytes(reg.keys.map((k) => k.toPublic().write()));
+  const message = [REG_PREFIX, toBase64(new TextEncoder().encode(reg.parcel.trim())), 'ALL', toBase64(keys)].join('|');
+  const group = (await sha256Hex(new TextEncoder().encode(message))).slice(0, 12).toUpperCase();
+  const n = Math.ceil(message.length / PART_SIZE);
+  return Array.from({ length: n }, (_, i) => `${REG_PART_PREFIX}|${group}|${i + 1}/${n}|${message.slice(i * PART_SIZE, (i + 1) * PART_SIZE)}`);
+}
+
+export function registrationScanProgress(scanned: string) {
+  return scanProgress(scanned, REG_PART_PREFIX);
+}
+
+export async function decodeRegistrationCodes(scanned: string): Promise<Registration> {
+  const { message, group } = joinParts(scanned, REG_PART_PREFIX, 'registration');
+  if (!(await sha256Hex(new TextEncoder().encode(message))).toUpperCase().startsWith(group)) {
+    throw new Error('The registration codes are damaged. Try another photo or scan.');
+  }
+  const f = message.split('|');
+  if (f.length !== 4 || f[0] !== REG_PREFIX) throw new Error('The registration codes are damaged. Try another photo or scan.');
+  const parcel = new TextDecoder().decode(fromBase64(f[1]));
+  const keys = await openpgp.readKeys({ binaryKeys: fromBase64(f[3]) });
+  return { parcel, keys: keys.map((k) => k.toPublic()) };
+}
+
+/** Merges registrations (e.g. each co-owner's form). They must agree on the parcel and key list. */
+export function mergeRegistrations(regs: Registration[]): Registration {
+  if (!regs.length) throw new Error('No registration loaded.');
+  const withParcel = regs.filter((r) => r.parcel);
+  const parcels = [...new Set(withParcel.map((r) => parcelKey(r.parcel)))];
+  if (parcels.length > 1) throw new Error(`These registrations are for different parcels (${withParcel.map((r) => r.parcel).join(', ')}). Load one parcel at a time.`);
+  const keysets = regs.filter((r) => r.parcel).map((r) => r.keys.map((k) => k.getFingerprint().toUpperCase()).sort().join(','));
+  if (new Set(keysets).size > 1) {
+    throw new Error('These registrations list different keys for the same parcel. Every owner’s form must list the same keys; ask the Recorder which is current.');
+  }
+  const keys = new Map<string, openpgp.PublicKey>();
+  for (const r of regs) for (const k of r.keys) keys.set(k.getFingerprint().toUpperCase(), k.toPublic());
+  return { parcel: withParcel[0]?.parcel ?? '', keys: [...keys.values()] };
+}
+
+// ---------------------------------------------------------------------------
+// Checking a paper filing against the parcel registration
+// ---------------------------------------------------------------------------
+export interface SignerResult {
+  fingerprint: string;
+  userID: string;
+  registered: boolean;
+  state: CheckState;
+  signedAt?: Date;
+  detail: string;
 }
 
 export interface TextVerifyResult extends VerifyResult {
-  /** The exact text the owner signed, recovered from the codes. */
+  /** The exact text the owners signed, recovered from the codes. */
   signedText?: string;
+  /** One line per registered key, plus any signature from a key that is not registered. */
+  signers?: SignerResult[];
 }
 
-/** Recorder-side check of a paper filing: scanned codes against the registered key. */
-export async function verifyScannedText(input: { scanned: string; registeredKey: AnyKey }): Promise<TextVerifyResult> {
+/**
+ * Recorder-side check of a paper filing: every key registered for the parcel
+ * must have signed, every signature must be valid, all of them over the same
+ * text, and the text must name the registered parcel.
+ */
+export async function verifyScannedText(input: {
+  scanned: string;
+  registration?: Registration;
+  /** Shorthand for a registration with one key and no parcel. */
+  registeredKey?: AnyKey;
+}): Promise<TextVerifyResult> {
+  const reg: Registration = input.registration ?? { parcel: '', keys: input.registeredKey ? [input.registeredKey.toPublic()] : [] };
   const checks: Check[] = [];
   let d: DecodedText;
   try {
     d = await decodeCodes(input.scanned);
-    checks.push({ label: 'All signature codes read', state: 'pass', detail: 'The signed text and signature were recovered from the codes.' });
+    checks.push({ label: 'All signature codes read', state: 'pass', detail: 'The signed text and signatures were recovered from the codes.' });
   } catch (e) {
     const progress = scanProgress(input.scanned);
     const partial = progress.total > 0 && progress.missing.length > 0 && progress.groups.length === 1;
     checks.push({ label: 'All signature codes read', state: partial ? 'skipped' : 'fail', detail: (e as Error).message });
     return { verdict: partial ? 'incomplete' : 'bad', checks };
   }
-  const registered = input.registeredKey.getFingerprint().toUpperCase();
-  const fprOk = d.fingerprint === registered;
-  checks.push({
-    label: 'Signed by the registered key',
-    state: fprOk ? 'pass' : 'fail',
-    detail: fprOk
-      ? `Fingerprint ${formatFingerprint(registered)} matches the key on file.`
-      : `The codes name key ${formatFingerprint(d.fingerprint)}, but the key on file is ${formatFingerprint(registered)}.`,
-  });
-  let signedAt: Date | undefined;
-  let ok = false;
-  let why = '';
+
+  // Verify every signature packet against all registered keys at once.
+  const results: { keyHex: string; ok: boolean; why: string; signedAt?: Date }[] = [];
   try {
     const sigObj = await openpgp.readSignature({ binarySignature: d.signature });
-    signedAt = sigObj.packets[0]?.created ?? undefined;
     const v = await openpgp.verify({
       message: await openpgp.createMessage({ binary: new TextEncoder().encode(d.canonical) }),
       signature: sigObj,
-      verificationKeys: input.registeredKey.toPublic(),
+      verificationKeys: reg.keys,
       expectSigned: false,
     });
-    if (v.signatures[0]) {
-      await v.signatures[0].verified;
-      ok = true;
-    } else why = 'no signature found';
+    for (const s of v.signatures) {
+      let ok = false;
+      let why = '';
+      let signedAt: Date | undefined;
+      try {
+        await s.verified;
+        ok = true;
+      } catch (e) {
+        why = (e as Error).message.replace(/^Error: /, '');
+      }
+      try {
+        signedAt = (await s.signature).packets[0]?.created ?? undefined;
+      } catch {
+        /* ignore */
+      }
+      results.push({ keyHex: s.keyID.toHex().toUpperCase(), ok, why, signedAt });
+    }
   } catch (e) {
-    why = (e as Error).message.replace(/^Error: /, '');
+    checks.push({ label: 'Signatures readable', state: 'fail', detail: `The signature data is damaged: ${(e as Error).message}` });
+    return { verdict: 'bad', checks, documentId: d.documentId, signedText: d.canonical };
   }
-  checks.push({
-    label: 'Signature valid',
-    state: ok ? 'pass' : 'fail',
-    detail: ok ? 'The owner’s key signed exactly the text shown below.' : `Signature does not verify: ${why}`,
+
+  const signers: SignerResult[] = [];
+  const used = new Set<number>();
+  for (const key of reg.keys) {
+    const fpr = key.getFingerprint().toUpperCase();
+    const ids = [key, ...key.getSubkeys()].map((k) => k.getKeyID().toHex().toUpperCase());
+    const idx = results.findIndex((r, i) => !used.has(i) && ids.includes(r.keyHex));
+    const uid = key.getUserIDs()[0] ?? '';
+    if (idx < 0) {
+      signers.push({ fingerprint: fpr, userID: uid, registered: true, state: 'fail', detail: 'No signature from this registered owner.' });
+      continue;
+    }
+    used.add(idx);
+    const r = results[idx];
+    signers.push({
+      fingerprint: fpr,
+      userID: uid,
+      registered: true,
+      state: r.ok ? 'pass' : 'fail',
+      signedAt: r.signedAt,
+      detail: r.ok ? 'Valid signature over the text below.' : `Signature does not verify: ${r.why}`,
+    });
+  }
+  results.forEach((r, i) => {
+    if (used.has(i)) return;
+    const listed = d.fingerprints.find((f) => f.endsWith(r.keyHex));
+    signers.push({
+      fingerprint: listed ?? r.keyHex,
+      userID: '',
+      registered: false,
+      state: 'fail',
+      signedAt: r.signedAt,
+      detail: 'Signed by a key that is not registered for this parcel.',
+    });
   });
+
+  for (const s of signers) {
+    checks.push({
+      label: s.registered ? `Signed by ${s.userID || 'registered owner'}` : 'Unregistered signer',
+      state: s.state,
+      detail: `${formatFingerprint(s.fingerprint)}: ${s.detail}`,
+    });
+  }
+  if (!reg.keys.length) checks.push({ label: 'Registered keys', state: 'fail', detail: 'No registered key was loaded for the parcel.' });
+
+  const valid = signers.filter((s) => s.state === 'pass').length;
+  if (valid > 1) {
+    checks.push({
+      label: 'Same text for every signer',
+      state: signers.every((s) => s.state === 'pass') ? 'pass' : 'fail',
+      detail: `${valid} owners signed exactly the same text (document ID ${d.documentId}).`,
+    });
+  }
+  if (reg.parcel) {
+    const inText = parcelKey(d.canonical).includes(parcelKey(reg.parcel));
+    checks.push({
+      label: 'Parcel number in the signed text',
+      state: inText ? 'pass' : 'fail',
+      detail: inText
+        ? `The signed text names parcel ${reg.parcel}.`
+        : `The signed text does not mention the registered parcel ${reg.parcel}. These signatures may belong to a document for a different property.`,
+    });
+  }
   const verdict: Verdict = checks.some((c) => c.state === 'fail') ? 'bad' : 'good';
-  return { verdict, checks, signedAt, documentId: d.documentId, signedText: d.canonical };
+  const first = signers.find((s) => s.signedAt)?.signedAt;
+  return { verdict, checks, signedAt: first, documentId: d.documentId, signedText: d.canonical, signers };
 }
 
 // ---------------------------------------------------------------------------
