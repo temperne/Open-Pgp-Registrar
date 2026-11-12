@@ -1,0 +1,52 @@
+Pima County S.T.O.P. Initiative (Stop Theft of Property) - Open PGP Registrar
+MIT License, with an express grant for government use
+
+Copyright (c) 2026 Jason Adam Jensen
+
+Project creator and grantor: Jason Adam Jensen
+Contact: jasonajensen@gmail.com
+Source code: https://github.com/temperne/Open-Pgp-Registrar
+
+Permission is hereby granted, free of charge, to any person or organization
+obtaining a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including without
+limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, host, operate and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following
+condition:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+GOVERNMENT USE. Without limiting the grant above, permission is expressly
+granted to every state, county, city, town, municipality, tribal government,
+special district, and other government body or agency, and to any contractor
+or vendor acting on its behalf, including without limitation Pima County,
+Arizona, the Pima County Recorder, and the State of Arizona, to use, copy,
+modify, rebrand, host and operate the Software, and to provide it to the public
+and to their residents, with or without charge, for the purpose of offering
+this solution or for any other purpose. No fee, registration, notice to the
+grantor, or further permission is required.
+
+NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT,
+ALL OF WHICH ARE EXPRESSLY DISCLAIMED. THE SOFTWARE, INCLUDING ITS DOCUMENT
+TEMPLATES AND DOCUMENTATION, IS NOT LEGAL ADVICE.
+
+NO LIABILITY. IN NO EVENT SHALL THE AUTHOR, GRANTOR OR COPYRIGHT HOLDER BE
+LIABLE FOR ANY CLAIM, DAMAGES, LOSS OF PROPERTY OR TITLE, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ANYONE WHO USES, HOSTS OR PROVIDES THE SOFTWARE DOES SO AT THEIR OWN RISK.
+
+THIRD-PARTY COMPONENTS. The built application includes the following libraries,
+each under its own license, which continues to apply to that library:
+  - OpenPGP.js: GNU LGPL-3.0-or-later (https://github.com/openpgpjs/openpgpjs).
+    Its source is available there, and this project can be rebuilt with a
+    modified copy of it from the source code above.
+  - PDF.js (pdfjs-dist): Apache-2.0 (https://github.com/mozilla/pdf.js)
+  - jsQR: Apache-2.0 (https://github.com/cozmo/jsQR)
+  - pdf-lib: MIT (https://github.com/Hopding/pdf-lib)
+  - node-qrcode: MIT (https://github.com/soldair/node-qrcode)
+  - JsBarcode: MIT (https://github.com/lindell/JsBarcode)

@@ -1,9 +1,26 @@
 // Printable PDFs: the key registration form (Exhibit A), the signature
 // verification page for a signed instrument (Exhibit B), and an optional paper
 // backup of the private key. All drawing is vector; nothing is rasterized.
-import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb, type RGB } from 'pdf-lib';
+import {
+  PDFDocument,
+  PDFFont,
+  PDFPage,
+  StandardFonts,
+  rgb,
+  PDFName,
+  PDFDict,
+  PDFArray,
+  PDFString,
+  PDFHexString,
+  PDFRawStream,
+  PDFImage,
+  decodePDFRawStream,
+  type RGB,
+} from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
 import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX } from './crypto';
+import { safeText } from './text';
+import { BRAND, brandLine } from './brand';
 
 const PAGE_W = 612; // US Letter
 const PAGE_H = 792;
@@ -21,31 +38,42 @@ interface Fonts {
   reg: PDFFont;
   bold: PDFFont;
   mono: PDFFont;
+  /** Program seal/logo, when one has been provided. */
+  seal?: PDFImage;
+}
+
+/**
+ * The seal image comes from the website (embedded in index.html), so there is
+ * one copy to update. Set once at startup with setBrandSeal().
+ */
+let sealBytes: Uint8Array | null = null;
+export function setBrandSeal(bytes: Uint8Array | null) {
+  sealBytes = bytes;
 }
 
 async function newDoc(title: string) {
   const doc = await PDFDocument.create();
   doc.setTitle(title);
-  doc.setProducer('Open PGP Registrar');
-  doc.setCreator('Open PGP Registrar');
+  doc.setProducer(BRAND.name);
+  doc.setCreator(BRAND.name);
+  doc.setSubject(`${BRAND.name} (${BRAND.expansion})`);
   const fonts: Fonts = {
     reg: await doc.embedFont(StandardFonts.Helvetica),
     bold: await doc.embedFont(StandardFonts.HelveticaBold),
     mono: await doc.embedFont(StandardFonts.Courier),
   };
+  if (sealBytes) {
+    try {
+      const isPng = sealBytes[0] === 0x89 && sealBytes[1] === 0x50;
+      fonts.seal = isPng ? await doc.embedPng(sealBytes) : await doc.embedJpg(sealBytes);
+    } catch {
+      /* unreadable image: PDFs are still made, without the seal */
+    }
+  }
   return { doc, fonts };
 }
 
-/** Standard PDF fonts only cover WinAnsi; replace anything else so drawing never throws. */
-export function safeText(s: string) {
-  return s
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[–—]/g, '-')
-    .replace(/…/g, '...')
-    .replace(/\t/g, ' ')
-    .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '?');
-}
+export { safeText };
 
 function wrap(text: string, font: PDFFont, size: number, width: number): string[] {
   const out: string[] = [];
@@ -148,18 +176,29 @@ function drawCode128(page: PDFPage, value: string, x: number, yBottom: number, m
 }
 
 function footer(page: PDFPage, fonts: Fonts, left: string, pageNo: number, pages: number) {
-  rule(page, 44);
-  page.drawText(safeText(left), { x: M, y: 32, size: 7.5, font: fonts.reg, color: MUTED });
+  rule(page, 46);
+  page.drawText(safeText(left), { x: M, y: 35, size: 7.5, font: fonts.reg, color: MUTED });
   const right = `Page ${pageNo} of ${pages}`;
-  page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 32, size: 7.5, font: fonts.reg, color: MUTED });
+  page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 35, size: 7.5, font: fonts.reg, color: MUTED });
+  // Program line: name, web address, and the "proposed" notice while it applies.
+  const brand = wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)[0];
+  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'proposed' ? WARN : MUTED });
+}
+
+/** Seal at the top-right corner of a page. Returns the width it takes. */
+function sealCorner(page: PDFPage, fonts: Fonts, size = 58) {
+  if (!fonts.seal) return 0;
+  page.drawImage(fonts.seal, { x: PAGE_W - M - size, y: PAGE_H - M - size + 10, width: size, height: size });
+  return size + 12;
 }
 
 function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string) {
+  const width = CONTENT_W - sealCorner(page, fonts);
   let y = PAGE_H - M;
-  y = text(page, fonts, kicker.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT });
-  y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold });
-  if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED });
-  return y - 10;
+  y = text(page, fonts, `${BRAND.name}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
+  y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold, width });
+  if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED, width });
+  return Math.min(y - 10, fonts.seal ? PAGE_H - M - 58 : y - 10);
 }
 
 interface Row {
@@ -224,6 +263,12 @@ export interface RegistrationInfo {
 export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Array> {
   const { doc, fonts } = await newDoc('Owner Public Key Registration');
   const fpr = info.fingerprint.toUpperCase();
+  // The Recorder's tool can read the key straight from this PDF.
+  await doc.attach(new TextEncoder().encode(info.publicArmored), PUBLIC_KEY_ATTACHMENT, {
+    mimeType: 'application/pgp-keys',
+    description: 'OpenPGP public key being registered',
+    creationDate: info.created,
+  });
   const foot = `Owner key registration  |  Fingerprint ${formatFingerprint(fpr)}`;
 
   // ---- Page 1: the form ----
@@ -530,10 +575,10 @@ export async function printCopyPdf(original: Uint8Array, info: SignaturePageInfo
 }
 
 // ---------------------------------------------------------------------------
-// Private key paper backup
+// Private key PDF
 // ---------------------------------------------------------------------------
 
-export interface BackupInfo {
+export interface PrivateKeyInfo {
   fingerprint: string;
   userID: string;
   created: Date;
@@ -541,16 +586,34 @@ export interface BackupInfo {
   privateArmored: string;
 }
 
-export async function privateKeyBackupPdf(info: BackupInfo): Promise<Uint8Array> {
-  const { doc, fonts } = await newDoc('Private key paper backup');
+export const PRIVATE_KEY_ATTACHMENT = 'private-key.asc';
+export const PUBLIC_KEY_ATTACHMENT = 'public-key.asc';
+
+/**
+ * The owner's private key as a PDF: printable (QR code and text) and loadable,
+ * because the key file is embedded in the PDF as an attachment.
+ */
+export async function privateKeyPdf(info: PrivateKeyInfo): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc('Private key - keep secret');
+  await doc.attach(new TextEncoder().encode(info.privateArmored), PRIVATE_KEY_ATTACHMENT, {
+    mimeType: 'application/pgp-keys',
+    description: 'OpenPGP private key (passphrase-protected)',
+    creationDate: info.created,
+  });
   const p = doc.addPage([PAGE_W, PAGE_H]);
-  let y = header(p, fonts, 'Keep secret  |  Do not file', 'Private Key Paper Backup', 'Store this page somewhere safe, such as a home safe or safe deposit box.');
+  let y = header(
+    p,
+    fonts,
+    'Keep secret  |  Do not file',
+    'Your Private Signing Key',
+    'Keep this PDF (and a printed copy) somewhere safe, such as a USB drive and a home safe. You need it to sign documents.',
+  );
   y = text(
     p,
     fonts,
     info.protectedByPassphrase
-      ? 'This key is protected by a passphrase, which is NOT printed here. Store the passphrase separately. Without it this backup cannot be used.'
-      : 'WARNING: this key has no passphrase. Anyone who gets this page can sign documents as you.',
+      ? 'This key is locked with your passphrase, which is NOT in this PDF. Store the passphrase separately. Without it the key cannot be used.'
+      : 'WARNING: this key has no passphrase. Anyone who gets this PDF or page can sign documents as you.',
     y,
     { size: 10, font: fonts.bold, color: WARN },
   );
@@ -565,36 +628,278 @@ export async function privateKeyBackupPdf(info: BackupInfo): Promise<Uint8Array>
     y - 10,
     CONTENT_W,
   );
+  const how =
+    `To sign later: open the ${BRAND.name} website (${BRAND.projectUrl}), choose "Use a key I already have", and pick this PDF ` +
+    '(the key file is embedded in it). From paper: scan this code with a phone, or type the text below into a file ' +
+    'named key.asc. GnuPG users can run gpg --import key.asc.';
   const qr = bestQr(info.privateArmored.trim());
   if (qr) {
     const s = 180;
     drawQr(p, qr, M, y - 14, s);
-    text(
-      p,
-      fonts,
-      'To restore: scan this code with a phone or type the text below into a file named key.asc. Then load it in this tool, ' +
-        'or run gpg --import key.asc.',
-      y - 14,
-      { x: M + s + 16, size: 9, color: MUTED, width: CONTENT_W - s - 16 },
-    );
+    text(p, fonts, how, y - 14, { x: M + s + 16, size: 9, color: MUTED, width: CONTENT_W - s - 16 });
     y -= s + 24;
   } else {
-    y = text(p, fonts, 'To restore: type the text below into a file named key.asc, then load it in this tool or run gpg --import key.asc.', y - 12, {
-      size: 9,
-      color: MUTED,
-    });
+    y = text(p, fonts, how, y - 12, { size: 9, color: MUTED });
     y -= 8;
   }
   let page = p;
   for (const line of info.privateArmored.trim().split(/\r?\n/)) {
     if (y < 64) {
       page = doc.addPage([PAGE_W, PAGE_H]);
-      y = header(page, fonts, 'Keep secret  |  Do not file', 'Private Key Paper Backup (continued)');
+      y = header(page, fonts, 'Keep secret  |  Do not file', 'Your Private Signing Key (continued)');
     }
     page.drawText(safeText(line), { x: M, y: y - 8, size: 8, font: fonts.mono, color: INK });
     y -= 10;
   }
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, `PRIVATE KEY - KEEP SECRET  |  ${formatFingerprint(info.fingerprint)}`, i + 1, total));
+  return doc.save();
+}
+
+// ---------------------------------------------------------------------------
+// Reading keys back out of PDFs made by this tool
+// ---------------------------------------------------------------------------
+
+export function isPdfBytes(bytes: Uint8Array) {
+  return bytes.length > 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+}
+
+/** Lists files embedded in a PDF (the standard EmbeddedFiles name tree). */
+export async function pdfAttachments(bytes: Uint8Array): Promise<{ name: string; data: Uint8Array }[]> {
+  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+  const out: { name: string; data: Uint8Array }[] = [];
+  const walk = (node: PDFDict | undefined, depth: number) => {
+    if (!node || depth > 8) return;
+    const names = node.lookupMaybe(PDFName.of('Names'), PDFArray);
+    if (names) {
+      for (let i = 0; i + 1 < names.size(); i += 2) {
+        try {
+          const n = names.lookup(i) as PDFString | PDFHexString;
+          const spec = names.lookup(i + 1, PDFDict);
+          const ef = spec.lookup(PDFName.of('EF'), PDFDict);
+          const stream = ef.lookup(PDFName.of('F')) as PDFRawStream;
+          out.push({ name: n.decodeText(), data: decodePDFRawStream(stream).decode() });
+        } catch {
+          /* skip malformed entries */
+        }
+      }
+    }
+    const kids = node.lookupMaybe(PDFName.of('Kids'), PDFArray);
+    if (kids) for (let i = 0; i < kids.size(); i++) walk(kids.lookup(i, PDFDict), depth + 1);
+  };
+  const namesDict = doc.catalog.lookupMaybe(PDFName.of('Names'), PDFDict);
+  walk(namesDict?.lookupMaybe(PDFName.of('EmbeddedFiles'), PDFDict), 0);
+  return out;
+}
+
+/**
+ * Finds an OpenPGP key embedded in a PDF made by this tool: the private key PDF
+ * or the registration form (which carries the public key). Prefers a private key.
+ */
+export async function keyTextFromPdf(bytes: Uint8Array): Promise<string> {
+  let files: { name: string; data: Uint8Array }[];
+  try {
+    files = await pdfAttachments(bytes);
+  } catch {
+    throw new Error('That PDF could not be read.');
+  }
+  const texts = files.map((f) => new TextDecoder().decode(f.data));
+  const priv = texts.find((t) => t.includes('-----BEGIN PGP PRIVATE KEY BLOCK-----'));
+  const pub = texts.find((t) => t.includes('-----BEGIN PGP PUBLIC KEY BLOCK-----'));
+  const found = priv ?? pub;
+  if (!found) {
+    throw new Error(
+      'No key found in that PDF. Use the private key PDF or the registration form PDF made by this tool. ' +
+        'A scanned paper copy has no key file inside; scan its QR code with a phone and paste the text instead.',
+    );
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Signed instrument (paper workflow): the document text, signature lines,
+// notary block, and a final page of QR codes that carry the signed text and
+// the owner's signature.
+// ---------------------------------------------------------------------------
+
+export interface InstrumentInfo {
+  title: string;
+  /** The document text exactly as entered (line breaks kept for printing). */
+  text: string;
+  /** "When recorded, mail to" block. */
+  returnTo?: string;
+  /** Names for the wet-ink signature lines, one per line. */
+  signers?: string;
+  fingerprint: string;
+  userID: string;
+  signedAt: Date;
+  documentId: string;
+  codes: string[];
+}
+
+export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
+  const title = info.title.trim() || 'Instrument';
+  const { doc, fonts } = await newDoc(title);
+  const bodySize = 11;
+  const lead = 15.5;
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  const contentPages: PDFPage[] = [page];
+  const BOTTOM = 64;
+
+  // Recording area: the top 2 inches of page 1 stay clear for the Recorder.
+  const recTop = PAGE_H - 36;
+  if (info.returnTo?.trim()) {
+    let ry = text(page, fonts, 'When recorded, mail to:', recTop, { size: 8.5, font: fonts.bold, color: MUTED, width: 250 });
+    text(page, fonts, info.returnTo.trim(), ry - 2, { size: 9.5, width: 250, leading: 12 });
+  }
+  const recLabel = 'Space above this line for Recorder’s use';
+  rule(page, PAGE_H - 144, M, PAGE_W - M, RULE);
+  page.drawText(recLabel, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(recLabel, 7), y: PAGE_H - 152, size: 7, font: fonts.reg, color: MUTED });
+
+  let y = PAGE_H - 170;
+  const tw = fonts.bold.widthOfTextAtSize(safeText(title.toUpperCase()), 15);
+  page.drawText(safeText(title.toUpperCase()), { x: (PAGE_W - tw) / 2, y: y - 15, size: 15, font: fonts.bold, color: INK });
+  y -= 36;
+
+  const newPage = () => {
+    page = doc.addPage([PAGE_W, PAGE_H]);
+    contentPages.push(page);
+    y = PAGE_H - M;
+  };
+  const ensure = (h: number) => {
+    if (y - h < BOTTOM) newPage();
+  };
+
+  for (const line of wrap(info.text.replace(/\s+$/, ''), fonts.reg, bodySize, CONTENT_W)) {
+    ensure(lead);
+    if (line) page.drawText(line, { x: M, y: y - bodySize, size: bodySize, font: fonts.reg, color: INK });
+    y -= line ? lead : lead * 0.7;
+  }
+
+  // Wet-ink signature lines.
+  const signers = (info.signers ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!signers.length) signers.push('');
+  y -= 12;
+  for (const name of signers) {
+    ensure(52);
+    y -= 32;
+    rule(page, y, M, M + 300, INK);
+    rule(page, y, M + 330, PAGE_W - M, INK);
+    text(page, fonts, name ? `${name}` : 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
+    text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+    y -= 20;
+  }
+
+  // Notary acknowledgment (completed by the notary on paper; not part of the signed text).
+  ensure(150);
+  y -= 16;
+  const venue: [string, string][] = [
+    ['STATE OF ARIZONA', ')'],
+    ['', ') ss.'],
+    ['COUNTY OF ______________________', ')'],
+  ];
+  for (const [left, right] of venue) {
+    if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    y -= 13;
+  }
+  y = text(
+    page,
+    fonts,
+    'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
+      '______________________________________________________.',
+    y - 8,
+    { size: 10, width: CONTENT_W },
+  );
+  y -= 34;
+  rule(page, y, M, M + 260, INK);
+  rule(page, y, M + 330, PAGE_W - M, INK);
+  text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
+  text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
+  text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
+
+  // ---- Signature page(s): QR codes ----
+  let sp = doc.addPage([PAGE_W, PAGE_H]);
+  const sigPages = [sp];
+  y = header(sp, fonts, 'OpenPGP signature page', 'Owner’s Digital Signature', `For: ${title}`);
+  const tableTop = y;
+  y = table(
+    sp,
+    fonts,
+    [
+      { label: 'Signed by', value: info.userID },
+      { label: 'Signing key fingerprint', value: fingerprintTwoLines(info.fingerprint), mono: true },
+      { label: 'Signed at', value: isoDateTime(info.signedAt) },
+      { label: 'Document ID', value: info.documentId, mono: true },
+    ],
+    tableTop,
+    CONTENT_W - 190,
+    140,
+  );
+  // Document ID barcode beside the table.
+  const bx = PAGE_W - M - 175;
+  const moduleW = Math.min(0.8, 175 / (code128Bits(info.documentId).length + 20));
+  const bw = drawCode128(sp, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
+  const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
+  sp.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+
+  y = text(
+    sp,
+    fonts,
+    `This digital signature is an extra layer. It does not replace the owner\u2019s ink signature or the notary ` +
+      `acknowledgment on the document, which are still required. ` +
+      `To check: open the ${BRAND.name} website (${BRAND.projectUrl}), go to "Check a filing", load the key registered for the parcel, and scan ` +
+      `every code below, in any order. The tool shows the exact text the owner signed. Compare it with the pages of this ` +
+      `document. The signature covers every word, number and punctuation mark; capital letters, line breaks and spacing do not matter.`,
+    y - 12,
+    { size: 9 },
+  );
+  y -= 14;
+
+  const n = info.codes.length;
+  // Generous white space between codes keeps them easy to tell apart, for
+  // scanners and for the tool's own reader.
+  const perRow = 3;
+  const size = 120;
+  const gap = (CONTENT_W - perRow * size) / (perRow - 1);
+  for (let i = 0; i < n; i++) {
+    const col = i % perRow;
+    if (col === 0) {
+      if (y - (size + 30) < BOTTOM) {
+        sp = doc.addPage([PAGE_W, PAGE_H]);
+        sigPages.push(sp);
+        y = header(sp, fonts, 'OpenPGP signature page (continued)', 'Owner’s Digital Signature');
+      }
+    }
+    const x = M + col * (size + gap);
+    const qr = bestQr(info.codes[i])!;
+    drawQr(sp, qr, x, y, size);
+    const label = `Code ${i + 1} of ${n}`;
+    sp.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+    if (col === perRow - 1 || i === n - 1) y -= size + 62;
+  }
+
+  y = text(
+    sp,
+    fonts,
+    'Without this tool: the codes hold the signed text and a standard OpenPGP signature. The tool can save them as document.txt ' +
+      'and document.sig, which check with: gpg --verify document.sig document.txt',
+    y - 4,
+    { size: 8, color: MUTED },
+  );
+
+  const total = doc.getPageCount();
+  const firstSig = contentPages.length + 1;
+  doc.getPages().forEach((pg, i) =>
+    footer(
+      pg,
+      fonts,
+      i < contentPages.length
+        ? `Document ID ${info.documentId}  |  Owner's digital signature for this text: page ${firstSig}`
+        : `Document ID ${info.documentId}  |  ${n} signature code${n === 1 ? '' : 's'}`,
+      i + 1,
+      total,
+    ),
+  );
   return doc.save();
 }
