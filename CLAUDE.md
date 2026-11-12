@@ -32,8 +32,14 @@ gives counter staff a way to check a filing.
    Doe)": one key, every member signs in ink, notarized and officer-checked; the
    page warns that a shared key cannot prevent fraud between members); or
    *position* in a business, trust or other entity ("Doe Holdings LLC (position:
-   Secretary)": whoever holds the position signs, prints their name, and the
-   business authority verifies them with documentation). See `keyIdentity`,
+   Secretary; holder: Jane Doe)": the current holder is named on every signature
+   block, so the ink signature and the digital signature match, and the business
+   authority verifies them with documentation at registration). When the position
+   changes hands, the key tab makes a **position holder update**
+   (`signHolderUpdate`, `holderUpdatePdf`): signed with the same key, with a
+   signature line and notary acknowledgment for the new holder only, filed with the
+   registration. Signing loads holder updates, checks them against the registered
+   key, and names the newest holder. See `keyIdentity`,
    `signatoriesForKey`, `signerBlocksForKey`.
    Create an Ed25519 key, which must have a passphrase, or load an
    existing key. Loading accepts the private key PDF made by this tool, or an
@@ -52,7 +58,10 @@ gives counter staff a way to check a filing.
    replacement registration, owner, parcel, addresses, county, the key's type,
    creation date, user ID, fingerprint and fingerprint QR, the owner request, an
    owner signature line, two identity boxes (notary and law enforcement), the callback
-   rule and a "Recorder use only" box. **Everyone who signs the registration** (e.g.
+   rule and a "Recorder use only" box. **Every key is enumerated**: page 1 lists each
+   key (with a QR of all fingerprints), the key page has a code and the armored text
+   for every key, and the footer names every key. When the first signer's section
+   doesn't fit on page 1, every signer gets their own page. **Everyone who signs the registration** (e.g.
    both spouses sharing one key, a company's officers; "People signing this
    registration", one per line with an optional capacity) gets their own signature
    line, notary box, officer box and Recorder callback box: the first on page 1,
@@ -96,8 +105,8 @@ gives counter staff a way to check a filing.
    detached OpenPGP signatures, concatenated; codes carry
    `PGPDOC2|FPR1,FPR2|sigs|z|text` (one signer: `PGPDOC1`), split into `PGPQ1` codes of
    at most 320 characters. The printed instrument has a 2-inch recording margin, the
-   title and text, **ink signature lines and a notary acknowledgment for each signer
-   (still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
+   title and text, **one complete signature block per signer (signature line with
+   that signer's notary acknowledgment directly below; still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
    banner against the registration, the document ID barcode and the codes. The `.txt`
    and `.sig` files verify with stock `gpg` (it checks each signature). Signing a file
    byte for byte (`PGPSIG1`) remains for electronic filing (single signer).

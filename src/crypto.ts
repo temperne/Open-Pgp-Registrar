@@ -36,6 +36,8 @@ export interface KeyIdentity {
   name: string;
   /** For a position key: the position, e.g. "Secretary", "Trustee". */
   position?: string;
+  /** For a position key: who held the position when the key was made (see holder updates). */
+  holder?: string;
   /** For a group key: every person who must sign, e.g. a married couple. */
   members?: string[];
   email?: string;
@@ -43,6 +45,7 @@ export interface KeyIdentity {
 
 const POSITION_TAG = 'position: ';
 const GROUP_TAG = 'group: ';
+const HOLDER_TAG = 'holder: ';
 
 /** Splits "Name (comment) <email>" as stored in an OpenPGP user ID. */
 function parseUserID(uid: string) {
@@ -53,7 +56,12 @@ function parseUserID(uid: string) {
 export function keyIdentity(key: AnyKey): KeyIdentity {
   const { name, comment, email } = parseUserID(key.getUserIDs()[0] ?? '');
   const lc = comment.toLowerCase();
-  if (lc.startsWith(POSITION_TAG)) return { kind: 'position', name, position: comment.slice(POSITION_TAG.length).trim(), email: email || undefined };
+  if (lc.startsWith(POSITION_TAG)) {
+    const [position, ...rest] = comment.slice(POSITION_TAG.length).split(';');
+    const h = rest.join(';').trim();
+    const holder = h.toLowerCase().startsWith(HOLDER_TAG) ? h.slice(HOLDER_TAG.length).trim() : undefined;
+    return { kind: 'position', name, position: position.trim(), holder: holder || undefined, email: email || undefined };
+  }
   if (lc.startsWith(GROUP_TAG)) {
     const members = comment.slice(GROUP_TAG.length).split(';').map((x) => x.trim()).filter(Boolean);
     return { kind: 'group', name, members, email: email || undefined };
@@ -68,7 +76,15 @@ export function describeKey(key: AnyKey) {
   return id.name;
 }
 
-export async function generateKeyPair(opts: { name: string; email?: string; passphrase: string; position?: string; members?: string[] }) {
+export async function generateKeyPair(opts: {
+  name: string;
+  email?: string;
+  passphrase: string;
+  position?: string;
+  /** For a position key: the person who holds the position now. */
+  holder?: string;
+  members?: string[];
+}) {
   const members = (opts.members ?? []).map((x) => x.trim()).filter(Boolean);
   if (opts.members !== undefined) {
     if (members.length < 2) throw new Error('A group key needs at least two people. Enter one name per line.');
@@ -80,7 +96,10 @@ export async function generateKeyPair(opts: { name: string; email?: string; pass
   if (/[()<>]/.test(name) || /[()<>]/.test(opts.position ?? '')) throw new Error('Names cannot contain ( ) < or >.');
   const userID: { name: string; email?: string; comment?: string } = { name };
   if (opts.email?.trim()) userID.email = opts.email.trim();
-  if (opts.position?.trim()) userID.comment = `${POSITION_TAG}${opts.position.trim()}`;
+  if (opts.position !== undefined && /[;()<>]/.test(`${opts.position}${opts.holder ?? ''}`)) throw new Error('Names cannot contain ; ( ) < or >.');
+  if (opts.position?.trim()) {
+    userID.comment = `${POSITION_TAG}${opts.position.trim()}${opts.holder?.trim() ? `; ${HOLDER_TAG}${opts.holder.trim()}` : ''}`;
+  }
   if (opts.members !== undefined) userID.comment = `${GROUP_TAG}${members.join('; ')}`;
   const { privateKey, publicKey } = await openpgp.generateKey({
     // v4 Ed25519 keys: widely supported by GnuPG and other OpenPGP software.
@@ -1001,4 +1020,45 @@ export function orderedCodes(scanned: string): string[] {
   return [...byIndex.values()]
     .sort((a, b) => a.index - b.index)
     .map((p) => `${PART_PREFIX}|${p.group}|${p.index}/${p.total}|${p.chunk}`);
+}
+
+// ---------------------------------------------------------------------------
+// Position holder updates
+//
+// A position key (e.g. the Secretary of a company) records who held the
+// position when it was made. When someone else takes over, they sign a short
+// holder update with the same key; it is notarized and filed with the
+// registration, and from then on documents name the new holder.
+// ---------------------------------------------------------------------------
+export interface HolderUpdate {
+  fingerprint: string;
+  holder: string;
+  /** Effective date, YYYY-MM-DD. */
+  effective: string;
+  signed: SignedText;
+}
+
+export function holderUpdateStatement(key: AnyKey, holder: string, effective: string) {
+  const id = keyIdentity(key);
+  return [
+    'S.T.O.P. POSITION HOLDER UPDATE.',
+    `KEY: ${key.getFingerprint().toUpperCase()} ${describeKey(key)}.`,
+    `FROM ${effective}, THIS KEY IS HELD AND SIGNED BY ${holder.trim()}, AS ${id.position} OF ${id.name}.`,
+  ].join('\n');
+}
+
+export async function signHolderUpdate(key: openpgp.PrivateKey, holder: string, effective: string): Promise<HolderUpdate> {
+  if (keyIdentity(key).kind !== 'position') throw new Error('Only a position key (e.g. a company secretary\u2019s key) has a holder to update.');
+  if (!holder.trim()) throw new Error('Enter the new holder\u2019s full name.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effective)) throw new Error('Enter the effective date.');
+  const signed = await signText(key, holderUpdateStatement(key, holder, effective));
+  return { fingerprint: key.getFingerprint().toUpperCase(), holder: holder.trim(), effective, signed };
+}
+
+/** Checks a holder update was signed by the given (registered) key, for exactly this holder and date. */
+export async function checkHolderUpdate(update: HolderUpdate, key: AnyKey) {
+  if (key.getFingerprint().toUpperCase() !== update.fingerprint.toUpperCase()) return false;
+  if (update.signed.canonical !== canonicalText(holderUpdateStatement(key, update.holder, update.effective))) return false;
+  const r = await verifyScannedText({ scanned: update.signed.codes.join('\n'), registration: { parcel: '', keys: [key.toPublic()] } });
+  return r.verdict === 'good';
 }

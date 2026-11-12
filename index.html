@@ -225,6 +225,19 @@
               The private key PDF is what you keep. Print it for your safe and save the file on a USB drive. To sign
               later, load that PDF here and enter your passphrase.
             </p>
+            <div id="holder-update" class="subcard" hidden>
+              <h3>Update the position holder</h3>
+              <p class="hint">
+                Someone new holds this position? They sign this update with the key, sign it in ink before a notary, and
+                file it with the registration. Documents signed with this key will then name them.
+              </p>
+              <div class="grid2 tight">
+                <div><label for="hu-name">New holder's full name</label><input id="hu-name" /></div>
+                <div><label for="hu-date">Effective date</label><input id="hu-date" type="date" /></div>
+              </div>
+              <button type="button" id="hu-btn">Sign and download the holder update (PDF)</button>
+              <p class="error" data-error role="alert"></p>
+            </div>
             <details class="advanced">
               <summary>For GnuPG users: download as .asc text files</summary>
               <div class="actions">
@@ -260,6 +273,9 @@
             <div id="gen-position-wrap" hidden>
               <label for="gen-position">Position that signs with this key</label>
               <input id="gen-position" placeholder="e.g. Secretary, President, Manager, Trustee" />
+              <label for="gen-holder">Who holds the position now</label>
+              <input id="gen-holder" placeholder="Full name" />
+              <p class="hint">If someone else takes over the position later, they sign a short holder update with this key and file it with the registration.</p>
             </div>
             <p class="hint" id="gen-kind-hint">
               The key records who signs with it. Every registration and document that uses the key prints this person's
@@ -397,6 +413,12 @@
               <input id="s-reg-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Registration form" />
               <select id="s-reg-parcel" hidden aria-label="Parcel"></select>
               <p id="s-reg-info" class="hint" role="status"></p>
+            </div>
+            <div class="subcard">
+              <h3>Position holder updates <span class="opt">(if any)</span></h3>
+              <p class="hint">If a position key (such as a company secretary's) has a new holder, load the holder update filed with the registration. Their name then goes on the signature block.</p>
+              <input id="s-holder-file" type="file" multiple accept=".pdf,application/pdf" aria-label="Holder updates" />
+              <p id="s-holder-info" class="hint" role="status"></p>
             </div>
             <div class="subcard">
               <h3>Sign exactly as others</h3>

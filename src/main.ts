@@ -25,6 +25,8 @@ import {
   keyIdentity,
   signRegistration,
   checkRegistrationProof,
+  signHolderUpdate,
+  checkHolderUpdate,
   registrationStatement,
   parsePayload,
   toBase64,
@@ -49,6 +51,8 @@ import {
   certificatePdf,
   signerBlocksForKey,
   registrationDraftFromPdf,
+  holderUpdatePdf,
+  holderUpdateFromPdf,
   proofFromSigs,
   type RegistrationDraft,
   publicKeyCardPdf,
@@ -89,13 +93,15 @@ interface State {
    * The registration being signed by its key holders (proof of key possession).
    * Kept when keys are switched, so several holders can sign on one computer.
    */
+  /** Current holder of each position key, from verified holder updates (by fingerprint). */
+  holders: Map<string, { holder: string; effective: string }>;
   regDraft: {
     keys: openpgp.PublicKey[];
     parcels: string[];
     proofs: Record<string, SignedText>;
   } | null;
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -290,7 +296,7 @@ function refresh() {
     const id = keyIdentity(k);
     $('key-uid').textContent =
       id.kind === 'position'
-        ? `Whoever holds the position: ${describeKey(k)}`
+        ? `${describeKey(k)}, held by ${state.holders.get(s.fingerprint)?.holder ?? id.holder ?? '(holder not recorded)'}`
         : id.kind === 'group'
           ? `A group; all must sign: ${(id.members ?? []).join(', ')}`
           : `${describeKey(k)} (individual)`;
@@ -308,6 +314,7 @@ function refresh() {
       status.className = 'pill';
     }
     $('unlock-form').hidden = !s.hasPrivate || !!state.signer;
+    $('holder-update').hidden = !(state.signer && id.kind === 'position');
     $('save-warning').hidden = !state.unsaved;
     $('nopass-warning').hidden = !isUnprotected(k);
     $('dl-private').hidden = !state.privateArmored;
@@ -394,6 +401,7 @@ action(
       email: input('gen-email').value,
       passphrase: pass,
       position: position ? input('gen-position').value : undefined,
+      holder: position ? input('gen-holder').value : undefined,
       members: group ? textarea('gen-members').value.split('\n') : undefined,
     });
     const key = (await readAnyKey(privateArmored)) as openpgp.PrivateKey;
@@ -471,6 +479,18 @@ action('dl-public-asc', () => {
   const s = summarize(state.key);
   download(s.publicArmored, `public-key-${shortFpr(s.fingerprint)}.asc`, 'application/pgp-keys');
 });
+
+input('hu-date').value = new Date().toISOString().slice(0, 10);
+action(
+  'hu-btn',
+  async () => {
+    if (!state.signer) return;
+    const update = await signHolderUpdate(state.signer, input('hu-name').value, input('hu-date').value);
+    const pdf = await holderUpdatePdf(state.signer.toPublic(), update);
+    download(pdf, `holder-update-${shortFpr(update.fingerprint)}-${update.effective}.pdf`, 'application/pdf');
+  },
+  'Signing...',
+);
 
 $('gen-kind').addEventListener('change', () => {
   const kind = $<HTMLSelectElement>('gen-kind').value;
@@ -648,6 +668,9 @@ action(
       state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {} };
     }
     const d = state.regDraft;
+    if (!d.keys.some((k) => k.getFingerprint().toUpperCase() === state.signer!.getFingerprint().toUpperCase())) {
+      throw new UserError('Your key is not on this registration. Load one of its listed keys, or choose "Start over" above to begin a new registration.');
+    }
     for (const parcel of d.parcels) {
       d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel] });
     }
@@ -1051,8 +1074,39 @@ function showAutoSigners() {
   $('doc-signers-auto').hidden = !auto;
   const list = $('doc-signers-list');
   list.innerHTML = '';
-  for (const k of state.signReg?.keys ?? []) list.append(keyItem(k, undefined, keyLabel(state.signReg, k.getFingerprint())));
+  for (const k of state.signReg?.keys ?? []) {
+    const blocks = signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder);
+    const li = keyItem(k, undefined, keyLabel(state.signReg, k.getFingerprint()));
+    li.append(Object.assign(document.createElement('span'), { textContent: `Signs: ${blocks.map((b) => b.caption).join('; ')}` }));
+    list.append(li);
+  }
 }
+
+input('s-holder-file').addEventListener('change', async () => {
+  const files = [...(input('s-holder-file').files ?? [])];
+  const info = $('s-holder-info');
+  info.className = 'hint';
+  info.textContent = '';
+  try {
+    for (const f of files) {
+      const got = await holderUpdateFromPdf(new Uint8Array(await f.arrayBuffer()));
+      if (!got) throw new Error(`${f.name}: not a holder update made by this tool.`);
+      const registered = state.signReg?.keys.find((k) => k.getFingerprint().toUpperCase() === got.update.fingerprint.toUpperCase());
+      if (state.signReg && !registered) throw new Error(`${f.name}: that key is not registered for this parcel.`);
+      if (!(await checkHolderUpdate(got.update, registered ?? got.key))) throw new Error(`${f.name}: the update's signature does not verify. Do not use it.`);
+      const prev = state.holders.get(got.update.fingerprint);
+      if (!prev || prev.effective <= got.update.effective) state.holders.set(got.update.fingerprint, { holder: got.update.holder, effective: got.update.effective });
+    }
+    info.className = 'hint ok';
+    info.textContent = [...state.holders.values()].map((h) => `${h.holder} (from ${h.effective})`).join('; ') + '. Signature blocks updated.';
+    showAutoSigners();
+  } catch (err) {
+    info.className = 'hint error';
+    info.textContent = (err as Error).message;
+  } finally {
+    input('s-holder-file').value = '';
+  }
+});
 
 function useSignRegistration(regs: Registration[]) {
   const sel = $<HTMLSelectElement>('s-reg-parcel');
@@ -1204,7 +1258,9 @@ async function downloadInstrument() {
   const d = state.draft;
   if (!d) return;
   const pdf = await instrumentPdf({
-    signerBlocks: state.signReg ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k)) : undefined,
+    signerBlocks: state.signReg
+      ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
+      : undefined,
     title: d.title,
     text: d.text,
     returnTo: textarea('doc-return').value,

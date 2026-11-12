@@ -30,8 +30,10 @@ import {
   registrationStatement,
   assembleSigned,
   fromBase64,
+  holderUpdateStatement,
   type Registration,
   type SignedText,
+  type HolderUpdate,
 } from './crypto';
 import { canonicalText } from './text';
 import type * as openpgp from 'openpgp';
@@ -373,12 +375,20 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
     });
     const before = doc.getPageCount();
     await drawRegistration(doc, fonts, info, parcel, keys, labels, proof);
-    const label = `Registration for parcel ${parcel || '(not given)'}  |  Registrant ${formatFingerprint(fpr)}`;
+    const label = `Registration for parcel ${parcel || '(not given)'}  |  ${keys.length} key${keys.length > 1 ? 's' : ''}: ${keys
+      .map((k) => k.getFingerprint().toUpperCase().slice(-8))
+      .join(', ')}`;
     for (let i = before; i < doc.getPageCount(); i++) footers[i] = label;
   }
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, footers[i] ?? '', i + 1, total));
   return doc.save();
+}
+
+/** " (whoever holds the position)" or " (all members sign)" for keys that need it. */
+function keyRole(k: openpgp.PublicKey | openpgp.PrivateKey) {
+  const kind = keyIdentity(k).kind;
+  return kind === 'position' ? ' (position)' : kind === 'group' ? ' (group: all members sign)' : '';
 }
 
 /** Who signs for one key: an individual, or whoever holds a position in an entity. */
@@ -396,7 +406,7 @@ export interface Signatory {
 export function signatoriesForKey(key: openpgp.PublicKey | openpgp.PrivateKey): Signatory[] {
   const id = keyIdentity(key);
   const fingerprint = key.getFingerprint().toUpperCase();
-  if (id.kind === 'position') return [{ kind: 'entity', name: '', entity: id.name, title: id.position, fingerprint }];
+  if (id.kind === 'position') return [{ kind: 'entity', name: id.holder ?? '', entity: id.name, title: id.position, fingerprint }];
   if (id.kind === 'group') return (id.members ?? []).map((m) => ({ kind: 'individual' as const, name: m, fingerprint }));
   return [{ kind: 'individual', name: id.name, fingerprint }];
 }
@@ -554,13 +564,22 @@ async function drawRegistration(
     { label: 'Registration fee', value: '$0.00 (no charge)' },
     { label: 'Owner(s) of record', value: info.ownerName },
     { label: 'Parcel number', value: parcel },
-    { label: 'Property address', value: info.propertyAddress ?? '' },
-    { label: 'Mailing address', value: info.mailingAddress ?? '' },
-    { label: 'Key type', value: info.algorithm },
-    { label: 'Key created', value: isoDate(info.created) },
-    { label: 'Key user ID', value: info.userID },
-    { label: 'Key fingerprint', value: fingerprintTwoLines(fpr), mono: true },
   ];
+  // Addresses only when given, to leave room for every key.
+  if (info.propertyAddress?.trim()) rows.push({ label: 'Property address', value: info.propertyAddress.trim() });
+  if (info.mailingAddress?.trim()) rows.push({ label: 'Mailing address', value: info.mailingAddress.trim() });
+  // Every key registered for the parcel (all must sign). Long lists continue on the key page.
+  const shown = keys.length <= 3 ? keys : keys.slice(0, 2);
+  shown.forEach((k, i) => {
+    rows.push({
+      label: keys.length > 1 ? `Key ${i + 1} of ${keys.length}` : 'Key',
+      value: `${describeKey(k)}${keyRole(k)}\n${fingerprintTwoLines(k.getFingerprint().toUpperCase())}`,
+      mono: false,
+    });
+  });
+  if (shown.length < keys.length) {
+    rows.push({ label: `Keys ${shown.length + 1}-${keys.length}`, value: 'Listed with fingerprints on the key page.' });
+  }
   if (info.replacement) {
     rows.push({
       label: 'Previous key (retire)',
@@ -571,33 +590,55 @@ async function drawRegistration(
   const tableTop = y;
   y = table(p, fonts, rows, y, tableW);
 
-  const fprQr = bestQr(fpr)!;
+  const fprQr = bestQr(keys.map((k) => k.getFingerprint().toUpperCase()).join(','))!;
   const qx = PAGE_W - M - qrSize;
   drawQr(p, fprQr, qx, tableTop - 4, qrSize);
-  text(p, fonts, 'Scan: key fingerprint', tableTop - qrSize - 10, { x: qx, size: 7.5, color: MUTED, width: qrSize });
+  text(p, fonts, keys.length > 1 ? `Scan: fingerprints of all ${keys.length} keys` : 'Scan: key fingerprint', tableTop - qrSize - 10, {
+    x: qx,
+    size: 7.5,
+    color: MUTED,
+    width: qrSize,
+  });
 
   y = text(p, fonts, 'Owner request', y - 12, { size: 10, font: fonts.bold });
   y = text(
     p,
     fonts,
     (signatoriesOf(info, keys).length > 1
-      ? `We, the undersigned holders of the keys for this parcel, are owners of record of the parcel above or sign for one in the capacity shown. We ask the Recorder to file the public key with the fingerprint shown `
-      : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the public key with the fingerprint shown `) +
-      `${keys.length > 1 ? `and the ${keys.length - 1} other key${keys.length > 2 ? 's' : ''} listed on the key page ` : '(listed on the key page) '}against this parcel, and to hold for investigation, rather than record in the ` +
+      ? `We, the undersigned holders of the keys for this parcel, are owners of record of the parcel above or sign for one in the capacity shown. We ask the Recorder to file the ${keys.length > 1 ? `${keys.length} public keys listed above` : 'public key listed above'} `
+      : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the ${keys.length > 1 ? `${keys.length} public keys listed above` : 'public key listed above'} `) +
+      `against this parcel, and to hold for investigation, rather than record in the ` +
       'ordinary course, any instrument affecting it that does not carry a valid signature from every key listed.',
     y - 3,
     { size: 9.5 },
   );
 
   const signers = signatoriesOf(info, keys);
-  signAndVerify(p, fonts, y - 28, signers[0], signers.length > 1 ? `Signer 1 of ${signers.length}` : '', [
-    'Callback confirmed by / date',
-    'Key activated (date)',
-    'Recording no.',
-  ]);
+  // The first signer's section goes on page 1 when it fits; otherwise every signer gets their own page.
+  const fitsOnPage1 = y - 28 - 312 > 56;
+  if (fitsOnPage1) {
+    signAndVerify(p, fonts, y - 28, signers[0], signers.length > 1 ? `Signer 1 of ${signers.length}` : '', [
+      'Callback confirmed by / date',
+      'Key activated (date)',
+      'Recording no.',
+    ]);
+  } else {
+    y = text(p, fonts, `Each of the ${signers.length} signers signs on their own page, which follows.`, y - 10, { size: 9.5, font: fonts.bold });
+    y -= 12;
+    const recH = 52;
+    box(p, M, y, CONTENT_W, recH, INK);
+    text(p, fonts, 'RECORDER USE ONLY', y - 6, { x: M + 8, size: 7.5, font: fonts.bold, color: MUTED });
+    const fields = ['Every signer verified (initials)', 'Keys activated (date)', 'Recording no.'];
+    const fw = (CONTENT_W - 16 - 2 * 12) / 3;
+    fields.forEach((label, i) => {
+      const fx = M + 8 + i * (fw + 12);
+      rule(p, y - recH + 16, fx, fx + fw, INK);
+      text(p, fonts, label, y - recH + 13, { x: fx, size: 7, color: MUTED, width: fw });
+    });
+  }
 
-  // ---- One page per additional person signing this registration ----
-  for (let i = 1; i < signers.length; i++) {
+  // ---- One page per further person signing this registration ----
+  for (let i = fitsOnPage1 ? 1 : 0; i < signers.length; i++) {
     const sp = doc.addPage([PAGE_W, PAGE_H]);
     let sy = header(
       sp,
@@ -674,7 +715,7 @@ async function drawRegistration(
   y -= 12;
   const all = [
     ...regCodes.map((c, i) => ({ code: c, label: `Parcel key list ${i + 1} of ${regCodes.length}` })),
-    { code: `${PUBKEY_QR_PREFIX}|${toBase64(info.publicKeyBinary)}`, label: 'This registrant\u2019s key' },
+    ...keys.map((k, i) => ({ code: `${PUBKEY_QR_PREFIX}|${toBase64(k.toPublic().write())}`, label: `Key ${i + 1}: ${describeKey(k)}` })),
   ];
   all.forEach(({ code, label }, i) => {
     const col = i % perRow;
@@ -682,7 +723,8 @@ async function drawRegistration(
     const x = M + col * (size + gap);
     const qr = bestQr(code);
     if (qr) drawQr(page, qr, x, y, size);
-    page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8)) / 2, y: y - size - 12, size: 8, font: fonts.bold, color: MUTED });
+    const shortLabel = wrap(label, fonts.bold, 8, size + 20)[0];
+    page.drawText(shortLabel, { x: x + (size - fonts.bold.widthOfTextAtSize(shortLabel, 8)) / 2, y: y - size - 12, size: 8, font: fonts.bold, color: MUTED });
     if (col === perRow - 1 || i === all.length - 1) y -= size + 50;
   });
 
@@ -725,16 +767,19 @@ async function drawRegistration(
     }
   }
 
-  // This registrant's key as text.
-  ensure(40);
-  y = text(page, fonts, 'This registrant\u2019s public key', y + 10, { size: 9, font: fonts.bold });
+  // Every key as text.
   const monoSize = 8;
   const lead = monoSize * 1.25;
-  for (const line of info.publicArmored.trim().split(/\r?\n/)) {
-    ensure(lead);
-    page.drawText(safeText(line), { x: M, y: y - monoSize, size: monoSize, font: fonts.mono, color: INK });
-    y -= lead;
-  }
+  keys.forEach((k, i) => {
+    ensure(40);
+    y = text(page, fonts, `Key ${i + 1} of ${keys.length}: ${describeKey(k)}${keyRole(k)}`, y + 10, { size: 9, font: fonts.bold });
+    for (const line of k.toPublic().armor().trim().split(/\r?\n/)) {
+      ensure(lead);
+      page.drawText(safeText(line), { x: M, y: y - monoSize, size: monoSize, font: fonts.mono, color: INK });
+      y -= lead;
+    }
+    y -= 14;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,10 +1094,17 @@ export interface InstrumentInfo {
 }
 
 /** Signature lines and acknowledgment wording for a key, from its identity (a group key: one per member). */
-export function signerBlocksForKey(key: openpgp.PublicKey | openpgp.PrivateKey): { caption: string; ack: string; printedName?: boolean }[] {
+export function signerBlocksForKey(
+  key: openpgp.PublicKey | openpgp.PrivateKey,
+  /** Current holder of a position key, from the latest holder update. */
+  holderOverride?: string,
+): { caption: string; ack: string; printedName?: boolean }[] {
   const id = keyIdentity(key);
   if (id.kind === 'position') {
-    return [{ caption: `${id.position} of ${id.name}`, ack: `____________________________, as ${id.position} of ${id.name}`, printedName: true }];
+    const holder = holderOverride ?? id.holder;
+    return holder
+      ? [{ caption: `${holder}, ${id.position} of ${id.name}`, ack: `${holder}, as ${id.position} of ${id.name}` }]
+      : [{ caption: `${id.position} of ${id.name}`, ack: `____________________________, as ${id.position} of ${id.name}`, printedName: true }];
   }
   if (id.kind === 'group') return (id.members ?? []).map((m) => ({ caption: m, ack: m }));
   return [{ caption: id.name, ack: id.name }];
@@ -1131,10 +1183,18 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
           .filter(Boolean)
           .map((x) => ({ caption: x, ack: x, printedName: false }));
   if (!blocks.length) blocks.push({ caption: '', ack: '', printedName: false });
-  y -= 12;
-  for (const b of blocks) {
-    ensure(52);
-    y -= 32;
+
+  // One complete signature block per signer: signature line, then that signer's
+  // notary acknowledgment (completed on paper; not part of the signed text).
+  // Owners may sign at different times before different notaries.
+  blocks.forEach((b, i) => {
+    ensure(205);
+    y -= i ? 22 : 12;
+    if (blocks.length > 1) {
+      page.drawText(`SIGNER ${i + 1} OF ${blocks.length}`, { x: M, y: y - 9, size: 8, font: fonts.bold, color: MUTED });
+      y -= 12;
+    }
+    y -= 30;
     if (b.printedName) {
       rule(page, y, M, M + 250, INK);
       rule(page, y, M + 270, M + 410, INK);
@@ -1148,15 +1208,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       text(page, fonts, b.caption || 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
       text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
     }
-    y -= 20;
-  }
-
-  // Notary acknowledgments (completed by notaries on paper; not part of the signed text).
-  // One per signer, since owners may sign at different times before different notaries.
-  const ackFor = blocks.map((b) => b.ack).filter(Boolean).length ? blocks.map((b) => b.ack).filter(Boolean) : [''];
-  for (const who of ackFor) {
-    ensure(150);
-    y -= 16;
+    y -= 30;
     const venue: [string, string][] = [
       ['STATE OF ARIZONA', ')'],
       ['', ') ss.'],
@@ -1171,7 +1223,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       page,
       fonts,
       'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
-        (who ? `${who}.` : '______________________________________________________.'),
+        (b.ack ? `${b.ack}.` : '______________________________________________________.'),
       y - 8,
       { size: 10, width: CONTENT_W },
     );
@@ -1182,7 +1234,8 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
     text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
     y -= 30;
-  }
+    if (i < blocks.length - 1) rule(page, y, M, PAGE_W - M, RULE);
+  });
 
   // ---- Signature page(s): QR codes ----
   let sp = doc.addPage([PAGE_W, PAGE_H]);
@@ -1556,4 +1609,115 @@ export async function registrationDraftFromPdf(bytes: Uint8Array): Promise<Regis
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Position holder update: signed with the position key, notarized, filed with
+// the registration.
+// ---------------------------------------------------------------------------
+export const HOLDER_UPDATE_ATTACHMENT = 'stop-holder-update.json';
+
+export async function holderUpdatePdf(key: openpgp.PublicKey | openpgp.PrivateKey, update: HolderUpdate): Promise<Uint8Array> {
+  const id = keyIdentity(key);
+  const { doc, fonts } = await newDoc('Position holder update');
+  await doc.attach(
+    new TextEncoder().encode(
+      JSON.stringify({
+        format: 'stop-holder-update-1',
+        fingerprint: update.fingerprint,
+        holder: update.holder,
+        effective: update.effective,
+        key: key.toPublic().armor(),
+        signatures: update.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
+      }),
+    ),
+    HOLDER_UPDATE_ATTACHMENT,
+    { mimeType: 'application/json', description: 'Position holder update, signed with the position key' },
+  );
+  const p = doc.addPage([PAGE_W, PAGE_H]);
+  let y = header(p, fonts, 'File with the registration', 'Position Holder Update', `${id.position} of ${id.name}`);
+  y = table(
+    p,
+    fonts,
+    [
+      { label: 'Entity', value: id.name },
+      { label: 'Position', value: id.position ?? '' },
+      { label: 'New holder', value: update.holder },
+      { label: 'Effective', value: update.effective },
+      { label: 'Position key', value: fingerprintTwoLines(update.fingerprint), mono: true },
+    ],
+    y,
+    CONTENT_W,
+    130,
+  );
+  y = text(
+    p,
+    fonts,
+    `From ${update.effective}, the key above is held and signed by ${update.holder}, as ${id.position} of ${id.name}. ` +
+      'This update is digitally signed with that same key (codes below), which proves it comes from whoever holds the key and its passphrase. ' +
+      'File it with the registration for every parcel the key is registered on. Documents signed with this key will then name the new holder.',
+    y - 12,
+    { size: 10 },
+  );
+  y -= 40;
+  rule(p, y, M, M + 300, INK);
+  rule(p, y, M + 330, PAGE_W - M, INK);
+  text(p, fonts, `${update.holder}, ${id.position} of ${id.name}`, y - 3, { size: 9, color: MUTED, width: 300 });
+  text(p, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+  y -= 46;
+  for (const [left, right] of [
+    ['STATE OF ARIZONA', ')'],
+    ['', ') ss.'],
+    ['COUNTY OF ______________________', ')'],
+  ] as [string, string][]) {
+    if (left) p.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    p.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
+    y -= 13;
+  }
+  y = text(
+    p,
+    fonts,
+    `The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ${update.holder}, as ${id.position} of ${id.name}.`,
+    y - 8,
+    { size: 10 },
+  );
+  y -= 34;
+  rule(p, y, M, M + 260, INK);
+  rule(p, y, M + 330, PAGE_W - M, INK);
+  text(p, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
+  text(p, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
+  text(p, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
+  y -= 46;
+  y = text(p, fonts, 'Digital signature by the position key', y, { size: 9.5, font: fonts.bold });
+  y -= 8;
+  const size = 120;
+  const gap = (CONTENT_W - 3 * size) / 2;
+  update.signed.codes.forEach((code, i) => {
+    const x = M + (i % 3) * (size + gap);
+    if (i && i % 3 === 0) y -= size + 30;
+    const qr = bestQr(code);
+    if (qr) drawQr(p, qr, x, y, size);
+  });
+  footer(p, fonts, `Position holder update  |  ${formatFingerprint(update.fingerprint)}`, 1, 1);
+  return doc.save();
+}
+
+/** Reads a holder update (and the key it names) from a PDF made by this tool. */
+export async function holderUpdateFromPdf(bytes: Uint8Array): Promise<{ update: HolderUpdate; key: openpgp.PublicKey } | null> {
+  const files = await pdfAttachments(bytes).catch(() => []);
+  const f = files.find((x) => x.name === HOLDER_UPDATE_ATTACHMENT);
+  if (!f) return null;
+  const j = JSON.parse(new TextDecoder().decode(f.data));
+  if (j.format !== 'stop-holder-update-1') return null;
+  const key = (await readAnyKey(j.key)).toPublic();
+  const signed = await assembleSigned(
+    canonicalText(holderUpdateStatement(key, j.holder, j.effective)),
+    (j.signatures as { fingerprint: string; userID: string; signedAt: string; sig: string }[]).map((x) => ({
+      fingerprint: x.fingerprint,
+      userID: x.userID,
+      signedAt: new Date(x.signedAt),
+      bytes: fromBase64(x.sig),
+    })),
+  );
+  return { key, update: { fingerprint: j.fingerprint, holder: j.holder, effective: j.effective, signed } };
 }

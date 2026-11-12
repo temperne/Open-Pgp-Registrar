@@ -417,3 +417,85 @@ describe('proof of key possession', () => {
     expect((await checkRegistrationProof(back)).complete).toBe(true);
   });
 });
+
+describe('position holders', () => {
+  it('records the holder, and a holder update signed by the key names the new holder', async () => {
+    const { keyIdentity, signHolderUpdate, checkHolderUpdate } = await import('../src/crypto');
+    const { signerBlocksForKey, holderUpdatePdf, holderUpdateFromPdf } = await import('../src/pdf');
+    const sec = (await unlockKey(
+      (await readAnyKey((await generateKeyPair({ name: 'Doe Holdings LLC', position: 'Secretary', holder: 'Jane Doe', passphrase: 'pw-123456' })).privateArmored)) as openpgp.PrivateKey,
+      'pw-123456',
+    )) as openpgp.PrivateKey;
+    expect(keyIdentity(sec)).toMatchObject({ kind: 'position', position: 'Secretary', holder: 'Jane Doe' });
+    expect(signerBlocksForKey(sec)[0].caption).toBe('Jane Doe, Secretary of Doe Holdings LLC');
+
+    const update = await signHolderUpdate(sec, 'Pat Smith', '2027-01-15');
+    expect(await checkHolderUpdate(update, sec.toPublic())).toBe(true);
+    expect(await checkHolderUpdate(update, a.toPublic())).toBe(false);
+    const forged = { ...update, holder: 'Mallory Forger' };
+    expect(await checkHolderUpdate(forged, sec.toPublic())).toBe(false);
+
+    const pdf = await holderUpdatePdf(sec.toPublic(), update);
+    const back = await holderUpdateFromPdf(pdf);
+    expect(back?.update.holder).toBe('Pat Smith');
+    expect(await checkHolderUpdate(back!.update, sec.toPublic())).toBe(true);
+    expect(signerBlocksForKey(sec, back!.update.holder)[0].ack).toBe('Pat Smith, as Secretary of Doe Holdings LLC');
+  });
+});
+
+describe.skipIf(!has('pdftotext', '-v'))('every key is enumerated', () => {
+  it('registration lists all keys on page 1 and the key page; the deed pairs signatures with acknowledgments', async () => {
+    const { registrationPdf, instrumentPdf } = await import('../src/pdf');
+    const dir = mkdtempSync('/tmp/opr-enum-');
+    try {
+      const reg = await registrationPdf({
+        ownerName: 'Example Owner and Example Spouse',
+        parcels: '123-45-6789',
+        coOwnerKeys: [b.toPublic()],
+        fingerprint: a.getFingerprint().toUpperCase(),
+        algorithm: 'Ed25519',
+        created: a.getCreationTime(),
+        userID: a.getUserIDs()[0],
+        publicKeyBinary: a.toPublic().write(),
+        publicArmored: a.toPublic().armor(),
+      });
+      writeFileSync(join(dir, 'r.pdf'), reg);
+      const txt = (f: string, n?: number) =>
+        execFileSync('pdftotext', [...(n ? ['-f', String(n), '-l', String(n)] : []), join(dir, f), '-'], { stdio: ['ignore', 'pipe', 'ignore'] })
+          .toString()
+          .replace(/\s+/g, ' ');
+      const fp = (k: openpgp.PrivateKey) => k.getFingerprint().toUpperCase().replace(/(.{4})(?!$)/g, '$1 ');
+      expect(txt('r.pdf', 1)).toContain(fp(a));
+      expect(txt('r.pdf', 1)).toContain(fp(b));
+      const all = txt('r.pdf');
+      expect(all).toContain('Key 1 of 2: Example Owner');
+      expect(all).toContain('Key 2 of 2: Example Spouse');
+      expect(all.match(/BEGIN PGP PUBLIC KEY BLOCK/g)?.length).toBe(2);
+
+      const one = await signText(a, text);
+      const deed = await instrumentPdf({
+        title: 'Warranty Deed',
+        text,
+        signatures: one.signatures,
+        documentId: one.documentId,
+        codes: one.codes,
+        signerBlocks: [
+          { caption: 'Example Owner', ack: 'Example Owner' },
+          { caption: 'Example Spouse', ack: 'Example Spouse' },
+        ],
+      });
+      writeFileSync(join(dir, 'd.pdf'), deed);
+      const d = txt('d.pdf');
+      const i1 = d.indexOf('SIGNER 1 OF 2');
+      const i2 = d.indexOf('SIGNER 2 OF 2');
+      expect(i1).toBeGreaterThan(-1);
+      expect(i2).toBeGreaterThan(i1);
+      // Signer 1's acknowledgment comes before signer 2's block starts.
+      expect(d.slice(i1, i2)).toContain('acknowledged before me');
+      expect(d.slice(i1, i2)).toContain('by Example Owner.');
+      expect(d.slice(i2)).toContain('by Example Spouse.');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
