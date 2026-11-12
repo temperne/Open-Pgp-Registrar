@@ -1364,6 +1364,8 @@ export interface CertificateInfo {
   parcels?: string;
   /** One entry per registered owner (and any unregistered signer). */
   owners: { userID: string; fingerprint: string; result: string; signedAt?: Date }[];
+  /** Each scanned copy of the filing, and whether it carries the same signed text. */
+  files?: { name: string; documentId: string; signatures: number; same: boolean }[];
   documentId: string;
   checkedAt: Date;
   /** The exact text the owner signed (canonical form). */
@@ -1391,7 +1393,9 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
     fonts,
     `The undersigned personnel of ${agency} determined that the parcel(s) below are protected by the ${BRAND.name} ` +
       `(signing keys are registered for them), and checked the digital signatures on the instrument described below ` +
-      `against every key registered for the parcel, using the signature codes printed with the instrument.`,
+      `against every key registered for the parcel, using the signature codes printed with the instrument. Every signature, ` +
+      `and every scanned copy of the filing listed below, carries the same text (document ID ${info.documentId}), printed in full ` +
+      `on this certificate. By signing, the undersigned confirms that the registered keys, the verified text and the filing agree.`,
     y,
     { size: 10 },
   );
@@ -1420,6 +1424,10 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
       value: `${o.userID || '(name not given)'}\n${formatFingerprint(o.fingerprint)}\n${o.result}${o.signedAt ? `, signed ${isoDateTime(o.signedAt)}` : ''}`,
     })),
     { label: 'Document ID', value: info.documentId, mono: true },
+    ...(info.files ?? []).map((f, i) => ({
+      label: `Scanned copy ${i + 1}`,
+      value: `${f.name}\n${f.documentId ? `Document ID ${f.documentId}, ` : ''}${f.signatures} signature${f.signatures === 1 ? '' : 's'}: ${f.same ? 'same text' : 'DIFFERENT TEXT'}`,
+    })),
   ];
   rows.push({ label: 'Checked at', value: isoDateTime(info.checkedAt) });
   y = table(page, fonts, rows, tableTop, CONTENT_W - 190, 120);

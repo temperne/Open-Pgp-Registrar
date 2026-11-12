@@ -898,7 +898,7 @@ export async function verifyScannedText(input: {
       registered: true,
       state: r.ok ? 'pass' : 'fail',
       signedAt: r.signedAt,
-      detail: r.ok ? 'Valid signature over the text below.' : `Signature does not verify: ${r.why}`,
+      detail: r.ok ? `Valid signature over document ${d.documentId} (the text below).` : `Signature does not verify: ${r.why}`,
     });
   }
   results.forEach((r, i) => {

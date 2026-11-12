@@ -562,8 +562,9 @@
 
           <label for="v-payload">Signature codes from the document</label>
           <textarea id="v-payload" rows="4" spellcheck="false" placeholder="Scan every QR code on the signature page, in any order. They start with PGPQ1|"></textarea>
-          <label for="v-codes-file">Or load the signed document <span class="opt">(the PDF, a scanned PDF of the paper, or a photo; every page is searched)</span></label>
-          <input id="v-codes-file" type="file" accept=".pdf,application/pdf,image/*" />
+          <label for="v-codes-file">Or load the signed document(s) <span class="opt">(PDFs, scans of the paper, or photos; every page is searched)</span></label>
+          <input id="v-codes-file" type="file" multiple accept=".pdf,application/pdf,image/*" />
+          <p class="hint">You can choose several files at once (the filed document and each owner's copy). Every copy must carry the same signed text.</p>
           <p id="v-progress" class="hint" role="status"></p>
 
           <details class="advanced">

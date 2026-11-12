@@ -1388,33 +1388,94 @@ async function registrationFor(payload: string): Promise<Registration> {
   throw new UserError('Registrations for several parcels are loaded. Clear them and load the registration for this filing’s parcel.');
 }
 
+/** Each scanned file and whether it carries the same signed text as the others. */
+interface ScannedFile {
+  name: string;
+  documentId?: string;
+  signatures: number;
+  same: boolean;
+  problem?: string;
+}
+let scannedFiles: ScannedFile[] = [];
+let settingPayload = false;
+
+function setPayload(v: string) {
+  settingPayload = true;
+  textarea('v-payload').value = v;
+  textarea('v-payload').dispatchEvent(new Event('input'));
+  settingPayload = false;
+}
+
+/**
+ * Reads every chosen file (the filed deed, each owner's copy...). All must carry
+ * the same signed text; their signatures are combined for the check.
+ */
 input('v-codes-file').addEventListener('change', async () => {
-  const f = input('v-codes-file').files?.[0];
-  if (!f) return;
+  const files = [...(input('v-codes-file').files ?? [])];
+  if (!files.length) return;
   const el = $('v-progress');
   el.className = 'hint';
   try {
     const { readCodesFromFile } = await import('./qrscan');
-    const codes = await readCodesFromFile(
-      f,
-      (m) => (el.textContent = m),
-      (c) => {
-        const p = scanProgress(c.join('\n'));
-        return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
-      },
-    );
-    const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
-    if (!sigCodes.length) {
-      el.className = 'hint error';
-      el.textContent = codes.length
-        ? 'Found QR codes, but none are signature codes. Load the signed document, including its signature page.'
-        : 'No QR codes found. If this is a scan or photo, make sure the signature page is included, sharp and well lit.';
+    const results: { name: string; signed?: SignedText; legacy?: string[]; problem?: string }[] = [];
+    for (const [i, f] of files.entries()) {
+      const codes = await readCodesFromFile(
+        f,
+        (m) => (el.textContent = files.length > 1 ? `File ${i + 1} of ${files.length}: ${m}` : m),
+        (c) => {
+          const p = scanProgress(c.join('\n'));
+          return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
+        },
+      );
+      const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
+      if (!sigCodes.length) {
+        results.push({ name: f.name, problem: codes.length ? 'no signature codes' : 'no QR codes found' });
+        continue;
+      }
+      if (sigCodes.some((c) => c.startsWith('PGPSIG1|'))) {
+        results.push({ name: f.name, legacy: sigCodes });
+        continue;
+      }
+      try {
+        results.push({ name: f.name, signed: await signedFromCodes(sigCodes.join('\n')) });
+      } catch (err) {
+        results.push({ name: f.name, problem: (err as Error).message });
+      }
+    }
+    const legacy = results.find((r) => r.legacy);
+    if (legacy && files.length === 1) {
+      scannedFiles = [];
+      setPayload(legacy.legacy!.join('\n') + '\n');
       return;
     }
-    textarea('v-payload').value = sigCodes.join('\n') + '\n';
-    textarea('v-payload').dispatchEvent(new Event('input'));
+    const readable = results.filter((r) => r.signed);
+    if (!readable.length) {
+      el.className = 'hint error';
+      el.textContent =
+        results.map((r) => `${r.name}: ${r.problem ?? 'unreadable'}`).join('; ') +
+        '. Make sure the signature page is included, sharp and well lit.';
+      return;
+    }
+    // The reference text: the one most files carry.
+    const counts = new Map<string, number>();
+    for (const r of readable) counts.set(r.signed!.canonical, (counts.get(r.signed!.canonical) ?? 0) + 1);
+    const reference = [...counts.entries()].sort((x, y) => y[1] - x[1])[0][0];
+    const sigs = new Map<string, DocSignature>();
+    for (const r of readable) {
+      if (r.signed!.canonical !== reference) continue;
+      for (const sig of r.signed!.signatures) if (!sigs.has(sig.fingerprint)) sigs.set(sig.fingerprint, sig);
+    }
+    const merged = await assembleSigned(reference, [...sigs.values()]);
+    scannedFiles = results.map((r) => ({
+      name: r.name,
+      documentId: r.signed?.documentId,
+      signatures: r.signed?.signatures.length ?? 0,
+      same: !!r.signed && r.signed.canonical === reference,
+      problem: r.problem ?? (r.legacy ? 'electronic-filing code; check it on its own' : undefined),
+    }));
+    setPayload(merged.codes.join('\n') + '\n');
     // Check right away when everything needed is there.
-    if (verifyRegs.length && scanProgress(textarea('v-payload').value).missing.length === 0) $('verify-btn').click();
+    if (verifyRegs.length) $('verify-btn').click();
   } catch (err) {
     el.className = 'hint error';
     el.textContent = (err as Error).message;
@@ -1428,6 +1489,7 @@ let lastCheck: {
   result: 'good' | 'bad';
   checks: string[];
   owners: { userID: string; fingerprint: string; result: string; signedAt?: Date }[];
+  files: ScannedFile[];
   parcel: string;
   documentId: string;
   signedText: string;
@@ -1436,6 +1498,7 @@ let lastCheck: {
 
 
 textarea('v-payload').addEventListener('input', () => {
+  if (!settingPayload) scannedFiles = [];
   const v = textarea('v-payload').value;
   const p = scanProgress(v);
   const el = $('v-progress');
@@ -1463,6 +1526,7 @@ action(
       agency: input('c-agency').value,
       parcels: input('c-parcels').value,
       owners: c.owners,
+      files: c.files.map((f) => ({ name: f.name, documentId: f.documentId ?? '', signatures: f.signatures, same: f.same })),
       documentId: c.documentId,
       checkedAt: new Date(),
       signedText: c.signedText,
@@ -1506,6 +1570,18 @@ action(
       // Paper filing: the codes carry the signed text.
       const registration = await registrationFor(payload);
       r = await verifyScannedText({ scanned: payload, registration });
+      for (const f of scannedFiles) {
+        r.checks.push({
+          label: `Scanned copy: ${f.name}`,
+          state: f.same ? 'pass' : 'fail',
+          detail: f.same
+            ? `Document ID ${f.documentId}, ${f.signatures} signature${f.signatures === 1 ? '' : 's'}: the same text as every other copy.`
+            : f.problem
+              ? `Could not be checked: ${f.problem}.`
+              : `Document ID ${f.documentId}: DIFFERENT TEXT from the other copies. Hold the filing.`,
+        });
+        if (!f.same && r.verdict === 'good') r.verdict = 'bad';
+      }
       if (r.verdict !== 'incomplete') {
         const ps = await checkRegistrationProof(registration);
         r.checks.push({
@@ -1527,6 +1603,7 @@ action(
             result: x.state === 'pass' ? 'Valid signature' : x.detail,
             signedAt: x.signedAt,
           })),
+          files: [...scannedFiles],
           parcel: registration.parcel,
           documentId: r.documentId,
           signedText: r.signedText,

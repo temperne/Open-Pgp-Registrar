@@ -113,12 +113,15 @@ gives counter staff a way to check a filing.
 4. **Check a filing** (Exhibit C): load the parcel registration (any owner's form
    PDF, scan or photo; several may be loaded and must agree), then the signature
    codes: scanned in any order, or read from the signed PDF, the Recorder's scan or a
-   phone photo. Good only if **every registered key** made a valid signature, no
+   phone photo. **Several files can be loaded at once** (the filed document and each
+   owner's copy): each is listed with its document ID and signature count, every copy
+   must carry the same text (a different one fails the check), and their signatures
+   are combined. Good only if **every registered key** made a valid signature, no
    unregistered key signed, all over the same text, and that text names the
    registered parcel. When registrations for several parcels are loaded, the parcel
    named in the signed text is used. The signed text is shown for comparison with the
    paper (there is no typed-comparison box). Staff can then print a **verification
-   certificate** (`certificatePdf`) with each owner's result, their name, title and
+   certificate** (`certificatePdf`) listing each scanned copy (same text) and each owner's result, their name, title and
    agency, ink signature and date lines, the document ID barcode, the signed text and
    the codes reprinted. It is appended to the filing.
 
