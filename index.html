@@ -249,9 +249,13 @@
 
           <form id="load-form" class="card">
             <h2>Use a key I already have</h2>
-            <p class="muted">The private key PDF this tool made for you, or a key file from GnuPG, Kleopatra, etc.</p>
-            <label for="load-file">Key file <span class="opt">(.pdf, .asc, .key, .gpg)</span></label>
-            <input id="load-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys" />
+            <p class="muted">
+              The private key PDF this tool made for you, a photo or scan of its printed page, or a key file from
+              GnuPG, Kleopatra, etc. On a phone you can take the photo right here.
+            </p>
+            <label for="load-file">Key PDF, photo or key file <span class="opt">(.pdf, .jpg, .png, .asc, .key, .gpg)</span></label>
+            <input id="load-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
+            <p id="load-status" class="hint" role="status"></p>
             <label for="load-text">or paste it</label>
             <textarea id="load-text" rows="6" spellcheck="false" placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
             <button type="button" id="load-btn" class="primary">Load key</button>

@@ -18,7 +18,7 @@ import {
   type RGB,
 } from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
-import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX } from './crypto';
+import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX, encodeKeyCodes, readAnyKey } from './crypto';
 import { safeText } from './text';
 import { BRAND, brandLine } from './brand';
 
@@ -629,20 +629,31 @@ export async function privateKeyPdf(info: PrivateKeyInfo): Promise<Uint8Array> {
     CONTENT_W,
   );
   const how =
-    `To sign later: open the ${BRAND.name} website (${BRAND.projectUrl}), choose "Use a key I already have", and pick this PDF ` +
-    '(the key file is embedded in it). From paper: scan this code with a phone, or type the text below into a file ' +
-    'named key.asc. GnuPG users can run gpg --import key.asc.';
-  const qr = bestQr(info.privateArmored.trim());
-  if (qr) {
-    const s = 180;
-    drawQr(p, qr, M, y - 14, s);
-    text(p, fonts, how, y - 14, { x: M + s + 16, size: 9, color: MUTED, width: CONTENT_W - s - 16 });
-    y -= s + 24;
-  } else {
-    y = text(p, fonts, how, y - 12, { size: 9, color: MUTED });
-    y -= 8;
-  }
+    `To sign later: open the ${BRAND.name} website (${BRAND.projectUrl}), choose "Use a key I already have", and pick ` +
+    'this PDF (the key file is embedded in it). From the printed page: choose the same option on a phone and take a ' +
+    'photo of this page, or scan it. GnuPG users can type the text below into key.asc and run gpg --import key.asc.';
+  y = text(p, fonts, how, y - 12, { size: 9, color: MUTED });
+  // The key as small QR codes, which read reliably from photos and scans.
+  const codes = await encodeKeyCodes(await readAnyKey(info.privateArmored));
+  // Big codes, two per row with a wide gap, so phone photos read them easily.
+  // Large RSA keys need many codes; they wrap onto new pages.
+  const size = 190;
+  const perRow = 2;
+  const gap = (CONTENT_W - perRow * size) / (perRow - 1);
   let page = p;
+  y -= 14;
+  codes.forEach((code, i) => {
+    const col = i % perRow;
+    if (col === 0 && y - size - 20 < 64) {
+      page = doc.addPage([PAGE_W, PAGE_H]);
+      y = header(page, fonts, 'Keep secret  |  Do not file', 'Your Private Signing Key (continued)');
+    }
+    const x = M + col * (size + gap);
+    drawQr(page, bestQr(code)!, x, y, size);
+    const label = `Key code ${i + 1} of ${codes.length}`;
+    page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+    if (col === perRow - 1 || i === codes.length - 1) y -= size + 50;
+  });
   for (const line of info.privateArmored.trim().split(/\r?\n/)) {
     if (y < 64) {
       page = doc.addPage([PAGE_W, PAGE_H]);

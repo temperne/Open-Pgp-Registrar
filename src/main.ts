@@ -10,6 +10,8 @@ import {
   verifyFiling,
   signText,
   verifyScannedText,
+  keyFromCodes,
+  codesHaveKey,
   scanProgress,
   type SignedText,
   formatFingerprint,
@@ -193,9 +195,28 @@ function fromBase64Text(b64: string) {
 const baseName = (n: string) => n.replace(/\.[^.]+$/, '');
 
 /** Reads a key from a PDF made by this tool, or from any OpenPGP key file or text. */
-async function keyFromFile(file: File): Promise<AnyKey> {
+function isImage(f: File) {
+  return f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic|heif|tiff?)$/i.test(f.name);
+}
+
+/**
+ * Reads a key from any of: a PDF made by this tool (key embedded), a photo or
+ * scan of a printed key page or registration form (QR codes), or a key file.
+ */
+async function keyFromFile(file: File, onProgress?: (msg: string) => void): Promise<AnyKey> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (isPdfBytes(bytes)) return readAnyKey(await keyTextFromPdf(bytes));
+  const fromCodes = async () => {
+    const { readCodesFromFile } = await import('./qrscan');
+    return keyFromCodes(await readCodesFromFile(file, onProgress, codesHaveKey));
+  };
+  if (isImage(file)) return fromCodes();
+  if (isPdfBytes(bytes)) {
+    try {
+      return await readAnyKey(await keyTextFromPdf(bytes));
+    } catch {
+      return fromCodes(); // a scanned PDF of the printed page
+    }
+  }
   return readAnyKey(bytes);
 }
 
@@ -321,7 +342,8 @@ action(
     const file = input('load-file').files?.[0];
     const pasted = textarea('load-text').value.trim();
     if (!file && !pasted) throw new UserError('Choose your key PDF or key file, or paste a key.');
-    const key = file ? await keyFromFile(file) : await readAnyKey(pasted);
+    const status = $('load-status');
+    const key = file ? await keyFromFile(file, (m) => (status.textContent = m)).finally(() => (status.textContent = '')) : await readAnyKey(pasted);
     // Keep the protected form for downloads before anything is unlocked.
     setKey(key, isPrivate(key) ? key.armor() : null, false, null);
     textarea('load-text').value = '';
@@ -330,6 +352,10 @@ action(
   },
   'Loading...',
 );
+// Picking a file (or taking a photo) loads it straight away.
+input('load-file').addEventListener('change', () => {
+  if (input('load-file').files?.length) $('load-btn').click();
+});
 
 action(
   'unlock-btn',
@@ -643,27 +669,9 @@ input('v-key-file').addEventListener('change', async () => {
   if (!f) return;
   textarea('v-key').value = '';
   const info = $('v-key-info');
+  info.className = 'hint';
   try {
-    let key: AnyKey;
-    try {
-      key = await keyFromFile(f); // key file, or a PDF made by this tool (key embedded)
-    } catch (first) {
-      // A scan or photo of the registration form: read its public key QR code.
-      info.className = 'hint';
-      const { readCodesFromFile } = await import('./qrscan');
-      const codes = await readCodesFromFile(
-        f,
-        (m) => (info.textContent = m),
-        (c) => c.some((x) => x.replace(/\s+/g, '').startsWith('PGPKEY1|')),
-      );
-      const keyCode = codes.find((c) => c.replace(/\s+/g, '').startsWith('PGPKEY1|'));
-      if (!keyCode) {
-        throw codes.length || isImage(f)
-          ? new Error('No public key code found. Use page 2 of the registration form, which has the full public key code.')
-          : first;
-      }
-      key = await readAnyKey(keyCode);
-    }
+    const key = await keyFromFile(f, (m) => (info.textContent = m));
     showVerifyKey(key.toPublic());
   } catch (err) {
     showVerifyKey(null, (err as Error).message);
@@ -672,9 +680,6 @@ input('v-key-file').addEventListener('change', async () => {
   }
 });
 
-function isImage(f: File) {
-  return f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic|tiff?)$/i.test(f.name);
-}
 
 input('v-codes-file').addEventListener('change', async () => {
   const f = input('v-codes-file').files?.[0];

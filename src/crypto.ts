@@ -420,8 +420,8 @@ export interface ScanProgress {
 }
 
 /** Reads whatever has been scanned so far (one code per line, any order, duplicates fine). */
-export function scanProgress(scanned: string): ScanProgress {
-  const parts = parseParts(scanned);
+export function scanProgress(scanned: string, prefix = PART_PREFIX): ScanProgress {
+  const parts = parseParts(scanned, prefix);
   const groups = [...new Set(parts.map((p) => p.group))];
   const total = parts[0]?.total ?? 0;
   const have = new Set(parts.filter((p) => p.group === groups[0]).map((p) => p.index));
@@ -437,10 +437,10 @@ interface Part {
   chunk: string;
 }
 
-function parseParts(scanned: string): Part[] {
+function parseParts(scanned: string, prefix = PART_PREFIX): Part[] {
   const out: Part[] = [];
   // A scanner usually ends each code with Enter; also accept codes run together.
-  const re = /PGPQ1\|([0-9A-F]{12})\|(\d{1,3})\/(\d{1,3})\|([A-Za-z0-9+/=|tz]*?)(?=PGPQ1\||\s|$)/g;
+  const re = new RegExp(`${prefix}\\|([0-9A-F]{12})\\|(\\d{1,3})\\/(\\d{1,3})\\|([A-Za-z0-9+/=|tz]*?)(?=${prefix}\\||\\s|$)`, 'g');
   for (const m of scanned.replace(/\r/g, '\n').matchAll(re)) {
     const index = Number(m[2]);
     const total = Number(m[3]);
@@ -541,4 +541,67 @@ export async function verifyScannedText(input: { scanned: string; registeredKey:
   });
   const verdict: Verdict = checks.some((c) => c.state === 'fail') ? 'bad' : 'good';
   return { verdict, checks, signedAt, documentId: d.documentId, signedText: d.canonical };
+}
+
+// ---------------------------------------------------------------------------
+// Private key as printed QR codes
+//
+// The printed private key PDF carries the (passphrase-protected) key as a few
+// small codes, so it can be loaded back from a phone photo or a scan:
+//   PGPK1|GROUP|i/n|CHUNK   where the chunks join into base64(binary key)
+// and GROUP is the first 12 hex digits of the key's SHA-256.
+// ---------------------------------------------------------------------------
+export const KEY_PART_PREFIX = 'PGPK1';
+
+export async function encodeKeyCodes(key: AnyKey): Promise<string[]> {
+  const binary = key.write();
+  const group = (await sha256Hex(binary)).slice(0, 12).toUpperCase();
+  const message = toBase64(binary);
+  const n = Math.ceil(message.length / PART_SIZE);
+  return Array.from(
+    { length: n },
+    (_, i) => `${KEY_PART_PREFIX}|${group}|${i + 1}/${n}|${message.slice(i * PART_SIZE, (i + 1) * PART_SIZE)}`,
+  );
+}
+
+export function keyScanProgress(scanned: string) {
+  return scanProgress(scanned, KEY_PART_PREFIX);
+}
+
+/**
+ * Finds a key in codes read from a photo or scan: the private key PDF's key
+ * codes, the registration form's public key code, or an older single code
+ * holding a whole armored key.
+ */
+export async function keyFromCodes(codes: string[]): Promise<AnyKey> {
+  const joined = codes.join('\n');
+  const parts = parseParts(joined, KEY_PART_PREFIX);
+  if (parts.length) {
+    const p = keyScanProgress(joined);
+    if (p.groups.length > 1) throw new Error('Codes from more than one key were found. Use one key page at a time.');
+    if (p.missing.length) {
+      throw new Error(`Read ${p.have} of ${p.total} key codes; code ${p.missing.join(', ')} could not be read. Try a sharper, well-lit photo of the whole page.`);
+    }
+    const byIndex = new Map(parts.map((x) => [x.index, x.chunk]));
+    const binary = fromBase64(Array.from({ length: p.total }, (_, i) => byIndex.get(i + 1)!).join(''));
+    if (!(await sha256Hex(binary)).toUpperCase().startsWith(p.groups[0])) {
+      throw new Error('The key codes are damaged. Try another photo or scan.');
+    }
+    return readAnyKey(binary);
+  }
+  const whole = codes.find((c) => /-----BEGIN PGP (PRIVATE|PUBLIC) KEY BLOCK-----/.test(c)) ?? codes.find((c) => c.replace(/\s+/g, '').startsWith(`${PUBKEY_QR_PREFIX}|`));
+  if (whole) return readAnyKey(whole);
+  throw new Error(
+    codes.length
+      ? 'QR codes were found, but none hold a key. Photograph the private key page, or page 2 of the registration form.'
+      : 'No QR codes found. Make sure the whole key page is in the photo, sharp and well lit.',
+  );
+}
+
+/** True once the codes read so far contain a complete key, so reading can stop. */
+export function codesHaveKey(codes: string[]) {
+  const joined = codes.join('\n');
+  const p = keyScanProgress(joined);
+  if (p.total > 0) return p.missing.length === 0 && p.groups.length === 1;
+  return codes.some((c) => /-----BEGIN PGP (PRIVATE|PUBLIC) KEY BLOCK-----/.test(c) || c.replace(/\s+/g, '').startsWith(`${PUBKEY_QR_PREFIX}|`));
 }
