@@ -163,6 +163,12 @@
           <details><summary>Is my key or my document sent anywhere?</summary>
             <p>No. This website runs entirely in your browser and is blocked from making network connections. You can
               even save it and use it offline.</p></details>
+          <details><summary>We own the property together. How does that work?</summary>
+            <p>Each owner makes their own key and files their own registration form for each parcel, listing every
+              co-owner's key (swap public key cards to do this). One key can be registered on any number of parcels.
+              Every listed owner then has to sign a deed: together on one computer, or one after another by passing the
+              partly signed PDF along ("Sign exactly as others"). The Recorder's check requires every registered owner's
+              signature on exactly the same text.</p></details>
           <details><summary>What if I don't sign up?</summary>
             <p>Nothing changes for you. The program is voluntary.</p></details>
           <details><summary>What technology does it use?</summary>
@@ -209,6 +215,7 @@
 
             <div class="actions">
               <button type="button" id="dl-private" class="primary" hidden>Download private key (PDF)</button>
+              <button type="button" id="dl-card">Public key card for co-owners (PDF)</button>
               <button type="button" data-goto="register">Next: registration form</button>
               <button type="button" id="forget-key" class="ghost">Forget this key</button>
             </div>
@@ -283,8 +290,8 @@
               <input id="reg-owner" required />
             </div>
             <div>
-              <label for="reg-parcels">Parcel number(s)</label>
-              <input id="reg-parcels" required placeholder="e.g. 123-45-6789" />
+              <label for="reg-parcels">Parcel number(s) <span class="opt">(one per line; one form each)</span></label>
+              <textarea id="reg-parcels" rows="2" class="prose" placeholder="e.g. 123-45-6789"></textarea>
             </div>
             <div>
               <label for="reg-property">Property address</label>
@@ -303,10 +310,21 @@
               <input id="reg-prev" spellcheck="false" />
             </div>
           </div>
-          <button type="button" id="reg-btn" class="primary">Download registration form (PDF)</button>
+          <fieldset class="coowners">
+            <legend>Co-owners of these parcels</legend>
+            <p class="hint">
+              If others own the parcels with you, add each co-owner's public key. Every key listed must sign any deed for
+              the parcel. Each co-owner files their own form with the same list.
+            </p>
+            <ul id="co-list" class="keylist"></ul>
+            <label for="co-file">Add a co-owner's key <span class="opt">(their public key card, registration form, a photo of either, or a .asc file)</span></label>
+            <input id="co-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
+            <p id="co-status" class="hint" role="status"></p>
+          </fieldset>
+          <button type="button" id="reg-btn" class="primary">Download registration form(s) (PDF)</button>
           <p class="error" data-error role="alert"></p>
           <ol class="steps">
-            <li>Print it. Sign in front of a notary, who completes box 1.</li>
+            <li>Print it (one form per parcel). Sign in front of a notary, who completes box 1.</li>
             <li>Meet a local law enforcement officer, who completes and signs box 2.</li>
             <li>File it with the Recorder. They call the officer's agency to confirm before activating your key.</li>
           </ol>
@@ -324,6 +342,25 @@
               text you signed, so the Recorder can check it straight from the paper. The printed document still has the
               usual ink signature lines and notary block; the digital signature is an extra layer on top.
             </p>
+            <div class="subcard">
+              <h3>Parcel registration <span class="opt">(recommended)</span></h3>
+              <p class="hint">Load the registration form for the parcel (PDF, scan or photo). The tool then knows every owner who must sign.</p>
+              <input id="s-reg-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Registration form" />
+              <select id="s-reg-parcel" hidden aria-label="Parcel"></select>
+              <p id="s-reg-info" class="hint" role="status"></p>
+            </div>
+            <div class="subcard">
+              <h3>Sign exactly as others</h3>
+              <p class="hint">
+                Another owner already signed? Load their signed document (the PDF, or a scan or photo of its signature page)
+                to add your signature to exactly the same text.
+              </p>
+              <input id="continue-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Signed document" />
+              <p id="continue-status" class="hint" role="status"></p>
+            </div>
+            <div id="locked-note" class="callout warn" hidden></div>
+
+            <div id="draft-fields">
             <label for="tpl">Start from</label>
             <select id="tpl"></select>
             <p id="tpl-note" class="hint"></p>
@@ -351,15 +388,17 @@
               <div class="span2"><label for="doc-return">When recorded, mail to <span class="opt">(printed in the top margin, not signed)</span></label><textarea id="doc-return" rows="3" class="prose"></textarea></div>
             </div>
             <p class="hint" id="disclaimer"></p>
-            <button type="button" id="text-sign-btn" class="primary">Sign and make the document (PDF)</button>
+            </div>
+            <button type="button" id="text-sign-btn" class="primary">Sign</button>
             <p class="error" data-error role="alert"></p>
           </form>
 
           <div id="text-result" class="card" hidden>
             <div class="keycard-head">
-              <h2>Signed</h2>
-              <span class="pill good">Good signature</span>
+              <h2>Signatures</h2>
+              <span id="tr-status" class="pill"></span>
             </div>
+            <ul id="tr-signers" class="keylist"></ul>
             <dl class="facts">
               <dt>Document ID</dt>
               <dd id="tr-id" class="mono"></dd>
@@ -368,11 +407,12 @@
             </dl>
             <div class="actions">
               <button type="button" id="dl-instrument" class="primary">Download signed document (PDF)</button>
+              <button type="button" id="next-signer">Next owner signs on this computer</button>
             </div>
             <ol class="steps">
-              <li>Print it. The last page holds the QR codes with your signature.</li>
-              <li>Sign in ink in front of the notary, as usual, and file the paper with the Recorder.</li>
-              <li>If anything in the text needs to change, edit it above and sign again. Hand-written changes will not match the signature.</li>
+              <li id="tr-step1">Print it. The last page holds the QR codes with the signatures.</li>
+              <li>Every owner signs in ink in front of the notary, as usual, and the paper is filed with the Recorder.</li>
+              <li>If the text needs to change, start over with new text. Every owner signs again. Hand-written changes will not match the signatures.</li>
             </ol>
             <details class="advanced">
               <summary>For GnuPG users: signed text and signature files</summary>
@@ -434,13 +474,19 @@
           <h2>Check a filing</h2>
           <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner or a phone's QR reader types straight into these boxes.</p>
 
-          <label for="v-key">Registered public key for the parcel</label>
-          <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on page 2 of the registration form, or paste the key"></textarea>
+          <label for="v-reg-file">Parcel registration</label>
+          <p class="hint">
+            The registration form on file for the parcel: the PDF, a scan or a photo. One owner's form is enough; it lists
+            every owner's key. You can load several (for example each co-owner's form) to confirm they agree.
+          </p>
           <div class="row small-gap">
-            <input id="v-key-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,image/*" aria-label="Registration form PDF, a scan or photo of it, or a public key file" />
+            <input id="v-reg-file" type="file" multiple accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,image/*" aria-label="Registration forms" />
+            <button type="button" id="v-use-sign-reg" class="ghost" hidden>Use the registration from the Sign page</button>
             <button type="button" id="v-use-mine" class="ghost" hidden>Use the key from step 1</button>
+            <button type="button" id="v-reg-clear" class="ghost" hidden>Clear</button>
           </div>
-          <p id="v-key-info" class="hint">Or choose the registration form PDF; the key is embedded in it.</p>
+          <div id="v-reg-info" class="hint" role="status"></div>
+
 
           <label for="v-payload">Signature codes from the document</label>
           <textarea id="v-payload" rows="4" spellcheck="false" placeholder="Scan every QR code on the signature page, in any order. They start with PGPQ1|"></textarea>
@@ -462,12 +508,9 @@
           <div id="vr-banner" class="verdict"></div>
           <ul id="vr-checks" class="checks"></ul>
           <div id="vr-text-wrap" hidden>
-            <h3>Exactly what the owner signed</h3>
-            <p class="hint">Compare this with the paper. Capital letters, spacing and line breaks may differ; the words, numbers and punctuation must not.</p>
+            <h3>Exactly what the owners signed</h3>
+            <p class="hint">Every signature covers this same text. Compare it with the paper: capital letters, spacing and line breaks may differ; the words, numbers and punctuation must not.</p>
             <div id="vr-text" class="signed-text"></div>
-            <label for="vr-compare">Compare with the paper <span class="opt">(optional: type or paste the text of the paper document)</span></label>
-            <textarea id="vr-compare" rows="4" class="prose"></textarea>
-            <p id="vr-compare-result" class="hint" role="status"></p>
           </div>
           <dl class="facts">
             <dt>Document ID</dt>

@@ -14,6 +14,17 @@ import {
   codesHaveKey,
   orderedCodes,
   scanProgress,
+  signedFromCodes,
+  assembleSigned,
+  decodeCodes,
+  decodeRegistrationCodes,
+  mergeRegistrations,
+  parcelKey,
+  parsePayload,
+  toBase64,
+  fromBase64,
+  type Registration,
+  type DocSignature,
   type SignedText,
   formatFingerprint,
   type AnyKey,
@@ -30,11 +41,16 @@ import {
   instrumentPdf,
   setBrandSeal,
   certificatePdf,
+  publicKeyCardPdf,
+  registrationsFromPdf,
+  draftFromPdf,
+  splitParcels,
+  type DocumentDraft,
   type SignaturePageInfo,
 } from './pdf';
 import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
-import { firstDifference, canonicalText } from './text';
+import { canonicalText } from './text';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -48,10 +64,17 @@ interface State {
   /** A freshly generated key that has not been downloaded yet. */
   unsaved: boolean;
   signed: { doc: SignedDocument; file: File; bytes: Uint8Array; info: SignaturePageInfo } | null;
-  /** Last signed text document. */
-  signedText: { result: SignedText; title: string; text: string; returnTo: string; signers: string } | null;
+  /**
+   * The document being signed: its text and every owner's signature so far.
+   * Kept when keys are switched, so several owners can sign on one computer.
+   */
+  draft: { signed: SignedText; title: string; text: string; returnTo: string; signers: string } | null;
+  /** Registration of the parcel being signed for (who must sign). */
+  signReg: Registration | null;
+  /** Co-owners' public keys to list on this owner's registration forms. */
+  coOwners: openpgp.PublicKey[];
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, signedText: null };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [] };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -61,6 +84,7 @@ const textarea = (id: string) => $<HTMLTextAreaElement>(id);
 function banner(message: string) {
   const b = $('boot');
   b.hidden = false;
+  b.className = 'callout warn';
   b.textContent = message;
 }
 window.addEventListener('error', (e) => banner(`Something went wrong: ${e.message}`));
@@ -282,11 +306,11 @@ function refresh() {
   }
   needEl.hidden = !!state.signer;
   $('sign-area').hidden = !state.signer;
-  if (!input('sign-parcels').value && input('reg-parcels').value) input('sign-parcels').value = input('reg-parcels').value;
+  const firstParcel = splitParcels(textarea('reg-parcels').value)[0];
+  if (!input('sign-parcels').value && firstParcel) input('sign-parcels').value = firstParcel;
   // Carry details from the registration step into the document fields.
   let carried = false;
   for (const [from, to] of [
-    ['reg-parcels', 'f-parcels'],
     ['reg-owner', 'f-grantor'],
     ['reg-property', 'f-propertyAddress'],
     ['reg-county', 'f-county'],
@@ -297,10 +321,15 @@ function refresh() {
       carried = true;
     }
   }
+  if (firstParcel && !input('f-parcels').value) {
+    input('f-parcels').value = firstParcel;
+    carried = true;
+  }
   if (carried) syncTemplate();
 
   // Verify
   $('v-use-mine').hidden = !k;
+  $('v-use-sign-reg').hidden = !state.signReg;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,9 +341,7 @@ function setKey(key: AnyKey, privateArmored: string | null, unsaved: boolean, si
   state.privateArmored = privateArmored;
   state.unsaved = unsaved;
   state.signed = null;
-  state.signedText = null;
   $('sign-result').hidden = true;
-  $('text-result').hidden = true;
   $('dl-note').textContent = '';
   input('reg-owner').value = '';
   refresh();
@@ -415,14 +442,75 @@ $('forget-key').addEventListener('click', () => {
   refresh();
 });
 
+action(
+  'dl-card',
+  async () => {
+    if (!state.key) return;
+    const s = summarize(state.key);
+    const pdf = await publicKeyCardPdf({
+      fingerprint: s.fingerprint,
+      userID: s.userIDs[0] ?? '',
+      created: s.created,
+      publicArmored: s.publicArmored,
+      publicKeyBinary: state.key.toPublic().write(),
+    });
+    download(pdf, `public-key-card-${shortFpr(s.fingerprint)}.pdf`, 'application/pdf');
+  },
+  'Preparing PDF...',
+);
+
 window.addEventListener('beforeunload', (e) => {
   if (state.unsaved) e.preventDefault();
 });
 
 // ---------------------------------------------------------------------------
-// Step 2: registration form
+// Step 2: registration form (one per parcel, listing every owner's key)
 // ---------------------------------------------------------------------------
 document.querySelectorAll('input[name="reg-kind"]').forEach((r) => r.addEventListener('change', refresh));
+
+function keyItem(k: openpgp.PublicKey, extra?: Node) {
+  const li = document.createElement('li');
+  li.append(
+    Object.assign(document.createElement('strong'), { textContent: k.getUserIDs()[0] ?? '(no name)' }),
+    Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
+  );
+  if (extra) li.append(extra);
+  return li;
+}
+
+function renderCoOwners() {
+  const list = $('co-list');
+  list.innerHTML = '';
+  state.coOwners.forEach((k, i) => {
+    const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
+    remove.addEventListener('click', () => {
+      state.coOwners.splice(i, 1);
+      renderCoOwners();
+    });
+    list.append(keyItem(k, remove));
+  });
+}
+
+input('co-file').addEventListener('change', async () => {
+  const f = input('co-file').files?.[0];
+  if (!f) return;
+  const status = $('co-status');
+  status.className = 'hint';
+  try {
+    const key = (await keyFromFile(f, (m) => (status.textContent = m))).toPublic();
+    const fpr = key.getFingerprint().toUpperCase();
+    if (state.key && state.key.getFingerprint().toUpperCase() === fpr) throw new Error('That is your own key; it is listed automatically.');
+    if (state.coOwners.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already listed.');
+    state.coOwners.push(key);
+    renderCoOwners();
+    status.textContent = `Added ${key.getUserIDs()[0] ?? 'key'}. Check the fingerprint with your co-owner.`;
+  } catch (err) {
+    status.className = 'hint error';
+    status.textContent = (err as Error).message;
+  } finally {
+    input('co-file').value = '';
+  }
+});
 
 action(
   'reg-btn',
@@ -430,11 +518,12 @@ action(
     const k = state.key;
     if (!k) return;
     const owner = need(input('reg-owner').value, 'Enter the owner(s) of record.');
-    const parcels = need(input('reg-parcels').value, 'Enter the parcel number.');
+    const parcels = need(textarea('reg-parcels').value, 'Enter the parcel number.');
     const s = summarize(k);
     const pdf = await registrationPdf({
       ownerName: owner,
       parcels,
+      coOwnerKeys: state.coOwners,
       propertyAddress: input('reg-property').value.trim(),
       mailingAddress: input('reg-mailing').value.trim(),
       county: input('reg-county').value.trim(),
@@ -447,10 +536,44 @@ action(
       publicKeyBinary: k.toPublic().write(),
       publicArmored: s.publicArmored,
     });
-    download(pdf, `key-registration-${fileSlug(parcels)}.pdf`, 'application/pdf');
+    const list = splitParcels(parcels);
+    download(pdf, `key-registration-${fileSlug(list[0])}${list.length > 1 ? `-and-${list.length - 1}-more` : ''}.pdf`, 'application/pdf');
   },
   'Preparing PDF...',
 );
+
+/**
+ * Reads parcel registrations from a registration form PDF (embedded), a scan or
+ * photo of its page 2 (codes), or a bare key (old forms, key files).
+ */
+async function registrationsFromFile(file: File, onProgress?: (msg: string) => void): Promise<Registration[]> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (isPdfBytes(bytes)) {
+    const regs = await registrationsFromPdf(bytes);
+    if (regs.length) return regs;
+  }
+  if (isPdfBytes(bytes) || isImage(file)) {
+    const { readCodesFromFile } = await import('./qrscan');
+    const codes = await readCodesFromFile(file, onProgress);
+    const groups = new Map<string, string[]>();
+    for (const c of codes) {
+      const m = /^PGPR1\|([0-9A-F]{12})\|/.exec(c);
+      if (m) groups.set(m[1], [...(groups.get(m[1]) ?? []), c]);
+    }
+    if (groups.size) return Promise.all([...groups.values()].map((g) => decodeRegistrationCodes(g.join('\n'))));
+    return [{ parcel: '', keys: [(await keyFromCodes(codes)).toPublic()] }];
+  }
+  return [{ parcel: '', keys: [(await readAnyKey(bytes)).toPublic()] }];
+}
+
+function describeRegistration(r: Registration) {
+  const frag = document.createDocumentFragment();
+  frag.append(r.parcel ? `Parcel ${r.parcel}: ` : 'Key(s) without a parcel number: ', `${r.keys.length} key${r.keys.length === 1 ? '' : 's'}, all must sign.`);
+  const ul = Object.assign(document.createElement('ul'), { className: 'keylist' });
+  for (const k of r.keys) ul.append(keyItem(k));
+  frag.append(ul);
+  return frag;
+}
 
 // ---------------------------------------------------------------------------
 // Step 3: sign
@@ -510,7 +633,7 @@ action('dl-sig', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Step 3: sign document text (paper workflow)
+// Step 3: sign document text (paper workflow), by one owner or several
 // ---------------------------------------------------------------------------
 const FIELD_IDS: (keyof TemplateFields)[] = ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date'];
 const fieldEl = (f: keyof TemplateFields) => document.getElementById(`f-${f}`) as HTMLInputElement | HTMLTextAreaElement;
@@ -529,13 +652,19 @@ function fields(): TemplateFields {
   return f;
 }
 
+/** The signed content is the title and the text together. */
+function fullText(title: string, text: string) {
+  return title.trim() ? `${title.trim()}\n\n${text}` : text;
+}
+
 function updateCount() {
-  const n = canonicalText(textarea('doc-text').value).length;
+  const n = canonicalText(fullText(input('doc-title').value, textarea('doc-text').value)).length;
   $('doc-count').textContent = n ? `${n.toLocaleString()} characters signed.` : '';
 }
 
 /** Rebuilds the document text from the template, unless the user has edited it. */
 function syncTemplate(force = false) {
+  if (state.draft) return; // text is locked once anyone has signed
   const t = currentTemplate();
   $('tpl-note').textContent = t.note;
   document.querySelectorAll<HTMLElement>('#tpl-fields [data-field]').forEach((el) => {
@@ -548,7 +677,10 @@ function syncTemplate(force = false) {
     if (force) edited.delete('doc-text');
   }
   if (!edited.has('doc-title')) input('doc-title').value = t.title ? t.title.replace(/\b\w+/g, (w) => w[0] + w.slice(1).toLowerCase()) : '';
-  if (!edited.has('doc-signers')) textarea('doc-signers').value = t.uses.includes('grantor') ? f.grantor.replace(/,.*$/, '').trim() : '';
+  if (!edited.has('doc-signers')) {
+    const names = state.signReg?.keys.map((k) => nameFromUserID(k.getUserIDs()[0] ?? '')).filter(Boolean);
+    textarea('doc-signers').value = names?.length ? names.join('\n') : t.uses.includes('grantor') ? f.grantor.replace(/,.*$/, '').trim() : '';
+  }
   if (!edited.has('doc-return')) {
     textarea('doc-return').value = t.uses.includes('grantee')
       ? [f.grantee.replace(/,.*$/, '').trim(), f.propertyAddress.trim()].filter(Boolean).join('\n')
@@ -567,121 +699,360 @@ for (const id of FIELD_IDS) fieldEl(id).addEventListener('input', () => syncTemp
 for (const id of ['doc-text', 'doc-title', 'doc-signers', 'doc-return']) {
   $(id).addEventListener('input', () => {
     edited.add(id);
-    if (id === 'doc-text') {
-      $('rebuild').hidden = currentTemplate().uses.length === 0;
-      updateCount();
-    }
+    if (id === 'doc-text') $('rebuild').hidden = currentTemplate().uses.length === 0;
+    updateCount();
   });
 }
 $('rebuild').addEventListener('click', () => syncTemplate(true));
 syncTemplate();
 
+/** Locks the text once anyone has signed: every owner must sign exactly the same text. */
+function lockDraft() {
+  const locked = !!state.draft;
+  $('draft-fields').querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((el) => {
+    // Lines and the return address are printed but not signed; they stay editable.
+    if (el.id === 'doc-signers' || el.id === 'doc-return') return;
+    el.disabled = locked;
+  });
+  // The template and its fields only build new text; hide them while the text is locked.
+  for (const el of [document.querySelector<HTMLElement>('label[for="tpl"]')!, $('tpl'), $('tpl-note'), $('tpl-fields')]) el.hidden = locked;
+  if (!locked) syncTemplate();
+  const note = $('locked-note');
+  note.hidden = !locked;
+  note.innerHTML = '';
+  if (state.draft) {
+    const n = state.draft.signed.signatures.length;
+    const over = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Start over with new text' });
+    over.addEventListener('click', () => {
+      if (!confirm(`This discards the ${n} signature${n === 1 ? '' : 's'} on this document. Start over?`)) return;
+      state.draft = null;
+      $('text-result').hidden = true;
+      lockDraft();
+      syncTemplate();
+    });
+    note.append(
+      Object.assign(document.createElement('strong'), { textContent: 'Text locked. ' }),
+      `${n} owner${n === 1 ? ' has' : 's have'} signed it, so every other owner must sign exactly this text. `,
+      over,
+    );
+  }
+  $('text-sign-btn').textContent = state.draft ? 'Add my signature' : 'Sign';
+}
+
+function missingSigners() {
+  const d = state.draft;
+  if (!d || !state.signReg) return [];
+  const signed = new Set(d.signed.signatures.map((x) => x.fingerprint));
+  return state.signReg.keys.filter((k) => !signed.has(k.getFingerprint().toUpperCase()));
+}
+
+function renderDraft() {
+  const d = state.draft;
+  if (!d) return;
+  const list = $('tr-signers');
+  list.innerHTML = '';
+  const names = new Map(state.signReg?.keys.map((k) => [k.getFingerprint().toUpperCase(), k.getUserIDs()[0] ?? '']) ?? []);
+  for (const sig of d.signed.signatures) {
+    const li = document.createElement('li');
+    li.className = 'signed';
+    li.append(
+      Object.assign(document.createElement('strong'), { textContent: `Signed: ${sig.userID || names.get(sig.fingerprint) || '(name not given)'}` }),
+      Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(sig.fingerprint) }),
+      Object.assign(document.createElement('span'), { textContent: sig.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') }),
+    );
+    list.append(li);
+  }
+  const missing = missingSigners();
+  for (const k of missing) {
+    const li = document.createElement('li');
+    li.className = 'waiting';
+    li.append(
+      Object.assign(document.createElement('strong'), { textContent: `Still needed: ${k.getUserIDs()[0] ?? '(no name)'}` }),
+      Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
+    );
+    list.append(li);
+  }
+  const status = $('tr-status');
+  if (!state.signReg) {
+    status.textContent = `${d.signed.signatures.length} signed`;
+    status.className = 'pill';
+  } else if (missing.length) {
+    status.textContent = `Not complete: ${d.signed.signatures.length} of ${state.signReg.keys.length}`;
+    status.className = 'pill warn';
+  } else {
+    status.textContent = 'Complete: every registered owner signed';
+    status.className = 'pill good';
+  }
+  $('tr-id').textContent = d.signed.documentId;
+  $('tr-codes').textContent = `${d.signed.codes.length} QR code${d.signed.codes.length === 1 ? '' : 's'} on the signature page at the end`;
+  $('dl-instrument').textContent = missing.length ? 'Download for the next owner (PDF)' : 'Download signed document (PDF)';
+  $('next-signer').hidden = missing.length === 0 && !!state.signReg;
+  $('tr-step1').textContent = missing.length
+    ? 'Not complete yet. Give the PDF to the next owner (they choose "Sign exactly as others" and load it), or let them sign on this computer.'
+    : 'Print it. The last page holds the QR codes with the signatures.';
+  $('text-result').hidden = false;
+}
+
+function setDraft(d: State['draft']) {
+  state.draft = d;
+  if (d) {
+    input('doc-title').value = d.title;
+    textarea('doc-text').value = d.text;
+    textarea('doc-return').value = d.returnTo;
+    textarea('doc-signers').value = d.signers;
+    for (const id of ['doc-text', 'doc-title', 'doc-signers', 'doc-return']) edited.add(id);
+  }
+  lockDraft();
+  updateCount();
+  if (d) renderDraft();
+  else $('text-result').hidden = true;
+}
+
+function useSignRegistration(regs: Registration[]) {
+  const sel = $<HTMLSelectElement>('s-reg-parcel');
+  sel.innerHTML = '';
+  const byParcel = new Map<string, Registration[]>();
+  for (const r of regs) byParcel.set(parcelKey(r.parcel), [...(byParcel.get(parcelKey(r.parcel)) ?? []), r]);
+  const merged = [...byParcel.values()].map((g) => mergeRegistrations(g));
+  merged.forEach((r, i) => sel.append(new Option(r.parcel ? `Parcel ${r.parcel}` : 'Keys without a parcel', String(i))));
+  sel.hidden = merged.length < 2;
+  // Pick the parcel already named in the document, if any.
+  const want = parcelKey(input('f-parcels').value);
+  const pick = Math.max(0, merged.findIndex((r) => want && parcelKey(r.parcel) === want));
+  sel.value = String(pick);
+  const choose = () => {
+    state.signReg = merged[Number(sel.value)] ?? null;
+    const info = $('s-reg-info');
+    info.className = 'hint ok';
+    info.innerHTML = '';
+    if (state.signReg) {
+      info.append(describeRegistration(state.signReg));
+      if (state.signReg.parcel && !state.draft && !input('f-parcels').value) input('f-parcels').value = state.signReg.parcel;
+    }
+    syncTemplate();
+    if (state.draft) renderDraft();
+    refresh();
+  };
+  sel.onchange = choose;
+  choose();
+}
+
+input('s-reg-file').addEventListener('change', async () => {
+  const f = input('s-reg-file').files?.[0];
+  if (!f) return;
+  const info = $('s-reg-info');
+  info.className = 'hint';
+  try {
+    useSignRegistration(await registrationsFromFile(f, (m) => (info.textContent = m)));
+  } catch (err) {
+    info.className = 'hint error';
+    info.textContent = (err as Error).message;
+  } finally {
+    input('s-reg-file').value = '';
+  }
+});
+
+/** Sign exactly as others: load a document another owner signed. */
+input('continue-file').addEventListener('change', async () => {
+  const f = input('continue-file').files?.[0];
+  if (!f) return;
+  const status = $('continue-status');
+  status.className = 'hint';
+  try {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const embedded = isPdfBytes(bytes) ? await draftFromPdf(bytes) : null;
+    if (embedded) {
+      const sigs: DocSignature[] = embedded.signatures.map((x) => ({
+        fingerprint: x.fingerprint,
+        userID: x.userID,
+        signedAt: new Date(x.signedAt),
+        bytes: fromBase64(x.sig),
+      }));
+      const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
+      if (embedded.registration && !state.signReg) {
+        const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+        useSignRegistration([{ parcel: embedded.registration.parcel, keys }]);
+      }
+      setDraft({ signed, title: embedded.title, text: embedded.text, returnTo: embedded.returnTo, signers: embedded.signers });
+    } else {
+      // A scan or photo of the signature page: the codes carry the text and signatures.
+      const { readCodesFromFile } = await import('./qrscan');
+      const codes = await readCodesFromFile(f, (m) => (status.textContent = m), (c) => {
+        const p = scanProgress(c.join('\n'));
+        return p.total > 0 && p.missing.length === 0;
+      });
+      const signed = await signedFromCodes(codes.join('\n'));
+      setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    }
+    const n = state.draft!.signed.signatures.length;
+    status.className = 'hint ok';
+    status.textContent = `Loaded a document signed by ${n} owner${n === 1 ? '' : 's'}. Unlock your key and choose "Add my signature".`;
+  } catch (err) {
+    status.className = 'hint error';
+    status.textContent = (err as Error).message;
+  } finally {
+    input('continue-file').value = '';
+  }
+});
+
 action(
   'text-sign-btn',
   async () => {
     if (!state.signer) return;
-    const text = textarea('doc-text').value;
-    if (!canonicalText(text)) throw new UserError('Write the document text first.');
-    const placeholder = text.match(/\[[A-Z][A-Z ]+\]/);
-    if (placeholder) throw new UserError(`Fill in ${placeholder[0]} before signing.`);
-    const result = await signText(state.signer, text);
-    state.signedText = {
-      result,
-      text,
-      title: input('doc-title').value.trim() || currentTemplate().title || 'Instrument',
-      returnTo: textarea('doc-return').value,
-      signers: textarea('doc-signers').value,
-    };
-    $('tr-id').textContent = result.documentId;
-    $('tr-codes').textContent = `${result.codes.length} QR code${result.codes.length === 1 ? '' : 's'} on the signature page at the end`;
-    $('text-result').hidden = false;
-    await downloadInstrument();
+    const me = state.signer.getFingerprint().toUpperCase();
+    if (state.signReg && !state.signReg.keys.some((k) => k.getFingerprint().toUpperCase() === me)) {
+      throw new UserError(
+        `Your key is not registered for ${state.signReg.parcel ? `parcel ${state.signReg.parcel}` : 'this parcel'}. Load the key of an owner listed on the registration.`,
+      );
+    }
+    if (state.draft) {
+      const d = state.draft;
+      const signed = await signText(state.signer, fullText(d.title, d.text), d.signed);
+      setDraft({ ...d, signed, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    } else {
+      const text = textarea('doc-text').value;
+      const title = input('doc-title').value.trim();
+      if (!canonicalText(text)) throw new UserError('Write the document text first.');
+      const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
+      if (placeholder) throw new UserError(`Fill in ${placeholder[0]} before signing.`);
+      if (state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
+        throw new UserError(`The text must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail.`);
+      }
+      const signed = await signText(state.signer, fullText(title, text));
+      setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    }
     $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
   'Signing...',
 );
 
+function draftForPdf(): DocumentDraft | undefined {
+  const d = state.draft;
+  if (!d) return undefined;
+  return {
+    format: 'stop-document-1',
+    title: d.title,
+    text: d.text,
+    returnTo: textarea('doc-return').value,
+    signers: textarea('doc-signers').value,
+    signatures: d.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
+    registration: state.signReg ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()) } : undefined,
+  };
+}
+
 async function downloadInstrument() {
-  const s = state.signedText;
-  if (!s) return;
+  const d = state.draft;
+  if (!d) return;
   const pdf = await instrumentPdf({
-    title: s.title,
-    text: s.text,
-    returnTo: s.returnTo,
-    signers: s.signers,
-    fingerprint: s.result.fingerprint,
-    userID: s.result.userID,
-    signedAt: s.result.signedAt,
-    documentId: s.result.documentId,
-    codes: s.result.codes,
+    title: d.title,
+    text: d.text,
+    returnTo: textarea('doc-return').value,
+    signers: textarea('doc-signers').value,
+    signatures: d.signed.signatures,
+    documentId: d.signed.documentId,
+    codes: d.signed.codes,
+    required: state.signReg
+      ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '' })) }
+      : undefined,
+    draft: draftForPdf(),
   });
-  download(pdf, `${fileSlug(s.title)}-signed-${s.result.documentId.slice(0, 8)}.pdf`, 'application/pdf');
+  const done = !missingSigners().length;
+  download(pdf, `${fileSlug(d.title || 'document')}-${done ? 'signed' : 'partly-signed'}-${d.signed.documentId.slice(0, 8)}.pdf`, 'application/pdf');
 }
 
 action('dl-instrument', downloadInstrument, 'Preparing PDF...');
+$('next-signer').addEventListener('click', () => {
+  // Keep the document; switch to the next owner's key.
+  state.key = null;
+  state.signer = null;
+  state.privateArmored = null;
+  state.unsaved = false;
+  refresh();
+  showTab('key');
+  $('dl-note').textContent = '';
+  banner('Load the next owner’s key and unlock it, then return to "Sign a document" and choose "Add my signature". The document is kept.');
+  $('boot').className = 'callout';
+});
 action('dl-text-txt', () => {
-  const s = state.signedText;
-  if (s) download(s.result.canonical, `${fileSlug(s.title)}-${s.result.documentId.slice(0, 8)}.txt`, 'text/plain');
+  const d = state.draft;
+  if (d) download(d.signed.canonical, `${fileSlug(d.title || 'document')}-${d.signed.documentId.slice(0, 8)}.txt`, 'text/plain');
 });
 action('dl-text-sig', () => {
-  const s = state.signedText;
-  if (s) download(s.result.signature, `${fileSlug(s.title)}-${s.result.documentId.slice(0, 8)}.txt.sig`, 'application/pgp-signature');
+  const d = state.draft;
+  if (d) download(d.signed.signature, `${fileSlug(d.title || 'document')}-${d.signed.documentId.slice(0, 8)}.txt.sig`, 'application/pgp-signature');
 });
 
 // ---------------------------------------------------------------------------
 // Step 4: verify
 // ---------------------------------------------------------------------------
-let verifyKey: AnyKey | null = null;
+let verifyRegs: Registration[] = [];
 
-function showVerifyKey(key: AnyKey | null, error?: string) {
-  const info = $('v-key-info');
-  verifyKey = key;
+function showVerifyRegs(error?: string) {
+  const info = $('v-reg-info');
   info.innerHTML = '';
+  $('v-reg-clear').hidden = !verifyRegs.length;
   if (error) {
-    info.textContent = error;
     info.className = 'hint error';
+    info.textContent = error;
     return;
   }
-  if (!key) {
-    info.textContent = 'Or choose the registration form PDF, or a scan or photo of its page 2.';
-    info.className = 'hint';
-    return;
-  }
-  const s = summarize(key);
-  info.append(
-    'Key on file: ',
-    Object.assign(document.createElement('strong'), { className: 'mono', textContent: formatFingerprint(s.fingerprint) }),
-    ` (${s.userIDs[0] ?? 'no name'}). Compare it with the fingerprint printed on the registration form.`,
-  );
   info.className = 'hint ok';
-}
-
-async function loadVerifyKeyText(text: string) {
-  if (!text.trim()) return showVerifyKey(null);
-  try {
-    showVerifyKey((await readAnyKey(text)).toPublic());
-  } catch (err) {
-    showVerifyKey(null, (err as Error).message);
+  const byParcel = new Map<string, Registration[]>();
+  for (const r of verifyRegs) byParcel.set(parcelKey(r.parcel), [...(byParcel.get(parcelKey(r.parcel)) ?? []), r]);
+  for (const g of byParcel.values()) {
+    try {
+      info.append(describeRegistration(mergeRegistrations(g)));
+    } catch (err) {
+      info.className = 'hint error';
+      info.append((err as Error).message);
+    }
   }
+  if (verifyRegs.length) info.append('Compare these fingerprints with the ones printed on the registration forms.');
 }
 
-textarea('v-key').addEventListener('input', () => loadVerifyKeyText(textarea('v-key').value));
-input('v-key-file').addEventListener('change', async () => {
-  const f = input('v-key-file').files?.[0];
-  if (!f) return;
-  textarea('v-key').value = '';
-  const info = $('v-key-info');
+input('v-reg-file').addEventListener('change', async () => {
+  const files = [...(input('v-reg-file').files ?? [])];
+  if (!files.length) return;
+  const info = $('v-reg-info');
   info.className = 'hint';
   try {
-    const key = await keyFromFile(f, (m) => (info.textContent = m));
-    showVerifyKey(key.toPublic());
+    for (const f of files) verifyRegs.push(...(await registrationsFromFile(f, (m) => (info.textContent = m))));
+    showVerifyRegs();
   } catch (err) {
-    showVerifyKey(null, (err as Error).message);
+    showVerifyRegs((err as Error).message);
   } finally {
-    input('v-key-file').value = ''; // so choosing the same file again still works
+    input('v-reg-file').value = '';
   }
 });
+$('v-reg-clear').addEventListener('click', () => {
+  verifyRegs = [];
+  showVerifyRegs();
+});
+$('v-use-sign-reg').addEventListener('click', () => {
+  if (state.signReg) verifyRegs = [state.signReg];
+  showVerifyRegs();
+});
+$('v-use-mine').addEventListener('click', () => {
+  if (state.key) verifyRegs = [{ parcel: '', keys: [state.key.toPublic()] }];
+  showVerifyRegs();
+});
 
+/** The registration to check against: the loaded parcel, or the one the signed text names. */
+async function registrationFor(payload: string): Promise<Registration> {
+  const byParcel = new Map<string, Registration[]>();
+  for (const r of verifyRegs) byParcel.set(parcelKey(r.parcel), [...(byParcel.get(parcelKey(r.parcel)) ?? []), r]);
+  const groups = [...byParcel.values()];
+  if (groups.length === 1) return mergeRegistrations(groups[0]);
+  let text = '';
+  try {
+    text = parcelKey((await decodeCodes(payload)).canonical);
+  } catch {
+    /* codes incomplete: reported by the check itself */
+  }
+  const named = groups.filter((g) => g[0].parcel && text.includes(parcelKey(g[0].parcel)));
+  if (named.length === 1) return mergeRegistrations(named[0]);
+  throw new UserError('Registrations for several parcels are loaded. Clear them and load the registration for this filing’s parcel.');
+}
 
 input('v-codes-file').addEventListener('change', async () => {
   const f = input('v-codes-file').files?.[0];
@@ -709,7 +1080,7 @@ input('v-codes-file').addEventListener('change', async () => {
     textarea('v-payload').value = sigCodes.join('\n') + '\n';
     textarea('v-payload').dispatchEvent(new Event('input'));
     // Check right away when everything needed is there.
-    if (verifyKey && scanProgress(textarea('v-payload').value).missing.length === 0) $('verify-btn').click();
+    if (verifyRegs.length && scanProgress(textarea('v-payload').value).missing.length === 0) $('verify-btn').click();
   } catch (err) {
     el.className = 'hint error';
     el.textContent = (err as Error).message;
@@ -717,44 +1088,18 @@ input('v-codes-file').addEventListener('change', async () => {
     input('v-codes-file').value = '';
   }
 });
-$('v-use-mine').addEventListener('click', async () => {
-  if (!state.key) return;
-  input('v-key-file').value = '';
-  textarea('v-key').value = summarize(state.key).publicArmored;
-  await loadVerifyKeyText(textarea('v-key').value);
-});
 
-let verifiedText = '';
 /** The last completed paper check, for the printable certificate. */
 let lastCheck: {
   result: 'good' | 'bad';
   checks: string[];
-  key: AnyKey;
+  owners: { userID: string; fingerprint: string; result: string; signedAt?: Date }[];
+  parcel: string;
   documentId: string;
-  signedAt?: Date;
   signedText: string;
   codes: string[];
 } | null = null;
 
-function compareWithPaper() {
-  const out = $('vr-compare-result');
-  const paper = textarea('vr-compare').value;
-  out.innerHTML = '';
-  if (!paper.trim() || !verifiedText) return;
-  const d = firstDifference(verifiedText, paper);
-  if (!d) {
-    out.className = 'hint ok';
-    out.textContent = 'Matches: the paper text is exactly what the owner signed.';
-    return;
-  }
-  out.className = 'hint error';
-  out.append(
-    `Different, starting at character ${d.index + 1}.`,
-    Object.assign(document.createElement('span'), { className: 'diff', textContent: `Signed: ${d.signed}` }),
-    Object.assign(document.createElement('span'), { className: 'diff', textContent: `Paper:  ${d.other}` }),
-  );
-}
-textarea('vr-compare').addEventListener('input', compareWithPaper);
 
 textarea('v-payload').addEventListener('input', () => {
   const v = textarea('v-payload').value;
@@ -776,7 +1121,6 @@ action(
   async () => {
     const c = lastCheck;
     if (!c) throw new UserError('Check a filing first.');
-    const s = summarize(c.key);
     const pdf = await certificatePdf({
       result: c.result,
       checks: c.checks,
@@ -784,10 +1128,8 @@ action(
       verifierTitle: input('c-title').value,
       agency: input('c-agency').value,
       parcels: input('c-parcels').value,
-      keyFingerprint: s.fingerprint,
-      keyUserID: s.userIDs[0] ?? '',
+      owners: c.owners,
       documentId: c.documentId,
-      signedAt: c.signedAt,
       checkedAt: new Date(),
       signedText: c.signedText,
       codes: c.codes,
@@ -798,7 +1140,10 @@ action(
 );
 
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
-  good: { title: 'GOOD SIGNATURE. Matches the registered key.', action: 'Compare the signed text below with the paper. If it matches, record as usual.' },
+  good: {
+    title: 'GOOD. Every registered owner signed.',
+    action: 'Compare the signed text below with the paper. If it matches, record as usual.',
+  },
   bad: {
     title: 'DOES NOT VERIFY.',
     action: 'Hold the filing. Flag as suspected forgery, preserve the submission, and notify the owner of record.',
@@ -812,8 +1157,7 @@ const VERDICT: Record<Verdict, { title: string; action: string }> = {
 action(
   'verify-btn',
   async () => {
-    if (!verifyKey && textarea('v-key').value.trim()) await loadVerifyKeyText(textarea('v-key').value);
-    if (!verifyKey) throw new UserError('Scan, paste or choose the public key registered for the parcel.');
+    if (!verifyRegs.length) throw new UserError('Load the parcel registration first (the registration form PDF, a scan or a photo).');
     const payload = textarea('v-payload').value;
     $('vr-text-wrap').hidden = true;
     if (!payload.trim()) {
@@ -826,34 +1170,45 @@ action(
     $('cert-wrap').hidden = true;
     if (payload.includes('PGPQ1|')) {
       // Paper filing: the codes carry the signed text.
-      r = await verifyScannedText({ scanned: payload, registeredKey: verifyKey });
-      verifiedText = r.signedText ?? '';
+      const registration = await registrationFor(payload);
+      r = await verifyScannedText({ scanned: payload, registration });
       if (r.verdict !== 'incomplete' && r.documentId && r.signedText) {
         lastCheck = {
           result: r.verdict === 'good' ? 'good' : 'bad',
           checks: r.checks.map((c) => `${c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked'}: ${c.label}`),
-          key: verifyKey,
+          owners: (r.signers ?? []).map((x) => ({
+            userID: x.userID || (x.registered ? '' : 'NOT REGISTERED'),
+            fingerprint: x.fingerprint,
+            result: x.state === 'pass' ? 'Valid signature' : x.detail,
+            signedAt: x.signedAt,
+          })),
+          parcel: registration.parcel,
           documentId: r.documentId,
-          signedAt: r.signedAt,
           signedText: r.signedText,
           codes: orderedCodes(payload),
         };
         if (!input('c-agency').value) input('c-agency').value = `${BRAND.county} Recorder`;
         const parcel = /PARCEL NUMBERS?:\s*([0-9][0-9A-Z-]*(?:\s*,\s*[0-9][0-9A-Z-]*)*)/.exec(r.signedText);
-        input('c-parcels').value = parcel ? parcel[1] : '';
+        input('c-parcels').value = registration.parcel || (parcel ? parcel[1] : '');
         $('cert-wrap').hidden = false;
       }
-      if (r.signedText && r.verdict === 'good') {
+      if (r.signedText) {
         $('vr-text').textContent = r.signedText;
         $('vr-text-wrap').hidden = false;
-        compareWithPaper();
       }
     } else {
       // Electronic filing: a PGPSIG1 code plus the signed file.
       const file = input('v-doc').files?.[0];
+      const keys = verifyRegs.flatMap((x) => x.keys);
+      let named = '';
+      try {
+        named = parsePayload(payload).fingerprint;
+      } catch {
+        /* reported by the check */
+      }
       r = await verifyFiling({
         payload,
-        registeredKey: verifyKey,
+        registeredKey: keys.find((k) => k.getFingerprint().toUpperCase() === named) ?? keys[0],
         document: file ? new Uint8Array(await file.arrayBuffer()) : undefined,
       });
     }

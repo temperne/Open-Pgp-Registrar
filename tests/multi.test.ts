@@ -109,9 +109,9 @@ describe('parcel registration codes', () => {
   });
 });
 
-function has(cmd: string) {
+function has(cmd: string, arg = '--version') {
   try {
-    execFileSync(cmd, ['--version'], { stdio: 'ignore' });
+    execFileSync(cmd, [arg], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -134,6 +134,93 @@ describe.skipIf(!has('gpg'))('GnuPG', () => {
       }).toString();
       expect(out).toContain(`VALIDSIG ${a.getFingerprint().toUpperCase()}`);
       expect(out).toContain(`VALIDSIG ${b.getFingerprint().toUpperCase()}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('multi-owner PDFs', () => {
+  it('makes one registration per parcel, each carrying the full key list', async () => {
+    const { registrationPdf, registrationsFromPdf, keyTextFromPdf } = await import('../src/pdf');
+    const pdf = await registrationPdf({
+      ownerName: 'Example Owner',
+      parcels: '123-45-6789\n123-45-6790',
+      coOwnerKeys: [b.toPublic()],
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    });
+    const regs = await registrationsFromPdf(pdf);
+    expect(regs.map((r) => r.parcel)).toEqual(['123-45-6789', '123-45-6790']);
+    for (const r of regs) expect(r.keys.map((k) => k.getFingerprint())).toEqual([a.getFingerprint(), b.getFingerprint()]);
+    // Loading "a key" from the form still gives this registrant's own key, not a co-owner's.
+    expect((await readAnyKey(await keyTextFromPdf(pdf))).getFingerprint()).toBe(a.getFingerprint());
+  });
+
+  it('embeds the document so the next owner can sign exactly the same text', async () => {
+    const { instrumentPdf, draftFromPdf } = await import('../src/pdf');
+    const { toBase64 } = await import('../src/crypto');
+    const one = await signText(a, text);
+    const pdf = await instrumentPdf({
+      title: '',
+      text,
+      signatures: one.signatures,
+      documentId: one.documentId,
+      codes: one.codes,
+      required: { parcel: reg.parcel, keys: reg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] })) },
+      draft: {
+        format: 'stop-document-1',
+        title: '',
+        text,
+        returnTo: '',
+        signers: '',
+        signatures: one.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
+      },
+    });
+    const d = await draftFromPdf(pdf);
+    expect(d?.text).toBe(text);
+    expect(d?.signatures).toHaveLength(1);
+  });
+
+  it('public key card loads as the owner’s public key', async () => {
+    const { publicKeyCardPdf, keyTextFromPdf } = await import('../src/pdf');
+    const pdf = await publicKeyCardPdf({
+      fingerprint: b.getFingerprint().toUpperCase(),
+      userID: b.getUserIDs()[0],
+      created: b.getCreationTime(),
+      publicArmored: b.toPublic().armor(),
+      publicKeyBinary: b.toPublic().write(),
+    });
+    const k = await readAnyKey(await keyTextFromPdf(pdf));
+    expect(k.isPrivate()).toBe(false);
+    expect(k.getFingerprint()).toBe(b.getFingerprint());
+  });
+
+  it.skipIf(!has('pdftoppm', '-v') || !has('zbarimg'))('registration key list scans back from page 2', async () => {
+    const { registrationPdf } = await import('../src/pdf');
+    const pdf = await registrationPdf({
+      ownerName: 'Example Owner',
+      parcels: '123-45-6789',
+      coOwnerKeys: [b.toPublic()],
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    });
+    const dir = mkdtempSync('/tmp/opr-reg-');
+    try {
+      writeFileSync(join(dir, 'r.pdf'), pdf);
+      execFileSync('pdftoppm', ['-r', '200', '-png', '-f', '2', '-l', '2', '-singlefile', join(dir, 'r.pdf'), join(dir, 'p2')]);
+      const scanned = execFileSync('zbarimg', ['--quiet', '--raw', join(dir, 'p2.png')], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      const back = await decodeRegistrationCodes(scanned);
+      expect(back.parcel).toBe('123-45-6789');
+      expect(back.keys).toHaveLength(2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -225,10 +225,8 @@ describe.skipIf(!has('zbarimg') || !has('pdftoppm', '-v'))('verification certifi
       verifierTitle: 'Recording Clerk',
       agency: 'Pima County Recorder',
       parcels: '000-00-0000',
-      keyFingerprint: key.getFingerprint().toUpperCase(),
-      keyUserID: key.getUserIDs()[0],
+      owners: [{ userID: key.getUserIDs()[0], fingerprint: key.getFingerprint().toUpperCase(), result: 'Valid signature', signedAt: r.signedAt }],
       documentId: r.documentId!,
-      signedAt: r.signedAt,
       checkedAt: new Date(),
       signedText: r.signedText!,
       codes: orderedCodes(signed.codes.join('\n')),
@@ -239,7 +237,7 @@ describe.skipIf(!has('zbarimg') || !has('pdftoppm', '-v'))('verification certifi
       const txt = execFileSync('pdftotext', [join(dir, 'c.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
       expect(txt).toContain('Pat Example');
       expect(canonicalText(txt)).toContain(canonicalText('determined that the parcel(s) below are protected by the Pima County S.T.O.P. Initiative'));
-      expect(txt).toContain('GOOD SIGNATURE');
+      expect(txt).toContain('RESULT: GOOD');
       expect(canonicalText(txt)).toContain(signed.canonical.slice(0, 120));
       execFileSync('pdftoppm', ['-r', '200', '-png', join(dir, 'c.pdf'), join(dir, 'p')]);
       let scanned = '';

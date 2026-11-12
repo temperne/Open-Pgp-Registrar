@@ -625,3 +625,66 @@ button.linklike {
   padding-top: 4px;
   border-top: 1px solid var(--rule);
 }
+
+/* ---- Multiple owners ---- */
+.subcard {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+}
+.subcard h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.subcard select {
+  margin-top: 8px;
+}
+fieldset.coowners {
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  margin: 16px 0 0;
+  padding: 10px 14px 12px;
+}
+fieldset.coowners legend {
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding: 0 4px;
+}
+.keylist {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.keylist li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+.keylist li .mono {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.keylist li.signed {
+  border-color: color-mix(in srgb, var(--good) 45%, var(--rule));
+}
+.keylist li.waiting {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--rule));
+}
+.pill.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: transparent;
+}
+#locked-note .linklike {
+  margin-left: 4px;
+}

@@ -16,21 +16,26 @@ connections with a Content-Security-Policy.
    load that PDF, or on a phone take a photo of the printed page, and enter your
    passphrase. Keys from GnuPG, Kleopatra or similar
    work too.
-2. **Register.** Download the registration form (PDF). Print it, sign it before a
-   notary, have a local law enforcement officer complete the attestation box, and
-   file it with the Recorder. The Recorder calls the officer's agency to confirm
-   before activating the key.
-3. **Sign a document.** Start from a template (warranty, quitclaim or beneficiary
-   deed, or blank), fill in the details, and sign. The app prints the document
-   with the usual ink signature lines and notary block, plus a signature page
-   whose QR codes carry the digital signature *and the exact text signed*. Sign it
-   in ink before the notary as usual. The digital signature is an extra layer.
+2. **Register.** Enter your parcel numbers (one form per parcel) and add each
+   co-owner's public key (they give you their *public key card*). Print, sign before
+   a notary, have a local law enforcement officer complete the attestation box, and
+   file it with the Recorder, who calls the officer's agency to confirm. Each
+   co-owner files their own form listing the same keys. Every listed key must sign.
+3. **Sign a document.** Load the parcel's registration, start from a template, and
+   sign. Co-owners sign the same text: on the same computer ("Next owner signs on
+   this computer"), or later with **Sign exactly as others** (load the partly signed
+   PDF, or a photo of its signature page). The app prints the document with ink
+   signature lines and a notary block, plus a signature page whose QR codes carry
+   every owner's digital signature and the exact text. It says COMPLETE once every
+   registered owner has signed. Sign in ink before the notary as usual; the digital
+   signatures are an extra layer.
 
 ## What the Recorder does
 
-Use **Check a filing**. Load the owner's registered key (scan the code on the
-registration form, or load the form PDF), then scan every QR code on the
-signature page. The tool checks the signature and shows exactly what the owner
+Use **Check a filing**. Load the parcel's registration form (PDF, scan or photo;
+one owner's form lists every owner's key), then scan every QR code on the
+signature page, or load the Recorder's scan of the document. Every registered
+owner must have signed the same text, and the text must name the parcel. The tool checks the signature and shows exactly what the owner
 signed, so staff can compare it with the paper. Capital letters and spacing don't
 matter; every word and number does. The result is **good**, **does not verify**
 (hold, suspected forgery) or **not checked yet** (codes missing). A handheld 2D

@@ -77,7 +77,7 @@ function scan(pdf: Uint8Array): string[] {
     for (const f of readdirSync(dir).filter((n) => n.endsWith('.png')).sort()) {
       try {
         const typed = execFileSync('zbarimg', ['--quiet', join(dir, f)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-        out.push(...typed.split(/\n(?=[A-Z0-9-]+:)/).map((s) => s.trim()).filter(Boolean));
+        out.push(...typed.split(/\n(?=(?:QR-Code|CODE-128|[A-Z0-9-]+):)/).map((s) => s.trim()).filter(Boolean));
       } catch {
         /* no codes on this page */
       }
