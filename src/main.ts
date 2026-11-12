@@ -556,7 +556,7 @@ action(
       signers: textarea('doc-signers').value,
     };
     $('tr-id').textContent = result.documentId;
-    $('tr-codes').textContent = `${result.codes.length} QR code${result.codes.length === 1 ? '' : 's'} on the last page`;
+    $('tr-codes').textContent = `${result.codes.length} QR code${result.codes.length === 1 ? '' : 's'} on the signature page at the end`;
     $('text-result').hidden = false;
     await downloadInstrument();
     $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -606,7 +606,7 @@ function showVerifyKey(key: AnyKey | null, error?: string) {
     return;
   }
   if (!key) {
-    info.textContent = 'Or choose the registration form PDF; the key is embedded in it.';
+    info.textContent = 'Or choose the registration form PDF, or a scan or photo of its page 2.';
     info.className = 'hint';
     return;
   }
@@ -633,10 +633,72 @@ input('v-key-file').addEventListener('change', async () => {
   const f = input('v-key-file').files?.[0];
   if (!f) return;
   textarea('v-key').value = '';
+  const info = $('v-key-info');
   try {
-    showVerifyKey((await keyFromFile(f)).toPublic());
+    let key: AnyKey;
+    try {
+      key = await keyFromFile(f); // key file, or a PDF made by this tool (key embedded)
+    } catch (first) {
+      // A scan or photo of the registration form: read its public key QR code.
+      info.className = 'hint';
+      const { readCodesFromFile } = await import('./qrscan');
+      const codes = await readCodesFromFile(
+        f,
+        (m) => (info.textContent = m),
+        (c) => c.some((x) => x.replace(/\s+/g, '').startsWith('PGPKEY1|')),
+      );
+      const keyCode = codes.find((c) => c.replace(/\s+/g, '').startsWith('PGPKEY1|'));
+      if (!keyCode) {
+        throw codes.length || isImage(f)
+          ? new Error('No public key code found. Use page 2 of the registration form, which has the full public key code.')
+          : first;
+      }
+      key = await readAnyKey(keyCode);
+    }
+    showVerifyKey(key.toPublic());
   } catch (err) {
     showVerifyKey(null, (err as Error).message);
+  } finally {
+    input('v-key-file').value = ''; // so choosing the same file again still works
+  }
+});
+
+function isImage(f: File) {
+  return f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic|tiff?)$/i.test(f.name);
+}
+
+input('v-codes-file').addEventListener('change', async () => {
+  const f = input('v-codes-file').files?.[0];
+  if (!f) return;
+  const el = $('v-progress');
+  el.className = 'hint';
+  try {
+    const { readCodesFromFile } = await import('./qrscan');
+    const codes = await readCodesFromFile(
+      f,
+      (m) => (el.textContent = m),
+      (c) => {
+        const p = scanProgress(c.join('\n'));
+        return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
+      },
+    );
+    const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
+    if (!sigCodes.length) {
+      el.className = 'hint error';
+      el.textContent = codes.length
+        ? 'Found QR codes, but none are signature codes. Load the signed document, including its signature page.'
+        : 'No QR codes found. If this is a scan or photo, make sure the signature page is included, sharp and well lit.';
+      return;
+    }
+    textarea('v-payload').value = sigCodes.join('\n') + '\n';
+    textarea('v-payload').dispatchEvent(new Event('input'));
+    // Check right away when everything needed is there.
+    if (verifyKey && scanProgress(textarea('v-payload').value).missing.length === 0) $('verify-btn').click();
+  } catch (err) {
+    el.className = 'hint error';
+    el.textContent = (err as Error).message;
+  } finally {
+    input('v-codes-file').value = '';
   }
 });
 $('v-use-mine').addEventListener('click', async () => {

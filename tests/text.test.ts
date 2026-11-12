@@ -71,7 +71,7 @@ describe('codes', () => {
     expect(signed.codes.length).toBeGreaterThanOrEqual(1);
     for (const c of signed.codes) {
       expect(c).toMatch(/^PGPQ1\|[0-9A-F]{12}\|\d+\/\d+\|/);
-      expect(c.length).toBeLessThan(760);
+      expect(c.length).toBeLessThan(360);
     }
   });
 

@@ -824,13 +824,15 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   y -= 14;
 
   const n = info.codes.length;
+  // Generous white space between codes keeps them easy to tell apart, for
+  // scanners and for the tool's own reader.
   const perRow = 3;
-  const gap = (CONTENT_W - perRow * 150) / (perRow - 1);
-  const size = 150;
+  const size = 120;
+  const gap = (CONTENT_W - perRow * size) / (perRow - 1);
   for (let i = 0; i < n; i++) {
     const col = i % perRow;
     if (col === 0) {
-      if (y - (size + 22) < BOTTOM) {
+      if (y - (size + 30) < BOTTOM) {
         sp = doc.addPage([PAGE_W, PAGE_H]);
         sigPages.push(sp);
         y = header(sp, fonts, 'OpenPGP signature page (continued)', 'Owner’s Digital Signature');
@@ -841,7 +843,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     drawQr(sp, qr, x, y, size);
     const label = `Code ${i + 1} of ${n}`;
     sp.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
-    if (col === perRow - 1 || i === n - 1) y -= size + 26;
+    if (col === perRow - 1 || i === n - 1) y -= size + 62;
   }
 
   y = text(

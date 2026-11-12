@@ -345,8 +345,8 @@ export function fromBase64(b64: string) {
 
 export const DOC_PREFIX = 'PGPDOC1';
 export const PART_PREFIX = 'PGPQ1';
-/** Characters of the message per QR code. Keeps each code small enough to scan easily from paper. */
-export const PART_SIZE = 700;
+/** Characters of the message per QR code. Small codes (about version 14) read reliably from scans and photos at any resolution; big dense ones do not. */
+export const PART_SIZE = 320;
 /** Longest canonical text accepted, to keep the number of codes reasonable. */
 export const MAX_TEXT = 30000;
 

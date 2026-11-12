@@ -310,13 +310,15 @@
           <label for="v-key">Registered public key for the parcel</label>
           <textarea id="v-key" rows="3" spellcheck="false" placeholder="Scan the public key code on page 2 of the registration form, or paste the key"></textarea>
           <div class="row small-gap">
-            <input id="v-key-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt" aria-label="Registration form PDF or public key file" />
+            <input id="v-key-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,image/*" aria-label="Registration form PDF, a scan or photo of it, or a public key file" />
             <button type="button" id="v-use-mine" class="ghost" hidden>Use the key from step 1</button>
           </div>
           <p id="v-key-info" class="hint">Or choose the registration form PDF; the key is embedded in it.</p>
 
           <label for="v-payload">Signature codes from the document</label>
           <textarea id="v-payload" rows="4" spellcheck="false" placeholder="Scan every QR code on the signature page, in any order. They start with PGPQ1|"></textarea>
+          <label for="v-codes-file">Or load the signed document <span class="opt">(the PDF, a scanned PDF of the paper, or a photo; every page is searched)</span></label>
+          <input id="v-codes-file" type="file" accept=".pdf,application/pdf,image/*" />
           <p id="v-progress" class="hint" role="status"></p>
 
           <details class="advanced">
