@@ -141,6 +141,8 @@ at fractional pixel sizes, which real scans and photos produce.
    Recorder's own wording or form numbers? The project URL is still a placeholder.
 5. **Hosting.** Should it be published (for example, GitHub Pages) or handed out as
    the single HTML file?
-6. **Camera scanning.** Handheld scanners work now, because they type into the
-   text boxes. Should we add phone-camera QR scanning?
+6. **Camera scanning.** Not needed for now: the Recorder already scans every
+   document it records, and "Check a filing" accepts that scan (PDF or image) and
+   reads all the codes from it. Handheld scanners also work. Live phone-camera
+   scanning could be added later if counter staff want it.
 7. **License.** None has been chosen yet.
