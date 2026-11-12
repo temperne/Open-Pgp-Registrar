@@ -311,12 +311,18 @@
               <input id="reg-county" placeholder="e.g. Pima County" />
             </div>
             <div class="span2">
-              <label for="reg-signers">People signing this registration <span class="opt">(one per line, optional capacity: "Jane Doe, Trustee")</span></label>
-              <textarea id="reg-signers" rows="2" class="prose" placeholder="Leave blank if only the owner above signs"></textarea>
-              <p class="hint">
-                Everyone who will hold or authorize this key signs it, for example both spouses sharing one key, or a
-                company's officers. Each person gets their own signature line, notary acknowledgment and officer check.
-              </p>
+              <fieldset class="signers">
+                <legend>People signing this registration</legend>
+                <p class="hint">
+                  Everyone who will hold or authorize this key signs it, for example both spouses sharing one key, or a
+                  company's officers. Each person gets their own signature line and notary acknowledgment. An
+                  <strong>individual</strong> is also checked by a law enforcement officer; someone signing for a
+                  <strong>business, trust or other entity</strong> is checked by <span data-brand="entityAuthority"></span>,
+                  which confirms the entity and their title. Leave the name blank if only the owner above signs.
+                </p>
+                <div id="signer-rows"></div>
+                <button type="button" id="add-signer" class="linklike">Add another signer</button>
+              </fieldset>
             </div>
             <div id="reg-prev-wrap" hidden>
               <label for="reg-prev">Previous key fingerprint <span class="opt">(to retire)</span></label>

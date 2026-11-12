@@ -257,7 +257,7 @@ export interface RegistrationInfo {
    * company's officers), each with an optional capacity: "Jane Doe, Trustee".
    * Each gets a signature line, notary box and officer box. Defaults to the owner.
    */
-  signatories?: string[];
+  signatories?: (string | Signatory)[];
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -325,13 +325,32 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   return doc.save();
 }
 
-function signatoriesOf(info: RegistrationInfo) {
-  const list = (info.signatories ?? []).map((x) => x.trim()).filter(Boolean);
-  return list.length ? list : [info.ownerName.trim()];
+/** A person signing a registration: for themselves, or for a business, trust or other entity. */
+export interface Signatory {
+  name: string;
+  kind: 'individual' | 'entity';
+  /** Entity signers: the entity's name and the signer's title in it (Manager, Trustee...). */
+  entity?: string;
+  title?: string;
+}
+
+function signatoriesOf(info: RegistrationInfo): Signatory[] {
+  const list = (info.signatories ?? [])
+    .map((x) => (typeof x === 'string' ? { name: x.trim(), kind: 'individual' as const } : { ...x, name: x.name.trim() }))
+    .filter((x) => x.name || x.entity?.trim());
+  return list.length ? list : [{ name: info.ownerName.trim(), kind: 'individual' }];
+}
+
+/** "Jane Doe" or "Jane Doe, Manager, for Doe Holdings LLC". */
+export function signatoryLabel(s: Signatory) {
+  if (s.kind !== 'entity') return s.name;
+  return [s.name || '(name)', s.title?.trim(), s.entity?.trim() ? `for ${s.entity.trim()}` : ''].filter(Boolean).join(', ');
 }
 
 /** Signature line, notary and officer boxes, callback rule and a Recorder box, starting at y. */
-function signAndVerify(p: PDFPage, fonts: Fonts, y: number, signer: string, tag: string, recFields: string[]) {
+function signAndVerify(p: PDFPage, fonts: Fonts, y: number, who: Signatory, tag: string, recFields: string[]) {
+  const signer = signatoryLabel(who);
+  const entity = who.kind === 'entity';
   rule(p, y, M, M + 330, INK);
   rule(p, y, M + 360, PAGE_W - M, INK);
   text(p, fonts, `Signature of ${signer || 'owner'}${tag ? `  (${tag})` : ''}`, y - 3, { size: 8, color: MUTED, width: 330 });
@@ -360,15 +379,34 @@ function signAndVerify(p: PDFPage, fonts: Fonts, y: number, signer: string, tag:
 
   const rx = M + colW + 22;
   const rw = colW - 16;
-  let ry = text(p, fonts, '2. Law enforcement attestation', y - 8, { x: rx, size: 9, font: fonts.bold });
-  ry = text(p, fonts, 'I met this signer in person and checked government photo ID.', ry - 3, { x: rx, size: 8, color: MUTED, width: rw });
-  const fieldRows: [string, string][] = [
-    ['Officer name', 'Badge no.'],
-    ['Agency', 'Agency phone'],
-    ['Signature', 'Date'],
-  ];
+  let ry = text(p, fonts, entity ? '2. Business authority verification' : '2. Law enforcement attestation', y - 8, {
+    x: rx,
+    size: 9,
+    font: fonts.bold,
+    width: rw,
+  });
+  ry = text(
+    p,
+    fonts,
+    entity
+      ? 'Records show the entity exists and the signer holds this title. Photo ID checked.'
+      : 'I met this signer in person and checked government photo ID.',
+    ry - 3,
+    { x: rx, size: 8, color: MUTED, width: rw },
+  );
+  const fieldRows: [string, string][] = entity
+    ? [
+        ['Official name', 'Office phone'],
+        ['Entity file / license no.', 'Title verified'],
+        ['Signature', 'Date'],
+      ]
+    : [
+        ['Officer name', 'Badge no.'],
+        ['Agency', 'Agency phone'],
+        ['Signature', 'Date'],
+      ];
   for (const [a, b] of fieldRows) {
-    ry -= 20;
+    ry -= entity ? 16 : 20; // the business box has an extra line of text above
     const split = rx + rw * 0.62;
     rule(p, ry, rx, split - 8, INK);
     rule(p, ry, split, rx + rw, INK);
@@ -381,9 +419,13 @@ function signAndVerify(p: PDFPage, fonts: Fonts, y: number, signer: string, tag:
   y = text(
     p,
     fonts,
-    'Callback rule: a notary stamp alone can be forged, so the officer step is also required. Before the key is activated, the Recorder ' +
-      "phones the officer's agency at its published number and confirms the officer met this signer and signed. The same two steps and " +
-      'callback apply to replacing a lost key.',
+    entity
+      ? `Callback rule: a notary stamp alone can be forged, and only the entity's records show who may sign for it. Before the key is ` +
+          `activated, the Recorder phones ${BRAND.entityAuthority} at its published number and confirms the official verified this ` +
+          'signer and their title. The same steps and callback apply to replacing a lost key.'
+      : 'Callback rule: a notary stamp alone can be forged, so the officer step is also required. Before the key is activated, the Recorder ' +
+          "phones the officer's agency at its published number and confirms the officer met this signer and signed. The same two steps and " +
+          'callback apply to replacing a lost key.',
     y,
     { size: 8, color: MUTED },
   );
@@ -482,7 +524,8 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
       [
         { label: 'Parcel number', value: parcel },
         { label: 'Key fingerprint', value: fingerprintTwoLines(fpr), mono: true },
-        { label: 'Signer', value: signers[i] || '' },
+        { label: 'Signer', value: signatoryLabel(signers[i]) },
+        { label: 'Signs as', value: signers[i].kind === 'entity' ? 'Business, trust or other entity' : 'Individual' },
       ],
       sy,
       CONTENT_W,

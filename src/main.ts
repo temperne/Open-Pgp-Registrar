@@ -42,6 +42,7 @@ import {
   instrumentPdf,
   setBrandSeal,
   certificatePdf,
+  type Signatory,
   publicKeyCardPdf,
   registrationsFromPdf,
   draftFromPdf,
@@ -486,6 +487,54 @@ function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
   return li;
 }
 
+// People signing the registration: one row each (name, type, and for an entity its name and the title).
+function addSignerRow(initial?: Partial<Signatory>) {
+  const row = document.createElement('div');
+  row.className = 'signer-row';
+  const n = $('signer-rows').children.length + 1;
+  const name = Object.assign(document.createElement('input'), { placeholder: 'Full name', value: initial?.name ?? '' });
+  name.className = 'sr-name';
+  name.setAttribute('aria-label', `Signer ${n} name`);
+  const kind = document.createElement('select');
+  kind.className = 'sr-kind';
+  kind.setAttribute('aria-label', `Signer ${n} signs as`);
+  kind.append(new Option('Individual', 'individual'), new Option('For a business, trust or other entity', 'entity'));
+  kind.value = initial?.kind ?? 'individual';
+  const entity = Object.assign(document.createElement('input'), { placeholder: 'Entity name (e.g. Doe Holdings LLC, Doe Family Trust)', value: initial?.entity ?? '' });
+  entity.className = 'sr-entity';
+  entity.setAttribute('aria-label', `Signer ${n} entity name`);
+  const title = Object.assign(document.createElement('input'), { placeholder: 'Title (Manager, President, Trustee...)', value: initial?.title ?? '' });
+  title.className = 'sr-title';
+  title.setAttribute('aria-label', `Signer ${n} title`);
+  const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
+  remove.addEventListener('click', () => {
+    row.remove();
+    if (!$('signer-rows').children.length) addSignerRow();
+  });
+  const sync = () => {
+    const isEntity = kind.value === 'entity';
+    entity.hidden = !isEntity;
+    title.hidden = !isEntity;
+  };
+  kind.addEventListener('change', sync);
+  row.append(name, kind, entity, title, remove);
+  $('signer-rows').append(row);
+  sync();
+}
+
+function readSigners(): Signatory[] {
+  return [...$('signer-rows').querySelectorAll<HTMLElement>('.signer-row')]
+    .map((row) => {
+      const v = (c: string) => row.querySelector<HTMLInputElement | HTMLSelectElement>(c)!.value.trim();
+      const kind = v('.sr-kind') === 'entity' ? ('entity' as const) : ('individual' as const);
+      return { name: v('.sr-name'), kind, entity: kind === 'entity' ? v('.sr-entity') : undefined, title: kind === 'entity' ? v('.sr-title') : undefined };
+    })
+    .filter((x) => x.name || x.entity);
+}
+
+$('add-signer').addEventListener('click', () => addSignerRow());
+addSignerRow();
+
 function renderCoOwners() {
   const list = $('co-list');
   list.innerHTML = '';
@@ -551,7 +600,7 @@ action(
       ownerName: owner,
       parcels,
       coOwnerKeys: others,
-      signatories: textarea('reg-signers').value.split('\n').map((x) => x.trim()).filter(Boolean),
+      signatories: readSigners(),
       keyLabels: Object.fromEntries([
         ...others.map((c) => [c.getFingerprint().toUpperCase(), (state.coLabels.get(c.getFingerprint().toUpperCase()) ?? '').trim()]),
         [s.fingerprint, input('reg-my-label').value.trim()],

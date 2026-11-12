@@ -281,3 +281,37 @@ describe('several people signing one registration', () => {
     expect(three.getPageCount()).toBe(one.getPageCount() + 2);
   });
 });
+
+describe('signer types', () => {
+  it.skipIf(!has('pdftotext', '-v'))('a business signer is verified by the business authority, an individual by an officer', async () => {
+    const { registrationPdf } = await import('../src/pdf');
+    const pdf = await registrationPdf({
+      ownerName: 'Doe Holdings LLC',
+      parcels: '123-45-6789',
+      signatories: [
+        { name: 'Jane Doe', kind: 'entity', entity: 'Doe Holdings LLC', title: 'Manager' },
+        { name: 'John Doe', kind: 'individual' },
+      ],
+      fingerprint: a.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: a.getCreationTime(),
+      userID: a.getUserIDs()[0],
+      publicKeyBinary: a.toPublic().write(),
+      publicArmored: a.toPublic().armor(),
+    });
+    const dir = mkdtempSync('/tmp/opr-sig-');
+    try {
+      writeFileSync(join(dir, 'r.pdf'), pdf);
+      const page = (n: number) =>
+        execFileSync('pdftotext', ['-f', String(n), '-l', String(n), join(dir, 'r.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().replace(/\s+/g, ' ');
+      expect(page(1)).toContain('Jane Doe, Manager, for Doe Holdings LLC');
+      expect(page(1)).toContain('Business authority verification');
+      expect(page(1)).toContain('Pima County Business Licensing Authority');
+      expect(page(1)).not.toContain('Law enforcement attestation');
+      expect(page(2)).toContain('Law enforcement attestation');
+      expect(page(2)).toContain('John Doe');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

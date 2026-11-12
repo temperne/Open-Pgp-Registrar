@@ -47,7 +47,14 @@ gives counter staff a way to check a filing.
    both spouses sharing one key, a company's officers; "People signing this
    registration", one per line with an optional capacity) gets their own signature
    line, notary box, officer box and Recorder callback box: the first on page 1,
-   each additional person on an "Additional Signer" page. Page 2 lists every key for the parcel, the key
+   each additional person on an "Additional Signer" page. Each signer has a **type**:
+   an *individual* (notary + law enforcement officer), or someone signing *for a
+   business, trust or other entity* (entity name and title; notary + a **business
+   authority verification** box, completed by `BRAND.entityAuthority`, which confirms
+   from its records that the entity exists and the signer holds the title, and is
+   the one the Recorder calls back). The authority is a placeholder setting in
+   `src/brand.ts` until the county decides (Arizona corporations and LLCs are
+   registered with the Arizona Corporation Commission; trusts are not registered). Page 2 lists every key for the parcel, the key
    list as `PGPR1|GROUP|i/n|chunk` codes (message
    `PGPREG1|b64(parcel)|ALL|b64(concatenated public keys)`), the registrant's
    `PGPKEY1` code and armored key. **Multiple keys are optional for any kind of
@@ -170,5 +177,8 @@ at fractional pixel sizes, which real scans and photos produce.
    document it records, and "Check a filing" accepts that scan (PDF or image) and
    reads all the codes from it. Handheld scanners also work. Live phone-camera
    scanning could be added later if counter staff want it.
+8. **Entity verification.** Which office confirms business and trust signers
+   (`BRAND.entityAuthority`, currently "Pima County Business Licensing Authority")?
+   Should trusts use a certification of trust instead?
 7. **License.** Resolved: MIT with an express government-use grant (see `LICENSE`),
    shown in README.md and the site footer. Keep all three in sync if it changes.
