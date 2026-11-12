@@ -26,7 +26,16 @@ gives counter staff a way to check a filing.
 
 ## What it does
 
-1. **Your key**: create an Ed25519 key, which must have a passphrase, or load an
+1. **Your key**: the key records **who signs with it**, in its OpenPGP user ID, so
+   every registration, deed and check builds its signature lines from the key:
+   *individual* ("Jane Doe"); *group* ("Jane Doe and John Doe (group: Jane Doe; John
+   Doe)": one key, every member signs in ink, notarized and officer-checked; the
+   page warns that a shared key cannot prevent fraud between members); or
+   *position* in a business, trust or other entity ("Doe Holdings LLC (position:
+   Secretary)": whoever holds the position signs, prints their name, and the
+   business authority verifies them with documentation). See `keyIdentity`,
+   `signatoriesForKey`, `signerBlocksForKey`.
+   Create an Ed25519 key, which must have a passphrase, or load an
    existing key. Loading accepts the private key PDF made by this tool, or an
    armored or binary key file from GnuPG, Kleopatra, etc. A locked key is unlocked
    with its passphrase. **The key's main output is a PDF.** The private key PDF

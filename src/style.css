@@ -736,3 +736,13 @@ fieldset.signers legend {
     grid-column: auto;
   }
 }
+.keylist .tag {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  color: var(--muted);
+}

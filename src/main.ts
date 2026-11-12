@@ -21,6 +21,8 @@ import {
   mergeRegistrations,
   parcelKey,
   keyLabel,
+  describeKey,
+  keyIdentity,
   parsePayload,
   toBase64,
   fromBase64,
@@ -42,7 +44,7 @@ import {
   instrumentPdf,
   setBrandSeal,
   certificatePdf,
-  type Signatory,
+  signerBlocksForKey,
   publicKeyCardPdf,
   registrationsFromPdf,
   draftFromPdf,
@@ -270,7 +272,13 @@ function refresh() {
   if (k) {
     const s = summarize(k);
     $('key-fpr').textContent = formatFingerprint(s.fingerprint);
-    $('key-uid').textContent = s.userIDs.join(', ') || '(none)';
+    const id = keyIdentity(k);
+    $('key-uid').textContent =
+      id.kind === 'position'
+        ? `Whoever holds the position: ${describeKey(k)}`
+        : id.kind === 'group'
+          ? `A group; all must sign: ${(id.members ?? []).join(', ')}`
+          : `${describeKey(k)} (individual)`;
     $('key-alg').textContent = s.algorithm;
     $('key-created').textContent = s.created.toISOString().slice(0, 10);
     const status = $('key-status');
@@ -359,11 +367,20 @@ function setKey(key: AnyKey, privateArmored: string | null, unsaved: boolean, si
 action(
   'gen-btn',
   async () => {
-    const name = need(input('gen-name').value, 'Enter your full name.');
+    const kind = $<HTMLSelectElement>('gen-kind').value;
+    const position = kind === 'position';
+    const group = kind === 'group';
+    const name = group ? input('gen-name').value.trim() : need(input('gen-name').value, position ? 'Enter the entity\u2019s name.' : 'Enter your full name.');
     const pass = input('gen-pass').value;
     if (pass.length < 8) throw new UserError('Use a passphrase of at least 8 characters.');
     if (pass !== input('gen-pass2').value) throw new UserError('The two passphrases do not match.');
-    const { privateArmored } = await generateKeyPair({ name, email: input('gen-email').value, passphrase: pass });
+    const { privateArmored } = await generateKeyPair({
+      name,
+      email: input('gen-email').value,
+      passphrase: pass,
+      position: position ? input('gen-position').value : undefined,
+      members: group ? textarea('gen-members').value.split('\n') : undefined,
+    });
     const key = (await readAnyKey(privateArmored)) as openpgp.PrivateKey;
     const unlocked = await unlockKey(key, pass);
     input('gen-pass').value = '';
@@ -440,6 +457,16 @@ action('dl-public-asc', () => {
   download(s.publicArmored, `public-key-${shortFpr(s.fingerprint)}.asc`, 'application/pgp-keys');
 });
 
+$('gen-kind').addEventListener('change', () => {
+  const kind = $<HTMLSelectElement>('gen-kind').value;
+  $('gen-position-wrap').hidden = kind !== 'position';
+  $('gen-members-wrap').hidden = kind !== 'group';
+  $('gen-name-label').textContent =
+    kind === 'position' ? 'Entity name (business, trust or other entity)' : kind === 'group' ? 'Group name (optional)' : 'Full name';
+  input('gen-name').placeholder =
+    kind === 'position' ? 'e.g. Doe Holdings LLC, Doe Family Trust' : kind === 'group' ? 'e.g. Jane and John Doe (defaults to the names below)' : '';
+});
+
 $('forget-key').addEventListener('click', () => {
   if (state.unsaved && !confirm('You have not downloaded your new private key. Forget it anyway?')) return;
   state.key = null;
@@ -479,61 +506,16 @@ document.querySelectorAll('input[name="reg-kind"]').forEach((r) => r.addEventLis
 
 function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
   const li = document.createElement('li');
+  const desc = describeKey(k) || '(no name)';
+  const kind = keyIdentity(k).kind;
   li.append(
-    Object.assign(document.createElement('strong'), { textContent: `${label ? `${label}: ` : ''}${k.getUserIDs()[0] ?? '(no name)'}` }),
+    Object.assign(document.createElement('strong'), { textContent: label && label !== desc ? `${label}: ${desc}` : desc }),
+    Object.assign(document.createElement('span'), { className: 'tag', textContent: kind }),
     Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
   );
   if (extra) li.append(extra);
   return li;
 }
-
-// People signing the registration: one row each (name, type, and for an entity its name and the title).
-function addSignerRow(initial?: Partial<Signatory>) {
-  const row = document.createElement('div');
-  row.className = 'signer-row';
-  const n = $('signer-rows').children.length + 1;
-  const name = Object.assign(document.createElement('input'), { placeholder: 'Full name', value: initial?.name ?? '' });
-  name.className = 'sr-name';
-  name.setAttribute('aria-label', `Signer ${n} name`);
-  const kind = document.createElement('select');
-  kind.className = 'sr-kind';
-  kind.setAttribute('aria-label', `Signer ${n} signs as`);
-  kind.append(new Option('Individual', 'individual'), new Option('For a business, trust or other entity', 'entity'));
-  kind.value = initial?.kind ?? 'individual';
-  const entity = Object.assign(document.createElement('input'), { placeholder: 'Entity name (e.g. Doe Holdings LLC, Doe Family Trust)', value: initial?.entity ?? '' });
-  entity.className = 'sr-entity';
-  entity.setAttribute('aria-label', `Signer ${n} entity name`);
-  const title = Object.assign(document.createElement('input'), { placeholder: 'Title (Manager, President, Trustee...)', value: initial?.title ?? '' });
-  title.className = 'sr-title';
-  title.setAttribute('aria-label', `Signer ${n} title`);
-  const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
-  remove.addEventListener('click', () => {
-    row.remove();
-    if (!$('signer-rows').children.length) addSignerRow();
-  });
-  const sync = () => {
-    const isEntity = kind.value === 'entity';
-    entity.hidden = !isEntity;
-    title.hidden = !isEntity;
-  };
-  kind.addEventListener('change', sync);
-  row.append(name, kind, entity, title, remove);
-  $('signer-rows').append(row);
-  sync();
-}
-
-function readSigners(): Signatory[] {
-  return [...$('signer-rows').querySelectorAll<HTMLElement>('.signer-row')]
-    .map((row) => {
-      const v = (c: string) => row.querySelector<HTMLInputElement | HTMLSelectElement>(c)!.value.trim();
-      const kind = v('.sr-kind') === 'entity' ? ('entity' as const) : ('individual' as const);
-      return { name: v('.sr-name'), kind, entity: kind === 'entity' ? v('.sr-entity') : undefined, title: kind === 'entity' ? v('.sr-title') : undefined };
-    })
-    .filter((x) => x.name || x.entity);
-}
-
-$('add-signer').addEventListener('click', () => addSignerRow());
-addSignerRow();
 
 function renderCoOwners() {
   const list = $('co-list');
@@ -542,19 +524,13 @@ function renderCoOwners() {
     const fpr = k.getFingerprint().toUpperCase();
     const controls = document.createElement('span');
     controls.className = 'keyctl';
-    const desc = Object.assign(document.createElement('input'), {
-      value: state.coLabels.get(fpr) ?? '',
-      placeholder: 'Description (optional)',
-    });
-    desc.setAttribute('aria-label', `Description of ${k.getUserIDs()[0] ?? 'this key'}`);
-    desc.addEventListener('input', () => state.coLabels.set(fpr, desc.value));
     const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
     remove.addEventListener('click', () => {
       state.coOwners.splice(i, 1);
       state.coLabels.delete(fpr);
       renderCoOwners();
     });
-    controls.append(desc, remove);
+    controls.append(remove);
     list.append(keyItem(k, controls));
   });
 }
@@ -569,16 +545,9 @@ input('co-file').addEventListener('change', async () => {
     const fpr = key.getFingerprint().toUpperCase();
     if (state.key && state.key.getFingerprint().toUpperCase() === fpr) throw new Error('That is your own key; it is listed automatically.');
     if (state.coOwners.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already listed.');
-    // A registration form may already describe this key.
-    if (isPdfBytes(new Uint8Array(await f.arrayBuffer()))) {
-      for (const r of await registrationsFromPdf(new Uint8Array(await f.arrayBuffer()))) {
-        const l = keyLabel(r, fpr);
-        if (l) state.coLabels.set(fpr, l);
-      }
-    }
     state.coOwners.push(key);
     renderCoOwners();
-    status.textContent = `Added ${key.getUserIDs()[0] ?? 'key'}. Check the fingerprint with your co-owner.`;
+    status.textContent = `Added ${describeKey(key)}. Check the fingerprint with its holder.`;
   } catch (err) {
     status.className = 'hint error';
     status.textContent = (err as Error).message;
@@ -600,11 +569,6 @@ action(
       ownerName: owner,
       parcels,
       coOwnerKeys: others,
-      signatories: readSigners(),
-      keyLabels: Object.fromEntries([
-        ...others.map((c) => [c.getFingerprint().toUpperCase(), (state.coLabels.get(c.getFingerprint().toUpperCase()) ?? '').trim()]),
-        [s.fingerprint, input('reg-my-label').value.trim()],
-      ]),
       propertyAddress: input('reg-property').value.trim(),
       mailingAddress: input('reg-mailing').value.trim(),
       county: input('reg-county').value.trim(),
@@ -893,6 +857,16 @@ function setDraft(d: State['draft']) {
   else $('text-result').hidden = true;
 }
 
+/** With a registration loaded, signature lines come from its keys. */
+function showAutoSigners() {
+  const auto = !!state.signReg;
+  $('doc-signers-wrap').hidden = auto;
+  $('doc-signers-auto').hidden = !auto;
+  const list = $('doc-signers-list');
+  list.innerHTML = '';
+  for (const k of state.signReg?.keys ?? []) list.append(keyItem(k, undefined, keyLabel(state.signReg, k.getFingerprint())));
+}
+
 function useSignRegistration(regs: Registration[]) {
   const sel = $<HTMLSelectElement>('s-reg-parcel');
   sel.innerHTML = '';
@@ -907,6 +881,7 @@ function useSignRegistration(regs: Registration[]) {
   sel.value = String(pick);
   const choose = () => {
     state.signReg = merged[Number(sel.value)] ?? null;
+    showAutoSigners();
     const info = $('s-reg-info');
     info.className = 'hint ok';
     info.innerHTML = '';
@@ -1031,6 +1006,7 @@ async function downloadInstrument() {
   const d = state.draft;
   if (!d) return;
   const pdf = await instrumentPdf({
+    signerBlocks: state.signReg ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k)) : undefined,
     title: d.title,
     text: d.text,
     returnTo: textarea('doc-return').value,
@@ -1271,7 +1247,7 @@ action(
           result: r.verdict === 'good' ? 'good' : 'bad',
           checks: r.checks.map((c) => `${c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked'}: ${c.label}`),
           owners: (r.signers ?? []).map((x) => ({
-            userID: `${x.label ? `${x.label}: ` : ''}${x.userID || (x.registered ? '' : 'NOT REGISTERED')}`,
+            userID: `${x.label && x.label !== x.userID ? `${x.label}: ` : ''}${x.userID || (x.registered ? '' : 'NOT REGISTERED')}`,
             fingerprint: x.fingerprint,
             result: x.state === 'pass' ? 'Valid signature' : x.detail,
             signedAt: x.signedAt,

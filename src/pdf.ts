@@ -18,7 +18,17 @@ import {
   type RGB,
 } from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
-import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX, encodeKeyCodes, readAnyKey, encodeRegistrationCodes, type Registration } from './crypto';
+import {
+  formatFingerprint,
+  toBase64,
+  PUBKEY_QR_PREFIX,
+  encodeKeyCodes,
+  readAnyKey,
+  encodeRegistrationCodes,
+  keyIdentity,
+  describeKey,
+  type Registration,
+} from './crypto';
 import type * as openpgp from 'openpgp';
 import { safeText } from './text';
 import { BRAND, brandLine } from './brand';
@@ -292,7 +302,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   const me = (await readAnyKey(info.publicArmored)).toPublic();
   const others = (info.coOwnerKeys ?? []).filter((k) => k.getFingerprint().toUpperCase() !== fpr);
   const keys = [me, ...others];
-  const labels = keys.map((k) => (info.keyLabels?.[k.getFingerprint().toUpperCase()] ?? '').trim());
+  const labels = keys.map((k) => (info.keyLabels?.[k.getFingerprint().toUpperCase()] ?? '').trim() || describeKey(k));
   // The Recorder's tool can read the key straight from this PDF.
   await doc.attach(new TextEncoder().encode(info.publicArmored), PUBLIC_KEY_ATTACHMENT, {
     mimeType: 'application/pgp-keys',
@@ -325,36 +335,60 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   return doc.save();
 }
 
-/** A person signing a registration: for themselves, or for a business, trust or other entity. */
+/** Who signs for one key: an individual, or whoever holds a position in an entity. */
 export interface Signatory {
   name: string;
   kind: 'individual' | 'entity';
-  /** Entity signers: the entity's name and the signer's title in it (Manager, Trustee...). */
+  /** Entity signers: the entity's name and the position (Secretary, Trustee...). */
   entity?: string;
   title?: string;
+  /** The key this person signs for. */
+  fingerprint?: string;
 }
 
-function signatoriesOf(info: RegistrationInfo): Signatory[] {
+/** Who signs for a key, from the identity stored in the key itself (a group key: every member). */
+export function signatoriesForKey(key: openpgp.PublicKey | openpgp.PrivateKey): Signatory[] {
+  const id = keyIdentity(key);
+  const fingerprint = key.getFingerprint().toUpperCase();
+  if (id.kind === 'position') return [{ kind: 'entity', name: '', entity: id.name, title: id.position, fingerprint }];
+  if (id.kind === 'group') return (id.members ?? []).map((m) => ({ kind: 'individual' as const, name: m, fingerprint }));
+  return [{ kind: 'individual', name: id.name, fingerprint }];
+}
+
+/** One signer per key listed for the parcel (or the explicit list, if given). */
+function signatoriesOf(info: RegistrationInfo, keys: openpgp.PublicKey[]): Signatory[] {
   const list = (info.signatories ?? [])
     .map((x) => (typeof x === 'string' ? { name: x.trim(), kind: 'individual' as const } : { ...x, name: x.name.trim() }))
     .filter((x) => x.name || x.entity?.trim());
-  return list.length ? list : [{ name: info.ownerName.trim(), kind: 'individual' }];
+  if (list.length) return list;
+  return keys.flatMap((k) => signatoriesForKey(k));
 }
 
-/** "Jane Doe" or "Jane Doe, Manager, for Doe Holdings LLC". */
+/** "Jane Doe", "Secretary of Doe Holdings LLC", or "Jane Doe, Secretary of Doe Holdings LLC". */
 export function signatoryLabel(s: Signatory) {
   if (s.kind !== 'entity') return s.name;
-  return [s.name || '(name)', s.title?.trim(), s.entity?.trim() ? `for ${s.entity.trim()}` : ''].filter(Boolean).join(', ');
+  const role = [s.title?.trim(), s.entity?.trim()].filter(Boolean).join(' of ');
+  return s.name ? `${s.name}, ${role}` : role || 'entity signer';
 }
 
 /** Signature line, notary and officer boxes, callback rule and a Recorder box, starting at y. */
 function signAndVerify(p: PDFPage, fonts: Fonts, y: number, who: Signatory, tag: string, recFields: string[]) {
   const signer = signatoryLabel(who);
   const entity = who.kind === 'entity';
-  rule(p, y, M, M + 330, INK);
-  rule(p, y, M + 360, PAGE_W - M, INK);
-  text(p, fonts, `Signature of ${signer || 'owner'}${tag ? `  (${tag})` : ''}`, y - 3, { size: 8, color: MUTED, width: 330 });
-  text(p, fonts, 'Date', y - 3, { x: M + 360, size: 8, color: MUTED });
+  if (entity && !who.name) {
+    // Whoever holds the position signs and prints their name.
+    rule(p, y, M, M + 250, INK);
+    rule(p, y, M + 270, M + 410, INK);
+    rule(p, y, M + 430, PAGE_W - M, INK);
+    text(p, fonts, `Signature of the ${signer}${tag ? `  (${tag})` : ''}`, y - 3, { size: 8, color: MUTED, width: 250 });
+    text(p, fonts, 'Printed name', y - 3, { x: M + 270, size: 8, color: MUTED });
+    text(p, fonts, 'Date', y - 3, { x: M + 430, size: 8, color: MUTED });
+  } else {
+    rule(p, y, M, M + 330, INK);
+    rule(p, y, M + 360, PAGE_W - M, INK);
+    text(p, fonts, `Signature of ${signer || 'owner'}${tag ? `  (${tag})` : ''}`, y - 3, { size: 8, color: MUTED, width: 330 });
+    text(p, fonts, 'Date', y - 3, { x: M + 360, size: 8, color: MUTED });
+  }
   y -= 22;
 
   y = text(p, fonts, `Identity verification of ${signer || 'the signer'} (both required)`, y - 4, { size: 10, font: fonts.bold });
@@ -389,7 +423,7 @@ function signAndVerify(p: PDFPage, fonts: Fonts, y: number, who: Signatory, tag:
     p,
     fonts,
     entity
-      ? 'Records show the entity exists and the signer holds this title. Photo ID checked.'
+      ? 'Entity and position confirmed from records and attached documentation. Photo ID checked.'
       : 'I met this signer in person and checked government photo ID.',
     ry - 3,
     { x: rx, size: 8, color: MUTED, width: rw },
@@ -492,16 +526,16 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
   y = text(
     p,
     fonts,
-    (signatoriesOf(info).length > 1
-      ? `We, the undersigned, are owners of record of the parcel above, or sign for one in the capacity shown. We ask the Recorder to file the public key with the fingerprint shown, `
-      : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the public key with the fingerprint shown, `) +
+    (signatoriesOf(info, keys).length > 1
+      ? `We, the undersigned holders of the keys for this parcel, are owners of record of the parcel above or sign for one in the capacity shown. We ask the Recorder to file the public key with the fingerprint shown `
+      : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the public key with the fingerprint shown `) +
       `${keys.length > 1 ? `and the ${keys.length - 1} other key${keys.length > 2 ? 's' : ''} listed on the key page ` : '(listed on the key page) '}against this parcel, and to hold for investigation, rather than record in the ` +
       'ordinary course, any instrument affecting it that does not carry a valid signature from every key listed.',
     y - 3,
     { size: 9.5 },
   );
 
-  const signers = signatoriesOf(info);
+  const signers = signatoriesOf(info, keys);
   signAndVerify(p, fonts, y - 28, signers[0], signers.length > 1 ? `Signer 1 of ${signers.length}` : '', [
     'Callback confirmed by / date',
     'Key activated (date)',
@@ -515,17 +549,19 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
       sp,
       fonts,
       'Registration (continued)',
-      `Additional Signer ${i + 1} of ${signers.length}`,
-      'Each person signing this registration signs here, before a notary, and has their identity confirmed by an officer.',
+      `Signer ${i + 1} of ${signers.length}`,
+      signers[i].kind === 'entity'
+        ? 'The current holder of this position signs here, before a notary. Attach the latest documentation that they hold it (for example a resolution, certificate of incumbency or certification of trust).'
+        : 'This key\u2019s holder signs here, before a notary, and has their identity confirmed by an officer.',
     );
     sy = table(
       sp,
       fonts,
       [
         { label: 'Parcel number', value: parcel },
-        { label: 'Key fingerprint', value: fingerprintTwoLines(fpr), mono: true },
-        { label: 'Signer', value: signatoryLabel(signers[i]) },
-        { label: 'Signs as', value: signers[i].kind === 'entity' ? 'Business, trust or other entity' : 'Individual' },
+        { label: 'Key fingerprint', value: fingerprintTwoLines(signers[i].fingerprint ?? fpr), mono: true },
+        { label: 'Signs with this key', value: signatoryLabel(signers[i]) },
+        { label: 'Key type', value: signers[i].kind === 'entity' ? 'Position in a business, trust or other entity' : 'Individual' },
       ],
       sy,
       CONTENT_W,
@@ -533,7 +569,7 @@ async function drawRegistration(doc: PDFDocument, fonts: Fonts, info: Registrati
     sy = text(
       sp,
       fonts,
-      'I join in the owner request on page 1 of this registration for the parcel and key shown above, in the capacity stated.',
+      'I join in the owner request on page 1 of this registration, for the parcel above and the key shown, in the capacity stated.',
       sy - 10,
       { size: 9.5 },
     );
@@ -910,6 +946,21 @@ export interface InstrumentInfo {
   required?: { parcel: string; keys: { fingerprint: string; userID: string; label?: string }[] };
   /** Embedded so the next owner can load this PDF and sign exactly the same text. */
   draft?: DocumentDraft;
+  /**
+   * Signature lines and notary acknowledgments, one per registered key (from the
+   * registration). Overrides `signers` when given.
+   */
+  signerBlocks?: { caption: string; ack: string; printedName?: boolean }[];
+}
+
+/** Signature lines and acknowledgment wording for a key, from its identity (a group key: one per member). */
+export function signerBlocksForKey(key: openpgp.PublicKey | openpgp.PrivateKey): { caption: string; ack: string; printedName?: boolean }[] {
+  const id = keyIdentity(key);
+  if (id.kind === 'position') {
+    return [{ caption: `${id.position} of ${id.name}`, ack: `____________________________, as ${id.position} of ${id.name}`, printedName: true }];
+  }
+  if (id.kind === 'group') return (id.members ?? []).map((m) => ({ caption: m, ack: m }));
+  return [{ caption: id.name, ack: id.name }];
 }
 
 /** What a signed-document PDF carries so other owners can add their signatures. */
@@ -976,22 +1027,38 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   }
 
   // Wet-ink signature lines.
-  const signers = (info.signers ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
-  if (!signers.length) signers.push('');
+  const blocks =
+    info.signerBlocks && info.signerBlocks.length
+      ? info.signerBlocks
+      : (info.signers ?? '')
+          .split('\n')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .map((x) => ({ caption: x, ack: x, printedName: false }));
+  if (!blocks.length) blocks.push({ caption: '', ack: '', printedName: false });
   y -= 12;
-  for (const name of signers) {
+  for (const b of blocks) {
     ensure(52);
     y -= 32;
-    rule(page, y, M, M + 300, INK);
-    rule(page, y, M + 330, PAGE_W - M, INK);
-    text(page, fonts, name ? `${name}` : 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
-    text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+    if (b.printedName) {
+      rule(page, y, M, M + 250, INK);
+      rule(page, y, M + 270, M + 410, INK);
+      rule(page, y, M + 430, PAGE_W - M, INK);
+      text(page, fonts, `By: ${b.caption}`, y - 3, { size: 9, color: MUTED, width: 250 });
+      text(page, fonts, 'Printed name', y - 3, { x: M + 270, size: 9, color: MUTED });
+      text(page, fonts, 'Date', y - 3, { x: M + 430, size: 9, color: MUTED });
+    } else {
+      rule(page, y, M, M + 300, INK);
+      rule(page, y, M + 330, PAGE_W - M, INK);
+      text(page, fonts, b.caption || 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
+      text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+    }
     y -= 20;
   }
 
   // Notary acknowledgments (completed by notaries on paper; not part of the signed text).
   // One per signer, since owners may sign at different times before different notaries.
-  const ackFor = signers.filter(Boolean).length ? signers.filter(Boolean) : [''];
+  const ackFor = blocks.map((b) => b.ack).filter(Boolean).length ? blocks.map((b) => b.ack).filter(Boolean) : [''];
   for (const who of ackFor) {
     ensure(150);
     y -= 16;

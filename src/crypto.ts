@@ -23,10 +23,65 @@ export interface KeySummary {
 
 export type AnyKey = openpgp.PrivateKey | openpgp.PublicKey;
 
-export async function generateKeyPair(opts: { name: string; email?: string; passphrase: string }) {
-  if (!opts.name.trim()) throw new Error('Enter the owner name for the key.');
-  const userID: { name: string; email?: string } = { name: opts.name.trim() };
+/**
+ * Who signs with a key. Stored in the key's own user ID, so it travels with the
+ * key into every registration, document and check:
+ *   individual:  "Jane Doe <jane@example.com>"
+ *   position:    "Doe Holdings LLC (position: Secretary)"  -- whoever holds the
+ *                position signs with this key
+ */
+export interface KeyIdentity {
+  kind: 'individual' | 'position' | 'group';
+  /** The person (individual), the entity (position), or the group's name. */
+  name: string;
+  /** For a position key: the position, e.g. "Secretary", "Trustee". */
+  position?: string;
+  /** For a group key: every person who must sign, e.g. a married couple. */
+  members?: string[];
+  email?: string;
+}
+
+const POSITION_TAG = 'position: ';
+const GROUP_TAG = 'group: ';
+
+/** Splits "Name (comment) <email>" as stored in an OpenPGP user ID. */
+function parseUserID(uid: string) {
+  const m = /^(.*?)\s*(?:\(([^()]*)\))?\s*(?:<([^<>]*)>)?\s*$/.exec(uid.trim());
+  return { name: (m?.[1] ?? uid).trim(), comment: (m?.[2] ?? '').trim(), email: (m?.[3] ?? '').trim() };
+}
+
+export function keyIdentity(key: AnyKey): KeyIdentity {
+  const { name, comment, email } = parseUserID(key.getUserIDs()[0] ?? '');
+  const lc = comment.toLowerCase();
+  if (lc.startsWith(POSITION_TAG)) return { kind: 'position', name, position: comment.slice(POSITION_TAG.length).trim(), email: email || undefined };
+  if (lc.startsWith(GROUP_TAG)) {
+    const members = comment.slice(GROUP_TAG.length).split(';').map((x) => x.trim()).filter(Boolean);
+    return { kind: 'group', name, members, email: email || undefined };
+  }
+  return { kind: 'individual', name, email: email || undefined };
+}
+
+/** "Jane Doe", "Secretary, Doe Holdings LLC", or "Jane Doe and John Doe". */
+export function describeKey(key: AnyKey) {
+  const id = keyIdentity(key);
+  if (id.kind === 'position') return `${id.position}, ${id.name}`;
+  return id.name;
+}
+
+export async function generateKeyPair(opts: { name: string; email?: string; passphrase: string; position?: string; members?: string[] }) {
+  const members = (opts.members ?? []).map((x) => x.trim()).filter(Boolean);
+  if (opts.members !== undefined) {
+    if (members.length < 2) throw new Error('A group key needs at least two people. Enter one name per line.');
+    if (members.some((x) => /[;()<>]/.test(x))) throw new Error('Names cannot contain ; ( ) < or >.');
+  }
+  const name = opts.members !== undefined ? opts.name.trim() || members.join(' and ') : opts.name.trim();
+  if (!name) throw new Error(opts.position !== undefined ? 'Enter the entity\u2019s name for the key.' : 'Enter the owner name for the key.');
+  if (opts.position !== undefined && !opts.position.trim()) throw new Error('Enter the position that will sign with this key (e.g. Secretary, Trustee).');
+  if (/[()<>]/.test(name) || /[()<>]/.test(opts.position ?? '')) throw new Error('Names cannot contain ( ) < or >.');
+  const userID: { name: string; email?: string; comment?: string } = { name };
   if (opts.email?.trim()) userID.email = opts.email.trim();
+  if (opts.position?.trim()) userID.comment = `${POSITION_TAG}${opts.position.trim()}`;
+  if (opts.members !== undefined) userID.comment = `${GROUP_TAG}${members.join('; ')}`;
   const { privateKey, publicKey } = await openpgp.generateKey({
     // v4 Ed25519 keys: widely supported by GnuPG and other OpenPGP software.
     type: 'ecc',
@@ -595,9 +650,9 @@ export interface Registration {
 
 /** Description of a registered key, if the registration gives one. */
 export function keyLabel(reg: Registration | null | undefined, fingerprint: string) {
-  if (!reg?.labels) return '';
-  const i = reg.keys.findIndex((k) => k.getFingerprint().toUpperCase() === fingerprint.toUpperCase());
-  return i >= 0 ? (reg.labels[i] ?? '').trim() : '';
+  const i = reg ? reg.keys.findIndex((k) => k.getFingerprint().toUpperCase() === fingerprint.toUpperCase()) : -1;
+  if (!reg || i < 0) return '';
+  return (reg.labels?.[i] ?? '').trim();
 }
 
 export function parcelKey(parcel: string) {
@@ -749,7 +804,7 @@ export async function verifyScannedText(input: {
     const fpr = key.getFingerprint().toUpperCase();
     const ids = [key, ...key.getSubkeys()].map((k) => k.getKeyID().toHex().toUpperCase());
     const idx = results.findIndex((r, i) => !used.has(i) && ids.includes(r.keyHex));
-    const uid = key.getUserIDs()[0] ?? '';
+    const uid = describeKey(key);
     const label = keyLabel(reg, fpr);
     if (idx < 0) {
       signers.push({ fingerprint: fpr, userID: uid, label, registered: true, state: 'fail', detail: 'No signature from this registered key.' });
@@ -783,7 +838,9 @@ export async function verifyScannedText(input: {
 
   for (const s of signers) {
     checks.push({
-      label: s.registered ? `Signed by ${s.userID || 'registered key'}${s.label ? ` (${s.label})` : ''}` : 'Unregistered signer',
+      label: s.registered
+        ? `Signed by ${s.userID || 'registered key'}${s.label && s.label !== s.userID ? ` (${s.label})` : ''}`
+        : 'Unregistered signer',
       state: s.state,
       detail: `${formatFingerprint(s.fingerprint)}: ${s.detail}`,
     });

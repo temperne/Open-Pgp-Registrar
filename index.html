@@ -189,7 +189,7 @@
             <p class="label">Fingerprint</p>
             <p id="key-fpr" class="fpr"></p>
             <dl class="facts">
-              <dt>Name on key</dt>
+              <dt>Signs with this key</dt>
               <dd id="key-uid"></dd>
               <dt>Type</dt>
               <dd id="key-alg"></dd>
@@ -239,11 +239,31 @@
           <form id="gen-form" class="card">
             <h2>Create a new key</h2>
             <p class="muted">For owners who don't have a PGP key yet. Takes a second.</p>
-            <label for="gen-name">Name on the key</label>
+            <label for="gen-kind">Who signs with this key</label>
+            <select id="gen-kind">
+              <option value="individual">An individual (signs for themselves)</option>
+              <option value="group">A group: two or more people who all sign (e.g. a married couple)</option>
+              <option value="position">A position in a business, trust or other entity</option>
+            </select>
+            <label for="gen-name" id="gen-name-label">Full name</label>
             <input id="gen-name" autocomplete="name" required />
-            <p class="hint">
-              A person, a list of owners (e.g. "Jane Doe and John Doe"), or an entity (e.g. "Doe Family Trust"). One key
-              can cover several owners, or each owner can have their own; it's your choice.
+            <div id="gen-members-wrap" hidden>
+              <label for="gen-members">Everyone in the group <span class="opt">(one full name per line)</span></label>
+              <textarea id="gen-members" rows="2" class="prose" placeholder="Jane Doe&#10;John Doe"></textarea>
+              <div class="callout warn">
+                <strong>One shared key protects you from outsiders, not from each other.</strong> Every person listed must
+                sign registrations and deeds in ink before a notary, but anyone in the group who has the key file and
+                passphrase can make the digital signature. This program cannot prevent fraud between members of the group.
+                For the strongest protection, give each person their own key instead.
+              </div>
+            </div>
+            <div id="gen-position-wrap" hidden>
+              <label for="gen-position">Position that signs with this key</label>
+              <input id="gen-position" placeholder="e.g. Secretary, President, Manager, Trustee" />
+            </div>
+            <p class="hint" id="gen-kind-hint">
+              The key records who signs with it. Every registration and document that uses the key prints this person's
+              signature line, notary acknowledgment and identity check automatically.
             </p>
             <label for="gen-email">Email <span class="opt">(optional)</span></label>
             <input id="gen-email" type="email" autocomplete="email" />
@@ -310,20 +330,6 @@
               <label for="reg-county">County <span class="opt">(printed in the heading)</span></label>
               <input id="reg-county" placeholder="e.g. Pima County" />
             </div>
-            <div class="span2">
-              <fieldset class="signers">
-                <legend>People signing this registration</legend>
-                <p class="hint">
-                  Everyone who will hold or authorize this key signs it, for example both spouses sharing one key, or a
-                  company's officers. Each person gets their own signature line and notary acknowledgment. An
-                  <strong>individual</strong> is also checked by a law enforcement officer; someone signing for a
-                  <strong>business, trust or other entity</strong> is checked by <span data-brand="entityAuthority"></span>,
-                  which confirms the entity and their title. Leave the name blank if only the owner above signs.
-                </p>
-                <div id="signer-rows"></div>
-                <button type="button" id="add-signer" class="linklike">Add another signer</button>
-              </fieldset>
-            </div>
             <div id="reg-prev-wrap" hidden>
               <label for="reg-prev">Previous key fingerprint <span class="opt">(to retire)</span></label>
               <input id="reg-prev" spellcheck="false" />
@@ -332,14 +338,12 @@
           <fieldset class="coowners">
             <legend>Keys for these parcels</legend>
             <p class="hint">
-              <strong>Optional.</strong> One key is enough for any owner: a person, a family, a trust or a company (name it
-              with a list of names or the entity's name). You can also register several keys, for example the trust and its
-              beneficiary, or each spouse, and describe each one however you like. Every key listed must sign any deed for
-              the parcel; a person at the Recorder judges whether the structure fits. Each key holder files their own form
-              with the same list.
+              Your key is listed automatically. <strong>More keys are optional</strong>: for example each spouse, or a
+              trust's trustee and a beneficiary, or a company's secretary. Every key listed must sign any deed for the
+              parcel; a person at the Recorder judges whether the structure fits. The form prints a signature section for
+              each key: individuals are checked by a law enforcement officer, and a position (such as Secretary of a
+              company) by <span data-brand="entityAuthority"></span>, with documentation that the signer holds it.
             </p>
-            <label for="reg-my-label">Description of your key <span class="opt">(optional, e.g. "Trustee", "Owner", "Doe Family Trust")</span></label>
-            <input id="reg-my-label" />
             <ul id="co-list" class="keylist"></ul>
             <label for="co-file">Add another key <span class="opt">(its public key card, registration form, a photo of either, or a .asc file)</span></label>
             <input id="co-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
@@ -408,7 +412,8 @@
 
             <div class="grid2 tight">
               <div><label for="doc-title">Title</label><input id="doc-title" /></div>
-              <div><label for="doc-signers">Signature lines <span class="opt">(one name per line)</span></label><textarea id="doc-signers" rows="2" class="prose"></textarea></div>
+              <div id="doc-signers-wrap"><label for="doc-signers">Signature lines <span class="opt">(one name per line)</span></label><textarea id="doc-signers" rows="2" class="prose"></textarea></div>
+              <div id="doc-signers-auto" hidden><label>Signature lines</label><p class="hint">From the parcel registration: one signature line and notary acknowledgment for each registered key.</p><ul id="doc-signers-list" class="keylist"></ul></div>
               <div class="span2"><label for="doc-return">When recorded, mail to <span class="opt">(printed in the top margin, not signed)</span></label><textarea id="doc-return" rows="3" class="prose"></textarea></div>
             </div>
             <p class="hint" id="disclaimer"></p>

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as openpgp from 'openpgp';
 import {
@@ -216,8 +216,15 @@ describe('multi-owner PDFs', () => {
     const dir = mkdtempSync('/tmp/opr-reg-');
     try {
       writeFileSync(join(dir, 'r.pdf'), pdf);
-      execFileSync('pdftoppm', ['-r', '200', '-png', '-f', '2', '-l', '2', '-singlefile', join(dir, 'r.pdf'), join(dir, 'p2')]);
-      const scanned = execFileSync('zbarimg', ['--quiet', '--raw', join(dir, 'p2.png')], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      execFileSync('pdftoppm', ['-r', '200', '-png', join(dir, 'r.pdf'), join(dir, 'p')]);
+      let scanned = '';
+      for (const f of readdirSync(dir).filter((x) => x.endsWith('.png'))) {
+        try {
+          scanned += execFileSync('zbarimg', ['--quiet', '--raw', join(dir, f)], { stdio: ['ignore', 'pipe', 'ignore'] }).toString() + '\n';
+        } catch {
+          /* page without codes */
+        }
+      }
       const back = await decodeRegistrationCodes(scanned);
       expect(back.parcel).toBe('123-45-6789');
       expect(back.keys).toHaveLength(2);
@@ -304,7 +311,7 @@ describe('signer types', () => {
       writeFileSync(join(dir, 'r.pdf'), pdf);
       const page = (n: number) =>
         execFileSync('pdftotext', ['-f', String(n), '-l', String(n), join(dir, 'r.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().replace(/\s+/g, ' ');
-      expect(page(1)).toContain('Jane Doe, Manager, for Doe Holdings LLC');
+      expect(page(1)).toContain('Jane Doe, Manager of Doe Holdings LLC');
       expect(page(1)).toContain('Business authority verification');
       expect(page(1)).toContain('Pima County Business Licensing Authority');
       expect(page(1)).not.toContain('Law enforcement attestation');
@@ -313,5 +320,55 @@ describe('signer types', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('key identity drives the signatures', () => {
+  it('records an individual or a position in the key, and builds the forms from it', async () => {
+    const { keyIdentity, describeKey } = await import('../src/crypto');
+    const { registrationPdf, signerBlocksForKey } = await import('../src/pdf');
+    const sec = (await readAnyKey((await generateKeyPair({ name: 'Doe Holdings LLC', position: 'Secretary', passphrase: 'pw-123456' })).privateArmored)) as openpgp.PrivateKey;
+    expect(keyIdentity(sec)).toMatchObject({ kind: 'position', name: 'Doe Holdings LLC', position: 'Secretary' });
+    expect(describeKey(sec)).toBe('Secretary, Doe Holdings LLC');
+    expect(keyIdentity(a)).toMatchObject({ kind: 'individual', name: 'Example Owner' });
+    expect(signerBlocksForKey(sec)[0]).toMatchObject({ caption: 'Secretary of Doe Holdings LLC', printedName: true });
+    expect(signerBlocksForKey(sec)[0].ack).toContain('as Secretary of Doe Holdings LLC');
+
+    const pdf = await registrationPdf({
+      ownerName: 'Doe Holdings LLC',
+      parcels: '123-45-6789',
+      coOwnerKeys: [a.toPublic()],
+      fingerprint: sec.getFingerprint().toUpperCase(),
+      algorithm: 'Ed25519',
+      created: sec.getCreationTime(),
+      userID: sec.getUserIDs()[0],
+      publicKeyBinary: sec.toPublic().write(),
+      publicArmored: sec.toPublic().armor(),
+    });
+    if (!has('pdftotext', '-v')) return;
+    const dir = mkdtempSync('/tmp/opr-id-');
+    try {
+      writeFileSync(join(dir, 'r.pdf'), pdf);
+      const page = (n: number) =>
+        execFileSync('pdftotext', ['-f', String(n), '-l', String(n), join(dir, 'r.pdf'), '-'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().replace(/\s+/g, ' ');
+      expect(page(1)).toContain('Signature of the Secretary of Doe Holdings LLC');
+      expect(page(1)).toContain('Business authority verification');
+      expect(page(2)).toContain('Example Owner');
+      expect(page(2)).toContain('Law enforcement attestation');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('group keys', () => {
+  it('one key, every named person signs', async () => {
+    const { keyIdentity, describeKey } = await import('../src/crypto');
+    const { signerBlocksForKey } = await import('../src/pdf');
+    const g = await readAnyKey((await generateKeyPair({ name: '', members: ['Jane Doe', 'John Doe'], passphrase: 'pw-123456' })).privateArmored);
+    expect(keyIdentity(g)).toMatchObject({ kind: 'group', name: 'Jane Doe and John Doe', members: ['Jane Doe', 'John Doe'] });
+    expect(describeKey(g)).toBe('Jane Doe and John Doe');
+    expect(signerBlocksForKey(g).map((x) => x.caption)).toEqual(['Jane Doe', 'John Doe']);
+    await expect(generateKeyPair({ name: '', members: ['Only One'], passphrase: 'x' })).rejects.toThrow(/at least two/);
   });
 });
