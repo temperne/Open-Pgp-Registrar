@@ -598,3 +598,24 @@ button.linklike {
 .tabs button:first-child span {
   display: none;
 }
+
+.license {
+  margin: 8px 0 0;
+}
+.license summary {
+  cursor: pointer;
+}
+.license pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.foot a {
+  color: var(--accent);
+}

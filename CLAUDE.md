@@ -145,4 +145,5 @@ at fractional pixel sizes, which real scans and photos produce.
    document it records, and "Check a filing" accepts that scan (PDF or image) and
    reads all the codes from it. Handheld scanners also work. Live phone-camera
    scanning could be added later if counter staff want it.
-7. **License.** None has been chosen yet.
+7. **License.** Resolved: MIT with an express government-use grant (see `LICENSE`),
+   shown in README.md and the site footer. Keep all three in sync if it changes.

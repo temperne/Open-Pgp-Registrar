@@ -36,5 +36,7 @@
     "vitest": "^5.1.0"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Jason Adam Jensen <jasonajensen@gmail.com>"
 }
