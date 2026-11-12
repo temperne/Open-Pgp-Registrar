@@ -1,4 +1,4 @@
-# Open PGP Registrar: Owner Key Registration
+# Pima County S.T.O.P. Initiative (Stop Theft of Property)
 
 A browser tool for a voluntary, no-fee deed-fraud safeguard. A property owner
 registers an OpenPGP signing key with the County Recorder on paper and then signs
@@ -41,6 +41,12 @@ Anyone can check a signature without this tool:
 gpg --import owner-public-key.asc
 gpg --verify deed.txt.sig deed.txt   # the app saves both from the signed document
 ```
+
+## Branding
+
+Program name, web address (currently the placeholder `[PROJECT URL]`) and the
+"proposed program" notice are set in `src/brand.ts`. The seal image is embedded in
+`index.html`; the comment above `<img id="brand-seal">` explains how to replace it.
 
 ## Development
 

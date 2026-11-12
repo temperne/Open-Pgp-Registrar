@@ -1,4 +1,4 @@
-# Project brief: Owner Key Registration Tool
+# Project brief: Pima County S.T.O.P. Initiative (Stop Theft of Property)
 
 ## Purpose
 
@@ -53,7 +53,7 @@ gives counter staff a way to check a filing.
    signature is only an extra layer)**, then a signature page. That page has the
    fingerprint, the document ID (Code 128) and QR codes carrying
    `PGPDOC1|FPR|base64sig|z|base64(deflate-raw(canonical text))`, split into
-   `PGPQ1|GROUP|i/n|chunk` codes of at most 700 characters. The `.txt` and `.sig`
+   `PGPQ1|GROUP|i/n|chunk` codes of at most 320 characters. The `.txt` and `.sig`
    files verify with stock `gpg`. Signing a file byte-for-byte (`PGPSIG1`) remains
    as a secondary option for electronic filing.
 4. **Check a filing** (Exhibit C): load the registered public key (scan the form's
@@ -64,6 +64,33 @@ gives counter staff a way to check a filing.
    box shows the first difference. The result is good, bad (hold: suspected
    forgery) or incomplete (codes missing).
 
+5. **About the program** (first tab, the default): explains the problem (deed
+   fraud and the cost of quiet title), why the program exists, how it works, how it
+   solves the problem, and an FAQ.
+
+## Branding
+
+- Program name, acronym expansion, county, web address (`[PROJECT URL]`
+  placeholder) and the proposed/adopted status live in `src/brand.ts`, with
+  instructions. They appear on the site and in every PDF footer and header.
+- The seal image is embedded in `index.html` (`<img id="brand-seal">`, base64), with
+  a comment explaining how to replace it. The PDFs read the seal from there, so
+  there is one copy.
+- While `status` is `'proposed'`, the site and every PDF say "Proposed program: not
+  yet adopted by Pima County. Not an official county form." Switch it to `'adopted'`
+  only once the county has adopted the program and approved use of its seal.
+- The 2-inch recording margin on deed page 1 stays free of branding.
+
+## Reading codes from files
+
+`src/qrscan.ts` reads QR codes from the signed PDF (pdf.js, run in-page by
+importing its worker module, so the CSP is unchanged), a scanned PDF, or a photo.
+jsQR reads one code at a time, so the reader paints out each code it finds,
+searches size-matched tiles, skips white areas, ignores empty or bogus detections
+(the seal can fool it), reads pages last-first and stops once complete. Keep
+signature codes small (`PART_SIZE` = 320, about version 14): large dense codes fail
+at fractional pixel sizes, which real scans and photos produce.
+
 ## Layout
 
 - `src/crypto.ts`: openpgp.js wrappers: generate, read, unlock, sign, payload, verify
@@ -72,6 +99,8 @@ gives counter staff a way to check a filing.
   drawn as vector shapes
 - `src/text.ts`: printable-text mapping and the canonical form that gets signed
 - `src/templates.ts`: deed templates
+- `src/brand.ts`: program name, web address, proposed/adopted notice
+- `src/qrscan.ts`: QR reading from PDFs, scans and photos
 - `src/main.ts`, `index.html`, `src/style.css`: the UI (plain TypeScript, no framework)
 - `tests/`: vitest. Includes GnuPG interop and a test that rasterizes the PDFs and
   decodes the codes with `zbarimg` (both skipped if the tools are missing)
@@ -106,9 +135,10 @@ gives counter staff a way to check a filing.
    later fill the "compare with the paper" box automatically.
 3. **Notary certificate space.** Arizona acknowledgment wording is long. Keep the
    box, or put a loose notarial certificate on a separate page?
-4. **County wording and branding.** The form says "County Recorder", with an
-   optional county name. Should it follow wording or a form number from the actual
-   Recorder?
+4. **County wording and branding.** Branded as the Pima County S.T.O.P. Initiative,
+   with the county seal and a "proposed program" notice. Before adoption: is the
+   county's permission to use its seal in hand? Should the forms follow the
+   Recorder's own wording or form numbers? The project URL is still a placeholder.
 5. **Hosting.** Should it be published (for example, GitHub Pages) or handed out as
    the single HTML file?
 6. **Camera scanning.** Handheld scanners work now, because they type into the

@@ -25,8 +25,10 @@ import {
   keyTextFromPdf,
   isPdfBytes,
   instrumentPdf,
+  setBrandSeal,
   type SignaturePageInfo,
 } from './pdf';
+import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { firstDifference, canonicalText } from './text';
 
@@ -114,7 +116,7 @@ function need(value: string, message: string) {
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
-const TABS = ['key', 'register', 'sign', 'verify'] as const;
+const TABS = ['about', 'key', 'register', 'sign', 'verify'] as const;
 type Tab = (typeof TABS)[number];
 
 function showTab(name: Tab, focus = false) {
@@ -181,6 +183,13 @@ function nameFromUserID(uid: string) {
 }
 
 const shortFpr = (fpr: string) => fpr.slice(-16);
+
+function fromBase64Text(b64: string) {
+  const bin = atob(b64.replace(/\s+/g, ''));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 const baseName = (n: string) => n.replace(/\.[^.]+$/, '');
 
 /** Reads a key from a PDF made by this tool, or from any OpenPGP key file or text. */
@@ -827,6 +836,39 @@ try {
 }
 $('frame-note').hidden = !framed;
 
+// Branding (src/brand.ts) and the seal embedded in index.html.
+document.title = `${BRAND.name} (${BRAND.expansion})`;
+document.querySelectorAll<HTMLElement>('[data-brand]').forEach((el) => {
+  const v = BRAND[el.dataset.brand as keyof typeof BRAND];
+  if (typeof v === 'string') el.textContent = v;
+});
+$('proposed-note').hidden = BRAND.status !== 'proposed';
+{
+  const holder = $('project-url');
+  holder.textContent = '';
+  if (/^https?:\/\//.test(BRAND.projectUrl)) {
+    holder.append(Object.assign(document.createElement('a'), { href: BRAND.projectUrl, textContent: BRAND.projectUrl, rel: 'noopener' }));
+  } else {
+    holder.textContent = BRAND.projectUrl;
+  }
+}
+{
+  const seal = $<HTMLImageElement>('brand-seal');
+  const m = /^data:image\/(png|jpe?g);base64,(.+)$/s.exec(seal.getAttribute('src') ?? '');
+  if (m) {
+    try {
+      setBrandSeal(fromBase64Text(m[2]));
+    } catch {
+      /* bad image data: PDFs are made without the seal */
+    }
+  } else {
+    seal.hidden = true;
+  }
+}
+if (!input('reg-county').value) input('reg-county').value = BRAND.county;
+if (!input('f-county').value) input('f-county').value = BRAND.county.replace(/\s+County$/i, '');
+syncTemplate();
+
 const initial = location.hash.slice(1) as Tab;
-showTab(TABS.includes(initial) ? initial : 'key');
+showTab(TABS.includes(initial) ? initial : 'about');
 $('boot').hidden = true;

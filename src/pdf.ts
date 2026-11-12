@@ -13,12 +13,14 @@ import {
   PDFString,
   PDFHexString,
   PDFRawStream,
+  PDFImage,
   decodePDFRawStream,
   type RGB,
 } from 'pdf-lib';
 import { bestQr, code128Bits, type QrMatrix } from './codes';
 import { formatFingerprint, toBase64, PUBKEY_QR_PREFIX } from './crypto';
 import { safeText } from './text';
+import { BRAND, brandLine } from './brand';
 
 const PAGE_W = 612; // US Letter
 const PAGE_H = 792;
@@ -36,18 +38,38 @@ interface Fonts {
   reg: PDFFont;
   bold: PDFFont;
   mono: PDFFont;
+  /** Program seal/logo, when one has been provided. */
+  seal?: PDFImage;
+}
+
+/**
+ * The seal image comes from the website (embedded in index.html), so there is
+ * one copy to update. Set once at startup with setBrandSeal().
+ */
+let sealBytes: Uint8Array | null = null;
+export function setBrandSeal(bytes: Uint8Array | null) {
+  sealBytes = bytes;
 }
 
 async function newDoc(title: string) {
   const doc = await PDFDocument.create();
   doc.setTitle(title);
-  doc.setProducer('Open PGP Registrar');
-  doc.setCreator('Open PGP Registrar');
+  doc.setProducer(BRAND.name);
+  doc.setCreator(BRAND.name);
+  doc.setSubject(`${BRAND.name} (${BRAND.expansion})`);
   const fonts: Fonts = {
     reg: await doc.embedFont(StandardFonts.Helvetica),
     bold: await doc.embedFont(StandardFonts.HelveticaBold),
     mono: await doc.embedFont(StandardFonts.Courier),
   };
+  if (sealBytes) {
+    try {
+      const isPng = sealBytes[0] === 0x89 && sealBytes[1] === 0x50;
+      fonts.seal = isPng ? await doc.embedPng(sealBytes) : await doc.embedJpg(sealBytes);
+    } catch {
+      /* unreadable image: PDFs are still made, without the seal */
+    }
+  }
   return { doc, fonts };
 }
 
@@ -154,18 +176,29 @@ function drawCode128(page: PDFPage, value: string, x: number, yBottom: number, m
 }
 
 function footer(page: PDFPage, fonts: Fonts, left: string, pageNo: number, pages: number) {
-  rule(page, 44);
-  page.drawText(safeText(left), { x: M, y: 32, size: 7.5, font: fonts.reg, color: MUTED });
+  rule(page, 46);
+  page.drawText(safeText(left), { x: M, y: 35, size: 7.5, font: fonts.reg, color: MUTED });
   const right = `Page ${pageNo} of ${pages}`;
-  page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 32, size: 7.5, font: fonts.reg, color: MUTED });
+  page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 35, size: 7.5, font: fonts.reg, color: MUTED });
+  // Program line: name, web address, and the "proposed" notice while it applies.
+  const brand = wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)[0];
+  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'proposed' ? WARN : MUTED });
+}
+
+/** Seal at the top-right corner of a page. Returns the width it takes. */
+function sealCorner(page: PDFPage, fonts: Fonts, size = 58) {
+  if (!fonts.seal) return 0;
+  page.drawImage(fonts.seal, { x: PAGE_W - M - size, y: PAGE_H - M - size + 10, width: size, height: size });
+  return size + 12;
 }
 
 function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string) {
+  const width = CONTENT_W - sealCorner(page, fonts);
   let y = PAGE_H - M;
-  y = text(page, fonts, kicker.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT });
-  y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold });
-  if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED });
-  return y - 10;
+  y = text(page, fonts, `${BRAND.name}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
+  y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold, width });
+  if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED, width });
+  return Math.min(y - 10, fonts.seal ? PAGE_H - M - 58 : y - 10);
 }
 
 interface Row {
@@ -596,7 +629,7 @@ export async function privateKeyPdf(info: PrivateKeyInfo): Promise<Uint8Array> {
     CONTENT_W,
   );
   const how =
-    'To sign later: open the Owner Key Registration tool, choose "Use a key I already have", and pick this PDF ' +
+    `To sign later: open the ${BRAND.name} website (${BRAND.projectUrl}), choose "Use a key I already have", and pick this PDF ` +
     '(the key file is embedded in it). From paper: scan this code with a phone, or type the text below into a file ' +
     'named key.asc. GnuPG users can run gpg --import key.asc.';
   const qr = bestQr(info.privateArmored.trim());
@@ -815,7 +848,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     fonts,
     `This digital signature is an extra layer. It does not replace the owner\u2019s ink signature or the notary ` +
       `acknowledgment on the document, which are still required. ` +
-      `To check: open the Owner Key Registration tool, go to "Check a filing", load the key registered for the parcel, and scan ` +
+      `To check: open the ${BRAND.name} website (${BRAND.projectUrl}), go to "Check a filing", load the key registered for the parcel, and scan ` +
       `every code below, in any order. The tool shows the exact text the owner signed. Compare it with the pages of this ` +
       `document. The signature covers every word, number and punctuation mark; capital letters, line breaks and spacing do not matter.`,
     y - 12,

@@ -33,6 +33,9 @@ function decodeWithMasking(src: Pixels, max: number): Hit[] {
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
     const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    // Artwork (a seal, a photo) can fool the detector into an empty or nonsense "code";
+    // ignore it, or its size would steer the tile search wrong.
+    if (!r.data || r.data.length < 4 || r.binaryData.length === 0) break;
     const pad = Math.max(4, size * 0.08);
     const box: Hit['box'] = [
       Math.floor(Math.min(...xs) - pad),

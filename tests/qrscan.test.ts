@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
 import { generateKeyPair, readAnyKey, unlockKey, signText, scanProgress, verifyScannedText, type SignedText } from '../src/crypto';
-import { instrumentPdf } from '../src/pdf';
+import { instrumentPdf, setBrandSeal } from '../src/pdf';
 import { decodeAllQr } from '../src/qrscan';
 
 function has(cmd: string, arg = '--version') {
@@ -22,6 +22,10 @@ let signed: SignedText;
 let pdf: Uint8Array;
 
 beforeAll(async () => {
+  // Use the real seal from index.html: artwork on the page must not confuse the reader.
+  const html = readFileSync(join(__dirname, '..', 'index.html'), 'utf8');
+  const m = /id="brand-seal"[^>]*src="data:image\/png;base64,([^"]+)"/.exec(html);
+  if (m) setBrandSeal(new Uint8Array(Buffer.from(m[1], 'base64')));
   const { privateArmored } = await generateKeyPair({ name: 'Example Owner', passphrase: 'pw' });
   key = await unlockKey((await readAnyKey(privateArmored)) as openpgp.PrivateKey, 'pw');
   let seed = 9;

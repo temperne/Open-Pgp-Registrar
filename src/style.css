@@ -523,3 +523,78 @@ button.linklike {
   cursor: pointer;
   font-weight: 600;
 }
+
+/* ---- Branding ---- */
+.brandbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.seal {
+  width: 88px;
+  height: 88px;
+  flex: none;
+}
+.kicker {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.brandbar h1 {
+  margin: 2px 0 4px;
+}
+.brandbar .lede {
+  margin: 0;
+}
+#proposed-note {
+  margin: 14px 0 0;
+}
+.top .privacy {
+  margin-top: 12px;
+}
+@media (max-width: 560px) {
+  .seal {
+    width: 64px;
+    height: 64px;
+  }
+  .brandbar h1 {
+    font-size: 1.35rem;
+  }
+}
+
+/* ---- About ---- */
+.about p {
+  margin: 8px 0 0;
+}
+.about .hero {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--rule));
+}
+.about .hero h2 {
+  font-size: 1.35rem;
+}
+.howto,
+.benefits {
+  margin: 10px 0 0;
+  padding-left: 1.3em;
+}
+.howto li,
+.benefits li {
+  margin: 8px 0;
+}
+.about details {
+  border-top: 1px solid var(--rule);
+  padding: 10px 0;
+}
+.about details:first-of-type {
+  margin-top: 8px;
+}
+.about details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.tabs button:first-child span {
+  display: none;
+}
