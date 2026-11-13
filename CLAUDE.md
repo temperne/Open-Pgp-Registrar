@@ -131,8 +131,8 @@ gives counter staff a way to check a filing.
 
 ## Branding
 
-- Program name, acronym expansion, county, web address (`[PROJECT URL]`
-  placeholder) and the proposed/adopted status live in `src/brand.ts`, with
+- Program name, acronym expansion, county, web address (test site:
+  https://pimastopinitiative.jasonajensen.workers.dev/) and the proposed/adopted status live in `src/brand.ts`, with
   instructions. They appear on the site and in every PDF footer and header.
 - The seal image is embedded in `index.html` (`<img id="brand-seal">`, base64), with
   a comment explaining how to replace it. The PDFs read the seal from there, so
@@ -200,7 +200,7 @@ at fractional pixel sizes, which real scans and photos produce.
 4. **County wording and branding.** Branded as the Pima County S.T.O.P. Initiative,
    with the county seal and a "proposed program" notice. Before adoption: is the
    county's permission to use its seal in hand? Should the forms follow the
-   Recorder's own wording or form numbers? The project URL is still a placeholder.
+   Recorder's own wording or form numbers? The project URL is the test site for now.
 5. **Hosting.** Should it be published (for example, GitHub Pages) or handed out as
    the single HTML file?
 6. **Camera scanning.** Not needed for now: the Recorder already scans every
