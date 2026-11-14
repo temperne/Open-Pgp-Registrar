@@ -7,7 +7,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
 import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom } from '../src/crypto';
-import { extractFile, fileSignedText, docxText } from '../src/extract';
+import { extractFile, fileSignedText, docxText, parcelFilingStatement } from '../src/extract';
 import { filePackagePdf, sourceFromPdf, checkedCopyPdf, signerBlocksForUserID } from '../src/pdf';
 
 function has(cmd: string, arg = '--version') {
@@ -188,5 +188,20 @@ describe('signature blocks from a signature\'s user ID', () => {
     const text = execFileSync('pdftotext', [join(dir, 'g.pdf'), '-']).toString();
     rmSync(dir, { recursive: true });
     expect(text.match(/acknowledged before me/g)?.length).toBe(2);
+  });
+});
+
+describe('ready for parcel filing', () => {
+  it('a file that does not list the parcel passes the check once the statement is signed with it', async () => {
+    const src = await extractFile(file(new TextEncoder().encode('Invoice for painting the garage.'), 'invoice.txt', 'text/plain'));
+    const reg = { parcel: '123-45-6789', keys: [key.toPublic()] };
+    const plain = await signText(key, fileSignedText(src, ''));
+    const r1 = await verifyScannedText({ scanned: plain.codes.join('\n'), registration: reg });
+    expect(r1.notForRecording).toBe(true);
+    const ready = await signText(key, fileSignedText(src, '', parcelFilingStatement('123-45-6789', 'Pima County', 'Arizona')));
+    const r2 = await verifyScannedText({ scanned: ready.codes.join('\n'), registration: reg });
+    expect(r2.verdict).toBe('good');
+    expect(r2.notForRecording).toBe(false);
+    expect(r2.signedText).toContain("SIGN IT EXPLICITLY FOR USE WITH ASSESSOR'S PARCEL NUMBER 123-45-6789");
   });
 });

@@ -82,7 +82,9 @@ layer on equal footing with them.
 - The check requires **every registered key** to have signed **the same text**, **no
   unregistered key**, and a **fully
   proven registration**. If the text doesn't name the registered parcel, the result says
-  it was signed by the owners but is **for third parties only, not for recording**. The signed text is shown to compare with the paper.
+  it was signed by the owners but is **for third parties only, not for recording**.
+  To file one, tick **Ready this document for parcel filing** before signing: a signed
+  statement ties it to the parcel. The signed text is shown to compare with the paper.
 - A printable **verification certificate** for the checker to sign and append to the
   filing.
 - A **checked copy**: the checked file (PDF pages or images), every page stamped with

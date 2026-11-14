@@ -97,7 +97,11 @@ gives counter staff a way to check a filing.
    a key that isn't listed, and a recordable document (deed) that doesn't name the
    parcel. A file or a non-recorded document that doesn't name the parcel can be
    signed, with a warning: **for third parties only, not for recording** (also printed
-   on the cover / signature page banner). Pick a template
+   on the cover / signature page banner). Or tick **Ready this document for parcel
+   filing** (`parcelFilingStatement`): a signed statement that the signers sign it for
+   use with the registered parcel, put at the start of a document's text or in a
+   file's signed text (`fileSignedText`'s third argument, `source.parcelStatement`,
+   boxed on the cover), so the check matches the parcel. Pick a template
    (warranty, quitclaim or beneficiary deed, based on A.R.S. 33-402/33-405, or blank)
    and edit freely. The signed bytes are the *canonical* text (`src/text.ts`):
    printable WinAnsi characters, upper-cased, whitespace collapsed. **Several owners

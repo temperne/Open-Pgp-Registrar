@@ -1134,7 +1134,7 @@ export interface DocumentDraft {
   /** Recorded with the County Recorder (deeds); otherwise printed without the recording margin. */
   recordable?: boolean;
   /** A signed file: what it is, so the next owner can recreate exactly the same package. */
-  source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string };
+  source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string; parcelStatement?: string };
   /** Base64 of each owner's detached signature, in signing order. */
   signatures: { fingerprint: string; userID: string; signedAt: string; sig: string }[];
   /** The parcel's registration, when one was loaded. */
@@ -1792,6 +1792,8 @@ export interface FilePackageInfo {
   source: ExtractedFile;
   /** The signer's description (images and scans); shown on its own page. */
   description?: string;
+  /** "Ready for parcel filing": signed with the file, printed on the cover. */
+  parcelStatement?: string;
   signatures: { fingerprint: string; userID: string; signedAt: Date }[];
   documentId: string;
   codes: string[];
@@ -1866,6 +1868,13 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
     const h = lines.length * 12 + 12;
     cover.drawRectangle({ x: M, y: y - h, width: CONTENT_W, height: h, color: done ? rgb(0.9, 0.96, 0.92) : rgb(0.98, 0.91, 0.91), borderColor: done ? rgb(0.08, 0.42, 0.18) : WARN, borderWidth: 1 });
     lines.forEach((l, i) => cover.drawText(l, { x: M + 10, y: y - 15 - i * 12, size: 9, font: fonts.bold, color: done ? rgb(0.08, 0.42, 0.18) : WARN }));
+    y -= h + 8;
+  }
+  if (info.parcelStatement) {
+    const lines = wrap(safeText(info.parcelStatement), fonts.bold, 9.5, CONTENT_W - 20);
+    const h = lines.length * 12.5 + 12;
+    cover.drawRectangle({ x: M, y: y - h, width: CONTENT_W, height: h, borderColor: INK, borderWidth: 1.2 });
+    lines.forEach((l, i) => cover.drawText(l, { x: M + 10, y: y - 15 - i * 12.5, size: 9.5, font: fonts.bold, color: INK }));
     y -= h + 8;
   }
   const kindLabel = { pdf: 'PDF', docx: 'Word document (recreated as text)', odt: 'OpenDocument text (recreated as text)', text: 'Text file', image: 'Image', scan: 'Scanned PDF (no text)' }[src.kind];

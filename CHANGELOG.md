@@ -31,6 +31,14 @@ All notable changes to this project are recorded here. The format follows
   (PDF pages and images) stamped with the result, the date, the document ID and the
   page number, with a barcode.
 
+### Added (parcel filing)
+- **Ready this document for parcel filing** (checkbox on the Sign tab, with a
+  registration loaded): for a file or document that doesn't list the parcel number,
+  adds a signed statement that the signers sign it explicitly for use with the
+  registered parcel. It is printed on the first page (a signed file's cover, or the
+  start of a document's text) and carried in the codes, so the Recorder's check
+  matches it to the parcel.
+
 ### Changed
 - A file or non-recorded document whose text doesn't name the registered parcel is no
   longer refused. It is signed with a warning, **for third parties only, not for

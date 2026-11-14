@@ -70,7 +70,7 @@ import {
 import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText } from './text';
-import { extractFile, extractImages, fileSignedText, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
+import { extractFile, extractImages, fileSignedText, parcelFilingStatement, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -95,7 +95,7 @@ interface State {
     signers: string;
     recordable: boolean;
     /** A signed file: printed as cover page, the file's pages, and signatures. */
-    source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string };
+    source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string; parcelStatement?: string };
   } | null;
   /** The file being signed (its pages and images), when signing a file. */
   source: ExtractedFile | null;
@@ -928,7 +928,24 @@ $('rebuild').addEventListener('click', () => syncTemplate(true));
 syncTemplate();
 
 /** Locks the text once anyone has signed: every owner must sign exactly the same text. */
+/** The parcel filing statement, when "Ready this document for parcel filing" is ticked. */
+function parcelStatement() {
+  const parcel = state.signReg?.parcel;
+  return parcel && input('parcel-ready').checked ? parcelFilingStatement(parcel, BRAND.county, BRAND.state) : '';
+}
+
+function showParcelReady() {
+  const parcel = state.signReg?.parcel;
+  $('parcel-ready-wrap').hidden = !parcel || !!state.draft;
+  if (!parcel) input('parcel-ready').checked = false;
+  $('parcel-ready-hint').textContent = parcel
+    ? `For a document that does not list the parcel number: adds a signed statement, printed on its first page, that the signers sign it explicitly for use with parcel ${parcel}. The Recorder's check then matches it to the parcel. Without it, a document that doesn't name the parcel is for third parties only.`
+    : '';
+}
+input('parcel-ready').addEventListener('change', () => updateCount());
+
 function lockDraft() {
+  showParcelReady();
   const locked = !!state.draft;
   $('draft-fields').querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((el) => {
     // Lines and the return address are printed but not signed; they stay editable.
@@ -1054,6 +1071,7 @@ function setDraft(d: State['draft']) {
 
 /** With a registration loaded, signature lines come from its keys. */
 function showAutoSigners() {
+  showParcelReady();
   const auto = !!state.signReg || !!state.source || (!signersTyped && signingKeyIDs().length > 0);
   $('doc-signers-wrap').hidden = auto;
   $('doc-signers-auto').hidden = !auto;
@@ -1307,7 +1325,8 @@ action(
       }
       // A file that does not name the parcel can still be signed: it is then for third
       // parties only (a tenant, buyer, bank), and the result says so.
-      const full = fileSignedText(src, description);
+      const statement = parcelStatement();
+      const full = fileSignedText(src, description, statement);
       const signed = await signText(state.signer, full);
       setDraft({
         signed,
@@ -1316,10 +1335,11 @@ action(
         returnTo: '',
         signers: textarea('doc-signers').value,
         recordable: false,
-        source: { kind: src.kind, name: src.name, pages: src.pages, pageCount: src.pageCount, sha256: src.sha256, description: needsDescription(src) ? description : undefined },
+        source: { kind: src.kind, name: src.name, pages: src.pages, pageCount: src.pageCount, sha256: src.sha256, description: needsDescription(src) ? description : undefined, parcelStatement: statement || undefined },
       });
     } else {
-      const text = textarea('doc-text').value;
+      const statement = parcelStatement();
+      const text = statement ? `${statement}\n\n${textarea('doc-text').value}` : textarea('doc-text').value;
       const title = input('doc-title').value.trim();
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
@@ -1327,7 +1347,7 @@ action(
       // A recordable document (a deed) must name the parcel; anything else may be signed for third parties.
       if (currentTemplate().recordable && state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
         throw new UserError(
-          `A document for recording must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail. (Documents for a tenant, buyer or bank can use a non-recorded template.)`,
+          `A document for recording must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail. Add it to the text, or tick "Ready this document for parcel filing".`,
         );
       }
       const signed = await signText(state.signer, fullText(title, text));
@@ -1391,6 +1411,7 @@ async function downloadInstrument() {
     const pkg = await filePackagePdf({
       source: state.source,
       description: d.source.description,
+      parcelStatement: d.source.parcelStatement,
       signatures: d.signed.signatures,
       documentId: d.signed.documentId,
       codes: d.signed.codes,
