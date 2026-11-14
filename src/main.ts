@@ -1135,6 +1135,7 @@ function showSource() {
   const src = state.source;
   const info = $('src-info');
   $('src-clear').hidden = !src;
+  if (!src) $('src-pdf-tip').hidden = true;
   if (!src) {
     info.textContent = '';
     textarea('doc-text').placeholder = '';
@@ -1148,7 +1149,9 @@ function showSource() {
       ? 'It has no text of its own: describe or transcribe what it shows in the box below. That description is what gets signed, and the Recorder compares it with the printed pages.'
       : src.kind === 'pdf'
         ? 'Its text is shown below, exactly as it will be signed. The PDF’s own pages are reprinted in the package.'
-        : 'Its text is shown below, exactly as it will be signed, and is recreated as plain text pages in the package (for the exact layout, save it as a PDF first).');
+        : 'Its text is shown below, exactly as it will be signed, and is recreated as plain text pages in the package.');
+  // Formatting is only kept for PDFs: say so plainly, so nobody is surprised by the printout.
+  $('src-pdf-tip').hidden = src.kind === 'pdf' || src.kind === 'scan' || src.kind === 'image';
   input('doc-title').value = '';
   textarea('doc-text').value = needsDescription(src) ? '' : src.pages.join('\n\n');
   textarea('doc-text').placeholder = needsDescription(src) ? 'Describe or transcribe what the file shows. Include the parcel number.' : '';

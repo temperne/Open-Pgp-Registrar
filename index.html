@@ -437,9 +437,17 @@
                 page. What is signed is that recreation, so it can be checked from paper. Choose several images at once
                 for several pages.
               </p>
+              <p class="hint"><strong>Recommended: use a PDF.</strong> A PDF is reprinted exactly as it looks. In Word,
+                Excel, PowerPoint, Google Docs or LibreOffice, choose <em>Save as</em> or <em>Download</em> &rarr; PDF, then
+                load the PDF here. Other files are recreated as plain text, so their formatting is not kept.</p>
               <input id="src-file" type="file" multiple accept=".pdf,.docx,.odt,.txt,.md,.csv,application/pdf,image/*" aria-label="File to sign" />
               <button type="button" id="src-clear" class="linklike" hidden>Remove the file and use a template</button>
               <p id="src-info" class="hint" role="status"></p>
+              <div id="src-pdf-tip" class="callout warn" hidden>
+                <strong>Formatting is not kept for this kind of file.</strong> The package will show its text as plain
+                pages. For an exact copy of how it looks, save it as a PDF and load the PDF instead. Check the printout
+                before you sign it in ink or file it.
+              </div>
             </div>
             <div id="locked-note" class="callout warn" hidden></div>
 

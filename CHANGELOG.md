@@ -13,7 +13,9 @@ All notable changes to this project are recorded here. The format follows
   the file's pages, each stamped with the document ID and "page i of n"; a final page
   of ink signature blocks and notary acknowledgments) and the recreation is signed,
   so it can be checked from paper. Images and scans are signed with the signer's
-  description. Works with registrations, several owners and the check.
+  description. Works with registrations, several owners and the check. PDFs are
+  recommended (reprinted exactly); Word, OpenDocument and text files are recreated
+  as plain text, and the app says so when one is loaded.
 
 ### Removed
 - The byte-for-byte "electronic filing" file signature, which could not be checked
