@@ -16,12 +16,43 @@ All notable changes to this project are recorded here. The format follows
   description. Works with registrations, several owners and the check. PDFs are
   recommended (reprinted exactly); Word, OpenDocument and text files are recreated
   as plain text, and the app says so when one is loaded.
-
-### Removed
-- The byte-for-byte "electronic filing" file signature, which could not be checked
-  from paper. The check page still reads codes made by it.
 - Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
   the README, and printed on every page and PDF as the program's web address).
+- **Binary file signature** (advanced, on the Sign tab): signs a file's exact bytes,
+  for files sent directly to a tenant, buyer, bank or other third party. Not for
+  recording: the Recorder takes paper, and paper cannot carry a file's bytes. Gives a
+  `.sig` (checks with `gpg --verify`) and a verification page with its code.
+- **Check a document** (renamed from "Check a filing") invites anyone given a signed
+  document, not only Recorder staff, to check it. A public key card can be loaded in
+  place of a registration.
+- **Check a binary-signed file**: the file plus its `.sig` or verification page (PDF,
+  scan or photo).
+- **Checked copy**: after a check, download the checked file(s) as a PDF, every page
+  (PDF pages and images) stamped with the result, the date, the document ID and the
+  page number, with a barcode.
+
+### Added (parcel filing)
+- **Ready this document for parcel filing** (checkbox on the Sign tab, with a
+  registration loaded): for a file or document that doesn't list the parcel number,
+  adds a signed statement that the signers sign it explicitly for use with the
+  registered parcel. It is printed on the first page (a signed file's cover, or the
+  start of a document's text) and carried in the codes, so the Recorder's check
+  matches it to the parcel.
+
+### Changed
+- A file or non-recorded document whose text doesn't name the registered parcel is no
+  longer refused. It is signed with a warning, **for third parties only, not for
+  recording**, which is also printed on the package's cover. The check shows "Signed by
+  the owners. For third parties only: not for recording" instead of failing. Deeds
+  and other recordable documents must still name the parcel.
+
+### Fixed
+- Signature blocks always follow the signing key's identity: a group key gets a
+  signature line and notary acknowledgment for every member, and a position key names
+  its holder ("as Secretary of ..."), including for signed files and for documents
+  signed without a registration loaded (before, each signature got one block). The
+  Sign tab lists who signs in ink before signing; for a document without a
+  registration, the lines can still be typed by hand.
 
 ## [0.1.0] - 2026-11-12
 

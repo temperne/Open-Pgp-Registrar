@@ -6,9 +6,9 @@ import { zipSync, strToU8 } from 'fflate';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
-import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText } from '../src/crypto';
-import { extractFile, fileSignedText, docxText } from '../src/extract';
-import { filePackagePdf, sourceFromPdf } from '../src/pdf';
+import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom } from '../src/crypto';
+import { extractFile, fileSignedText, docxText, parcelFilingStatement } from '../src/extract';
+import { filePackagePdf, sourceFromPdf, checkedCopyPdf, signerBlocksForUserID } from '../src/pdf';
 
 function has(cmd: string, arg = '--version') {
   try {
@@ -120,4 +120,88 @@ describe.skipIf(!has('pdftoppm', '-v') || !has('zbarimg') || !has('pdftotext', '
       }
     });
   }
+});
+
+describe('binary file signature (for third parties)', () => {
+  it('verifies the exact file, from the .sig or the PGPSIG1 code, and rejects a changed file', async () => {
+    const bytes = new TextEncoder().encode('any file at all');
+    const signed = await signDocument(key, bytes);
+    const pub = key.toPublic();
+    for (const sig of [signed.signature, await binarySignatureFrom(signed.payload), await binarySignatureFrom(signed.armoredSignature)]) {
+      const good = await verifyBinaryFile({ signature: sig, document: bytes, keys: [pub] });
+      expect(good.verdict).toBe('good');
+    }
+    const changed = await verifyBinaryFile({ signature: signed.signature, document: new TextEncoder().encode('any file at al1'), keys: [pub] });
+    expect(changed.verdict).toBe('bad');
+    const { privateArmored } = await generateKeyPair({ name: 'Someone Else', passphrase: 'pw-123456' });
+    const other = (await readAnyKey(privateArmored)).toPublic();
+    expect((await verifyBinaryFile({ signature: signed.signature, document: bytes, keys: [other] })).verdict).toBe('bad');
+  });
+});
+
+describe('checked copy', () => {
+  it('stamps every page of the checked PDFs and images', async () => {
+    const pdf = await textPdf(['page one', 'page two']);
+    const png = new PNG({ width: 20, height: 10 });
+    png.data.fill(200);
+    const out = await checkedCopyPdf({
+      files: [
+        { name: 'a.pdf', pdf, sha256: 'A'.repeat(64) },
+        { name: 'b.png', image: { bytes: PNG.sync.write(png), format: 'png', name: 'b.png' }, sha256: 'B'.repeat(64) },
+        { name: 'c.docx', sha256: 'C'.repeat(64) },
+      ],
+      result: 'good',
+      summary: 'every key signed',
+      documentId: 'ABCD-1234',
+      checkedAt: new Date('2026-11-14T00:00:00Z'),
+    });
+    const doc = await PDFDocument.load(out);
+    expect(doc.getPageCount()).toBe(4);
+    if (has('pdftotext', '-v')) {
+      const dir = mkdtempSync(join('/tmp', 'cc-'));
+      writeFileSync(join(dir, 'c.pdf'), out);
+      const text = execFileSync('pdftotext', [join(dir, 'c.pdf'), '-']).toString();
+      rmSync(dir, { recursive: true });
+      expect(text).toContain('CHECKED 2026-11-14: GOOD');
+      expect(text).toContain('Page 4 of 4');
+    }
+  });
+});
+
+describe('signature blocks from a signature\'s user ID', () => {
+  it('gives every group member a block and names a position holder', () => {
+    expect(signerBlocksForUserID('Jane Doe and John Doe (group: Jane Doe; John Doe)').map((b) => b.caption)).toEqual(['Jane Doe', 'John Doe']);
+    expect(signerBlocksForUserID('Doe Holdings LLC (position: Secretary; holder: Jane Doe)')[0].ack).toBe('Jane Doe, as Secretary of Doe Holdings LLC');
+    expect(signerBlocksForUserID('Doe Holdings LLC (position: Secretary; holder: Jane Doe)', 'Pat Smith')[0].ack).toBe('Pat Smith, as Secretary of Doe Holdings LLC');
+    expect(signerBlocksForUserID('Jane Doe <jane@example.com>')).toEqual([{ caption: 'Jane Doe', ack: 'Jane Doe' }]);
+  });
+
+  it('a signed file without a registration gets one notary block per group member', async () => {
+    const { privateArmored } = await generateKeyPair({ name: 'Jane Doe and John Doe', members: ['Jane Doe', 'John Doe'], passphrase: 'pw-123456' });
+    const g = await unlockKey((await readAnyKey(privateArmored)) as openpgp.PrivateKey, 'pw-123456');
+    const src = await extractFile(file(new TextEncoder().encode('Note for parcel 123-45-6789.'), 'note.txt', 'text/plain'));
+    const signed = await signText(g, fileSignedText(src, ''));
+    const pdf = await filePackagePdf({ source: src, description: '', signatures: signed.signatures, documentId: signed.documentId, codes: signed.codes });
+    if (!has('pdftotext', '-v')) return;
+    const dir = mkdtempSync(join('/tmp', 'grp-'));
+    writeFileSync(join(dir, 'g.pdf'), pdf);
+    const text = execFileSync('pdftotext', [join(dir, 'g.pdf'), '-']).toString();
+    rmSync(dir, { recursive: true });
+    expect(text.match(/acknowledged before me/g)?.length).toBe(2);
+  });
+});
+
+describe('ready for parcel filing', () => {
+  it('a file that does not list the parcel passes the check once the statement is signed with it', async () => {
+    const src = await extractFile(file(new TextEncoder().encode('Invoice for painting the garage.'), 'invoice.txt', 'text/plain'));
+    const reg = { parcel: '123-45-6789', keys: [key.toPublic()] };
+    const plain = await signText(key, fileSignedText(src, ''));
+    const r1 = await verifyScannedText({ scanned: plain.codes.join('\n'), registration: reg });
+    expect(r1.notForRecording).toBe(true);
+    const ready = await signText(key, fileSignedText(src, '', parcelFilingStatement('123-45-6789', 'Pima County', 'Arizona')));
+    const r2 = await verifyScannedText({ scanned: ready.codes.join('\n'), registration: reg });
+    expect(r2.verdict).toBe('good');
+    expect(r2.notForRecording).toBe(false);
+    expect(r2.signedText).toContain("SIGN IT EXPLICITLY FOR USE WITH ASSESSOR'S PARCEL NUMBER 123-45-6789");
+  });
 });

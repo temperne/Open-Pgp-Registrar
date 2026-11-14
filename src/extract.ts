@@ -40,7 +40,7 @@ const isJpg = (b: Uint8Array) => b[0] === 0xff && b[1] === 0xd8;
 export const looksImage = (f: File) => f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic|heif|tiff?|avif)$/i.test(f.name);
 
 /** PNG and JPEG go in as they are; other formats are converted to PNG by the browser. */
-async function toPrintableImage(file: File, bytes: Uint8Array): Promise<SourceImage> {
+export async function toPrintableImage(file: File, bytes: Uint8Array): Promise<SourceImage> {
   if (isPng(bytes)) return { bytes, format: 'png', name: file.name };
   if (isJpg(bytes)) return { bytes, format: 'jpg', name: file.name };
   let bitmap: ImageBitmap;
@@ -183,14 +183,27 @@ export const SUPPORTED_ALL = `${SUPPORTED_FILES}, or images (JPG, PNG and others
  * then its text, or for an image or scan, the signer's description of it.
  * All of it is carried in the printed codes, so it comes back from paper.
  */
-export function fileSignedText(f: ExtractedFile, description: string) {
+export function fileSignedText(f: ExtractedFile, description: string, parcelStatement = '') {
   const head = [
     `SIGNED FILE: ${safeText(f.name)}.`,
     `DIGITAL FINGERPRINT (SHA-256): ${f.sha256.join(', ')}.`,
     f.pageCount ? `PAGES: ${f.pageCount}.` : '',
+    parcelStatement ? safeText(parcelStatement) : '',
   ].filter(Boolean);
   const body = needsDescription(f)
     ? [`DESCRIPTION OR TRANSCRIPTION BY THE SIGNER (${f.kind === 'image' ? 'THE FILE IS AN IMAGE' : 'THE FILE IS A SCAN WITHOUT TEXT'}):`, description.trim()]
     : ['TEXT OF THE FILE:', f.pages.join('\n\n')];
   return [...head, '', ...body].join('\n');
+}
+
+/**
+ * "Ready for parcel filing": a statement, signed with the document, that ties it to
+ * a parcel the document itself does not list, so the Recorder's check can match it.
+ */
+export function parcelFilingStatement(parcel: string, county: string, state: string) {
+  return (
+    `PARCEL FILING STATEMENT: This document does not itself list the parcel number. ` +
+    `The signers sign it explicitly for use with Assessor's Parcel Number ${safeText(parcel)}, ${safeText(county)}, ${safeText(state)}, ` +
+    `and for filing against that parcel.`
+  );
 }

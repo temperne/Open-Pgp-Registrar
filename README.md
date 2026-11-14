@@ -69,19 +69,28 @@ layer on equal footing with them.
   page number, and a signatures page) and that recreation is what's signed, so it
   can be checked from paper. Images and scans are signed with the signer's written
   description of them.
+- **Binary file signature** (advanced): signs a file's exact bytes, for files sent
+  directly to a tenant, buyer or bank. Not for recording: the Recorder takes paper.
 - **Several owners, one document**: owners sign the same text on one computer, or
   pass the partly signed PDF along ("Sign exactly as others"). The text locks after
   the first signature.
 
-**For the Recorder**
-- **Check a filing** from the signed PDF, the Recorder's own scan, a phone photo, or
+**For the Recorder, and anyone given a signed document**
+- **Check a document** from the signed PDF, the Recorder's own scan, a phone photo, or
   a handheld scanner. Several copies can be checked together; all must carry the same
   text.
 - The check requires **every registered key** to have signed **the same text**, **no
-  unregistered key**, the **registered parcel** named in the text, and a **fully
-  proven registration**. The signed text is shown to compare with the paper.
+  unregistered key**, and a **fully
+  proven registration**. If the text doesn't name the registered parcel, the result says
+  it was signed by the owners but is **for third parties only, not for recording**.
+  To file one, tick **Ready this document for parcel filing** before signing: a signed
+  statement ties it to the parcel. The signed text is shown to compare with the paper.
 - A printable **verification certificate** for the checker to sign and append to the
   filing.
+- A **checked copy**: the checked file (PDF pages or images), every page stamped with
+  the result, the date and the document ID.
+- Tenants, buyers and banks can check a lease, offer or statement against the owner's
+  registration or public key card, and check binary-signed files.
 
 **Built to be trusted**
 - Runs entirely in the browser; a Content-Security-Policy blocks every network
@@ -131,13 +140,21 @@ it shows (include the parcel number). Sign, and print the package: cover page, t
 file's pages (each stamped "page i of n" with the document ID), and the signatures
 page.
 
-### For Recorder staff
+**Binary file signature** (advanced, at the bottom of the Sign tab): for a file you
+send to someone directly, not for recording. Download the `.sig` and the verification
+page and send both with the file.
 
-**Check a filing**: load the parcel's registration (the form PDF, a scan or a photo),
+### For Recorder staff, tenants, buyers and banks
+
+**Check a document**: load the parcel's registration (the form PDF, a scan or a photo),
 then the filed document (or several copies), or scan its QR codes. The result is
 **GOOD** (compare the signed text with the paper, then record as usual), **DOES NOT
 VERIFY** (hold the filing; suspected forgery), or **NOT CHECKED YET** (codes missing).
-Then print the **verification certificate**, sign it, and append it to the filing.
+Then print the **verification certificate**, sign it, and append it to the filing,
+or download a **checked copy** of the file with every page stamped with the result.
+A tenant, buyer or bank can load the owner's public key card instead of a
+registration. For a binary-signed file, open **Check a binary-signed file** and load
+the file with its `.sig` or verification page.
 
 ![Check a filing](docs/images/08-check.png)
 

@@ -7,9 +7,10 @@ import {
   summarize,
   isPrivate,
   signDocument,
-  verifyFiling,
   signText,
   verifyScannedText,
+  verifyBinaryFile,
+  binarySignatureFrom,
   keyFromCodes,
   codesHaveKey,
   orderedCodes,
@@ -28,7 +29,6 @@ import {
   signHolderUpdate,
   checkHolderUpdate,
   registrationStatement,
-  parsePayload,
   toBase64,
   fromBase64,
   type Registration,
@@ -52,6 +52,7 @@ import {
   filePackagePdf,
   sourceFromPdf,
   signerBlocksForKey,
+  signerBlocksForUserID,
   registrationDraftFromPdf,
   holderUpdatePdf,
   holderUpdateFromPdf,
@@ -63,11 +64,13 @@ import {
   splitParcels,
   type DocumentDraft,
   type SignaturePageInfo,
+  checkedCopyPdf,
+  type CheckedFile,
 } from './pdf';
 import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText } from './text';
-import { extractFile, extractImages, fileSignedText, needsDescription, looksImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
+import { extractFile, extractImages, fileSignedText, parcelFilingStatement, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -92,7 +95,7 @@ interface State {
     signers: string;
     recordable: boolean;
     /** A signed file: printed as cover page, the file's pages, and signatures. */
-    source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string };
+    source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string; parcelStatement?: string };
   } | null;
   /** The file being signed (its pages and images), when signing a file. */
   source: ExtractedFile | null;
@@ -114,6 +117,9 @@ interface State {
     proofs: Record<string, SignedText>;
   } | null;
 }
+/** Signature lines typed by hand (documents without a registration), instead of from the keys. */
+let signersTyped = false;
+
 const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, draft: null, source: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -299,6 +305,7 @@ function isReplacement() {
 // Rendering
 // ---------------------------------------------------------------------------
 function refresh() {
+  showAutoSigners();
   const k = state.key;
   $('key-current').hidden = !k;
   $('key-choose').hidden = !!k;
@@ -921,7 +928,24 @@ $('rebuild').addEventListener('click', () => syncTemplate(true));
 syncTemplate();
 
 /** Locks the text once anyone has signed: every owner must sign exactly the same text. */
+/** The parcel filing statement, when "Ready this document for parcel filing" is ticked. */
+function parcelStatement() {
+  const parcel = state.signReg?.parcel;
+  return parcel && input('parcel-ready').checked ? parcelFilingStatement(parcel, BRAND.county, BRAND.state) : '';
+}
+
+function showParcelReady() {
+  const parcel = state.signReg?.parcel;
+  $('parcel-ready-wrap').hidden = !parcel || !!state.draft;
+  if (!parcel) input('parcel-ready').checked = false;
+  $('parcel-ready-hint').textContent = parcel
+    ? `For a document that does not list the parcel number: adds a signed statement, printed on its first page, that the signers sign it explicitly for use with parcel ${parcel}. The Recorder's check then matches it to the parcel. Without it, a document that doesn't name the parcel is for third parties only.`
+    : '';
+}
+input('parcel-ready').addEventListener('change', () => updateCount());
+
 function lockDraft() {
+  showParcelReady();
   const locked = !!state.draft;
   $('draft-fields').querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((el) => {
     // Lines and the return address are printed but not signed; they stay editable.
@@ -968,6 +992,18 @@ function missingSigners() {
 }
 
 function renderDraft() {
+  showAutoSigners();
+  {
+    const d = state.draft;
+    const parcel = state.signReg?.parcel;
+    const missing = !!(d && parcel && !parcelKey(d.signed.canonical).includes(parcelKey(parcel)));
+    $('tr-parcel-warn').hidden = !missing;
+    if (missing) {
+      $('tr-parcel-warn').textContent =
+        `For third parties only: not for recording. The signed text does not name the registered parcel, ${parcel}, so the Recorder's check will not accept it. ` +
+        'A tenant, buyer, bank or anyone else you give it to can still check that the owners of record signed it.';
+    }
+  }
   const d = state.draft;
   if (!d) return;
   const list = $('tr-signers');
@@ -1035,11 +1071,27 @@ function setDraft(d: State['draft']) {
 
 /** With a registration loaded, signature lines come from its keys. */
 function showAutoSigners() {
-  const auto = !!state.signReg;
+  showParcelReady();
+  const auto = !!state.signReg || !!state.source || (!signersTyped && signingKeyIDs().length > 0);
   $('doc-signers-wrap').hidden = auto;
   $('doc-signers-auto').hidden = !auto;
+  $('doc-signers-from').textContent = state.signReg
+    ? 'From the parcel registration: one signature line and notary acknowledgment for each person who signs for each registered key.'
+    : 'From the signing key(s): one signature line and notary acknowledgment for each person who signs for each key (every member of a group; the holder of a position). Load the parcel registration to include every owner.';
   const list = $('doc-signers-list');
   list.innerHTML = '';
+  if (!state.signReg) {
+    for (const k of signingKeyIDs()) {
+      const li = document.createElement('li');
+      li.append(
+        Object.assign(document.createElement('strong'), { textContent: k.userID.replace(/\s*<[^>]*>\s*$/, '') || '(no name)' }),
+        Object.assign(document.createElement('span'), {
+          textContent: `Signs: ${signerBlocksForUserID(k.userID, state.holders.get(k.fingerprint)?.holder).map((b) => b.caption).join('; ')}`,
+        }),
+      );
+      list.append(li);
+    }
+  }
   for (const k of state.signReg?.keys ?? []) {
     const blocks = signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder);
     const li = keyItem(k, undefined, keyLabel(state.signReg, k.getFingerprint()));
@@ -1271,14 +1323,10 @@ action(
       if (needsDescription(src) && canonicalText(description).length < 20) {
         throw new UserError('Describe or transcribe what the file shows (at least a sentence). That description is what gets signed and checked.');
       }
-      const full = fileSignedText(src, description);
-      if (state.signReg?.parcel && !parcelKey(full).includes(parcelKey(state.signReg.parcel))) {
-        throw new UserError(
-          needsDescription(src)
-            ? `Include the registered parcel number, ${state.signReg.parcel}, in your description, or the Recorder's check will fail.`
-            : `The file's text does not name the registered parcel, ${state.signReg.parcel}, so the Recorder's check would fail.`,
-        );
-      }
+      // A file that does not name the parcel can still be signed: it is then for third
+      // parties only (a tenant, buyer, bank), and the result says so.
+      const statement = parcelStatement();
+      const full = fileSignedText(src, description, statement);
       const signed = await signText(state.signer, full);
       setDraft({
         signed,
@@ -1287,16 +1335,20 @@ action(
         returnTo: '',
         signers: textarea('doc-signers').value,
         recordable: false,
-        source: { kind: src.kind, name: src.name, pages: src.pages, pageCount: src.pageCount, sha256: src.sha256, description: needsDescription(src) ? description : undefined },
+        source: { kind: src.kind, name: src.name, pages: src.pages, pageCount: src.pageCount, sha256: src.sha256, description: needsDescription(src) ? description : undefined, parcelStatement: statement || undefined },
       });
     } else {
-      const text = textarea('doc-text').value;
+      const statement = parcelStatement();
+      const text = statement ? `${statement}\n\n${textarea('doc-text').value}` : textarea('doc-text').value;
       const title = input('doc-title').value.trim();
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
       if (placeholder) throw new UserError(`Fill in ${placeholder[0]} before signing.`);
-      if (state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
-        throw new UserError(`The text must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail.`);
+      // A recordable document (a deed) must name the parcel; anything else may be signed for third parties.
+      if (currentTemplate().recordable && state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
+        throw new UserError(
+          `A document for recording must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail. Add it to the text, or tick "Ready this document for parcel filing".`,
+        );
       }
       const signed = await signText(state.signer, fullText(title, text));
       setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: currentTemplate().recordable });
@@ -1324,14 +1376,33 @@ function draftForPdf(): DocumentDraft | undefined {
   };
 }
 
+/**
+ * Who signs in ink, from the keys: the registration's keys when one is loaded,
+ * otherwise every key that has signed so far plus the key in use. A group key
+ * gives one block per member; a position key names its current holder.
+ */
+function signingKeyIDs(): { fingerprint: string; userID: string }[] {
+  if (state.signReg) return state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '' }));
+  const out = new Map<string, string>();
+  for (const s of state.draft?.signed.signatures ?? []) out.set(s.fingerprint.toUpperCase(), s.userID);
+  if (state.key) out.set(state.key.getFingerprint().toUpperCase(), state.key.getUserIDs()[0] ?? '');
+  return [...out].map(([fingerprint, userID]) => ({ fingerprint, userID }));
+}
+
+function currentSignerBlocks() {
+  return signingKeyIDs().flatMap((k) => signerBlocksForUserID(k.userID, state.holders.get(k.fingerprint)?.holder));
+}
+
 async function downloadInstrument() {
   const d = state.draft;
   if (!d) return;
-  const signerBlocks = state.signReg
-    ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
-    : undefined;
+  // A text document without a registration keeps any signature lines typed by hand.
+  const typed = !state.signReg && !d.source && textarea('doc-signers').value.trim() && signersTyped;
+  const signerBlocks = typed ? undefined : currentSignerBlocks();
+  const notForRecording = !!state.signReg?.parcel && !parcelKey(d.signed.canonical).includes(parcelKey(state.signReg.parcel));
   const required = state.signReg
     ? {
+        notForRecording,
         parcel: state.signReg.parcel,
         keys: state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '', label: keyLabel(state.signReg, k.getFingerprint()) })),
       }
@@ -1340,6 +1411,7 @@ async function downloadInstrument() {
     const pkg = await filePackagePdf({
       source: state.source,
       description: d.source.description,
+      parcelStatement: d.source.parcelStatement,
       signatures: d.signed.signatures,
       documentId: d.signed.documentId,
       codes: d.signed.codes,
@@ -1352,9 +1424,7 @@ async function downloadInstrument() {
     return;
   }
   const pdf = await instrumentPdf({
-    signerBlocks: state.signReg
-      ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
-      : undefined,
+    signerBlocks,
     title: d.title,
     text: d.text,
     recordable: d.recordable,
@@ -1365,6 +1435,7 @@ async function downloadInstrument() {
     codes: d.signed.codes,
     required: state.signReg
       ? {
+          notForRecording,
           parcel: state.signReg.parcel,
           keys: state.signReg.keys.map((k) => ({
             fingerprint: k.getFingerprint().toUpperCase(),
@@ -1380,6 +1451,13 @@ async function downloadInstrument() {
 }
 
 action('dl-instrument', downloadInstrument, 'Preparing PDF...');
+$('doc-signers-type').addEventListener('click', () => {
+  if (state.signReg || state.draft?.source || state.source) return;
+  signersTyped = true;
+  if (!textarea('doc-signers').value.trim()) textarea('doc-signers').value = currentSignerBlocks().map((b) => b.caption).join('\n');
+  showAutoSigners();
+  textarea('doc-signers').focus();
+});
 $('next-signer').addEventListener('click', () => {
   // Keep the document; switch to the next owner's key.
   state.key = null;
@@ -1399,6 +1477,46 @@ action('dl-text-txt', () => {
 action('dl-text-sig', () => {
   const d = state.draft;
   if (d) download(d.signed.signature, `${fileSlug(d.title || 'document')}-${d.signed.documentId.slice(0, 8)}.txt.sig`, 'application/pgp-signature');
+});
+
+// ---- Binary file signature (advanced; for third parties, not for recording) ----
+let binSigned: { doc: SignedDocument; file: File; bytes: Uint8Array; info: SignaturePageInfo } | null = null;
+action(
+  'bin-btn',
+  async () => {
+    if (!state.signer) throw new UserError('Unlock your private key in step 1 first.');
+    const file = input('bin-file').files?.[0];
+    if (!file) throw new UserError('Choose the file to sign.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const doc = await signDocument(state.signer, bytes);
+    const info: SignaturePageInfo = {
+      documentTitle: input('bin-title').value.trim(),
+      fileName: file.name,
+      fileSize: bytes.length,
+      parcels: '',
+      userID: describeKey(state.signer),
+      fingerprint: doc.fingerprint,
+      signedAt: doc.signedAt,
+      sha256: doc.sha256,
+      documentId: doc.documentId,
+      payload: doc.payload,
+    };
+    binSigned = { doc, file, bytes, info };
+    $('bin-r-file').textContent = `${file.name} (${bytes.length.toLocaleString()} bytes)`;
+    $('bin-r-hash').textContent = doc.sha256;
+    $('dl-bincopy').hidden = !isPdfBytes(bytes);
+    $('bin-result').hidden = false;
+  },
+  'Signing...',
+);
+action('dl-binsig', () => {
+  if (binSigned) download(binSigned.doc.signature, `${binSigned.file.name}.sig`, 'application/pgp-signature');
+});
+action('dl-binpage', async () => {
+  if (binSigned) download(await signaturePagePdf(binSigned.info), `${baseName(binSigned.file.name)}-verification-page.pdf`, 'application/pdf');
+});
+action('dl-bincopy', async () => {
+  if (binSigned) download(await printCopyPdf(binSigned.bytes, binSigned.info), `${baseName(binSigned.file.name)}-with-verification-page.pdf`, 'application/pdf');
 });
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1583,52 @@ $('v-use-mine').addEventListener('click', () => {
   if (state.key) verifyRegs = [{ parcel: '', keys: [state.key.toPublic()] }];
   showVerifyRegs();
 });
+
+action(
+  'bin-v-btn',
+  async () => {
+    if (!verifyRegs.length) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
+    const file = input('bin-v-file').files?.[0];
+    const sigFile = input('bin-v-sig').files?.[0];
+    if (!file) throw new UserError('Choose the signed file, exactly as you received it.');
+    if (!sigFile) throw new UserError('Choose its signature: the .sig file, or the verification page.');
+    const sigBytes = new Uint8Array(await sigFile.arrayBuffer());
+    let signature: Uint8Array;
+    if (isPdfBytes(sigBytes) || isImage(sigFile)) {
+      // The verification page: read its PGPSIG1 code.
+      const { readCodesFromFile } = await import('./qrscan');
+      const codes = await readCodesFromFile(sigFile, undefined, (c) => c.some((x) => x.startsWith('PGPSIG1|')));
+      const code = codes.find((x) => x.startsWith('PGPSIG1|'));
+      if (!code) throw new UserError('No binary signature code was found on that page. Load the verification page, or the .sig file.');
+      signature = await binarySignatureFrom(code);
+    } else {
+      signature = await binarySignatureFrom(sigBytes).catch(() => {
+        throw new UserError('That is not a signature file. Load the .sig file, or the verification page.');
+      });
+    }
+    await checkBinary(file, signature);
+  },
+  'Checking...',
+);
+
+/** Checks a binary-signed file against the loaded keys and shows the result. */
+async function checkBinary(file: File, signature: Uint8Array) {
+  const keys = mergeRegistrations(verifyRegs).keys;
+  const r = await verifyBinaryFile({ signature, document: new Uint8Array(await file.arrayBuffer()), keys });
+  r.checks.push({
+    label: 'What this proves',
+    state: 'skipped',
+    detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
+  });
+  lastCheck = null;
+  checkedFiles = [file];
+  $('cert-wrap').hidden = true;
+  $('vr-text-wrap').hidden = true;
+  showResult(r);
+}
+
+/** The files that were checked, for the stamped "checked copy". */
+let checkedFiles: File[] = [];
 
 /** The registration to check against: the loaded parcel, or the one the signed text names. */
 async function registrationFor(payload: string): Promise<Registration> {
@@ -1541,6 +1705,7 @@ input('v-codes-file').addEventListener('change', async () => {
     if (legacy && files.length === 1) {
       scannedFiles = [];
       setPayload(legacy.legacy!.join('\n') + '\n');
+      el.textContent = 'This is the verification page of a binary file signature. Open "Check a binary-signed file" below and load the signed file with this page.';
       return;
     }
     const readable = results.filter((r) => r.signed);
@@ -1568,6 +1733,7 @@ input('v-codes-file').addEventListener('change', async () => {
       same: !!r.signed && r.signed.canonical === reference,
       problem: r.problem ?? (r.legacy ? 'electronic-filing code; check it on its own' : undefined),
     }));
+    checkedFiles = files;
     setPayload(merged.codes.join('\n') + '\n');
     // Check right away when everything needed is there.
     if (verifyRegs.length) $('verify-btn').click();
@@ -1593,7 +1759,10 @@ let lastCheck: {
 
 
 textarea('v-payload').addEventListener('input', () => {
-  if (!settingPayload) scannedFiles = [];
+  if (!settingPayload) {
+    scannedFiles = [];
+    checkedFiles = [];
+  }
   const v = textarea('v-payload').value;
   const p = scanProgress(v);
   const el = $('v-progress');
@@ -1612,7 +1781,7 @@ action(
   'cert-btn',
   async () => {
     const c = lastCheck;
-    if (!c) throw new UserError('Check a filing first.');
+    if (!c) throw new UserError('Check a document first.');
     const pdf = await certificatePdf({
       result: c.result,
       checks: c.checks,
@@ -1632,14 +1801,86 @@ action(
   'Preparing PDF...',
 );
 
+function showResult(r: {
+  verdict: Verdict;
+  checks: { label: string; state: string; detail: string }[];
+  documentId?: string;
+  signedAt?: Date;
+  notForRecording?: boolean;
+}) {
+  const b = $('vr-banner');
+  const thirdParty = r.verdict === 'good' && r.notForRecording;
+  b.className = `verdict ${thirdParty ? 'incomplete' : r.verdict}`;
+  b.innerHTML = '';
+  const v = thirdParty ? NOT_FOR_RECORDING : VERDICT[r.verdict];
+  b.append(
+    Object.assign(document.createElement('strong'), { textContent: v.title }),
+    Object.assign(document.createElement('span'), { textContent: v.action }),
+  );
+  const list = $('vr-checks');
+  list.innerHTML = '';
+  for (const c of r.checks) {
+    const li = document.createElement('li');
+    li.className = c.state;
+    const mark = c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked';
+    li.append(
+      Object.assign(document.createElement('span'), { className: 'mark', textContent: mark }),
+      Object.assign(document.createElement('strong'), { textContent: c.label }),
+      Object.assign(document.createElement('span'), { className: 'detail', textContent: c.detail }),
+    );
+    list.append(li);
+  }
+  $('vr-id').textContent = r.documentId ?? '-';
+  $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
+  lastVerdict = { verdict: r.verdict, documentId: r.documentId, notForRecording: thirdParty };
+  $('copy-wrap').hidden = r.verdict === 'incomplete' || !checkedFiles.length;
+  $('verify-result').hidden = false;
+  $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+let lastVerdict: { verdict: Verdict; documentId?: string; notForRecording?: boolean } | null = null;
+
+action(
+  'copy-btn',
+  async () => {
+    if (!lastVerdict || !checkedFiles.length) throw new UserError('Check a document first.');
+    const files: CheckedFile[] = [];
+    for (const f of checkedFiles) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
+      const sha256 = [...d].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+      const entry: CheckedFile = { name: f.name, sha256 };
+      if (isPdfBytes(bytes)) entry.pdf = bytes;
+      else if (isImage(f)) entry.image = await toPrintableImage(f, bytes).catch(() => undefined);
+      files.push(entry);
+    }
+    const v = lastVerdict.verdict === 'incomplete' ? 'bad' : lastVerdict.verdict;
+    const pdf = await checkedCopyPdf({
+      files,
+      result: v,
+      summary: v !== 'good' ? 'do not rely on it' : lastVerdict.notForRecording ? 'every key signed; third parties only, not for recording' : 'every key signed',
+      documentId: lastVerdict.documentId,
+      checkedAt: new Date(),
+    });
+    download(pdf, `checked-copy-${(lastVerdict.documentId ?? 'document').slice(0, 12)}.pdf`, 'application/pdf');
+  },
+  'Preparing PDF...',
+);
+
+const NOT_FOR_RECORDING = {
+  title: 'SIGNED BY THE OWNERS. FOR THIRD PARTIES ONLY: NOT FOR RECORDING.',
+  action:
+    'Every registered key signed this text, but it does not name the registered parcel. A tenant, buyer or bank can rely on who signed it; read the text to see what it covers. Recorder staff: do not record it against the parcel.',
+};
+
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
   good: {
     title: 'GOOD. Every registered key signed.',
-    action: 'Compare the signed text below with the paper. If it matches, record as usual.',
+    action: 'Compare the signed text below with the paper. If it matches, the document is genuine (Recorder staff: record as usual).',
   },
   bad: {
     title: 'DOES NOT VERIFY.',
-    action: 'Hold the filing. Flag as suspected forgery, preserve the submission, and notify the owner of record.',
+    action: 'Do not rely on this document. Recorder staff: hold the filing, flag it as a suspected forgery, preserve it, and notify the owner of record.',
   },
   incomplete: {
     title: 'NOT CHECKED YET.',
@@ -1677,7 +1918,13 @@ action(
         });
         if (!f.same && r.verdict === 'good') r.verdict = 'bad';
       }
-      if (r.verdict !== 'incomplete') {
+      if (r.verdict !== 'incomplete' && !registration.parcel) {
+        r.checks.push({
+          label: 'Checked against a key, not a registration',
+          state: 'skipped',
+          detail: 'Only a public key (card) was loaded. Confirm with the County Recorder that this key is registered for the parcel.',
+        });
+      } else if (r.verdict !== 'incomplete') {
         const ps = await checkRegistrationProof(registration);
         r.checks.push({
           label: 'Registration proven by every key',
@@ -1714,45 +1961,18 @@ action(
         $('vr-text-wrap').hidden = false;
       }
     } else {
-      // Electronic filing: a PGPSIG1 code plus the signed file.
-      const file = input('v-doc').files?.[0];
-      const keys = verifyRegs.flatMap((x) => x.keys);
-      let named = '';
-      try {
-        named = parsePayload(payload).fingerprint;
-      } catch {
-        /* reported by the check */
+      // A binary file signature (PGPSIG1): it needs the signed file itself.
+      const code = payload.split(/\s+/).find((x) => x.startsWith('PGPSIG1|'));
+      if (!code) throw new UserError('Those are not signature codes from this program. Scan the codes on the signature page (they start with PGPQ1|).');
+      const file = input('bin-v-file').files?.[0];
+      if (!file) {
+        $('bin-check').setAttribute('open', '');
+        throw new UserError('That is a binary file signature. Choose the signed file under "Check a binary-signed file", then check again.');
       }
-      r = await verifyFiling({
-        payload,
-        registeredKey: keys.find((k) => k.getFingerprint().toUpperCase() === named) ?? keys[0],
-        document: file ? new Uint8Array(await file.arrayBuffer()) : undefined,
-      });
+      await checkBinary(file, await binarySignatureFrom(code));
+      return;
     }
-    const b = $('vr-banner');
-    b.className = `verdict ${r.verdict}`;
-    b.innerHTML = '';
-    b.append(
-      Object.assign(document.createElement('strong'), { textContent: VERDICT[r.verdict].title }),
-      Object.assign(document.createElement('span'), { textContent: VERDICT[r.verdict].action }),
-    );
-    const list = $('vr-checks');
-    list.innerHTML = '';
-    for (const c of r.checks) {
-      const li = document.createElement('li');
-      li.className = c.state;
-      const mark = c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked';
-      li.append(
-        Object.assign(document.createElement('span'), { className: 'mark', textContent: mark }),
-        Object.assign(document.createElement('strong'), { textContent: c.label }),
-        Object.assign(document.createElement('span'), { className: 'detail', textContent: c.detail }),
-      );
-      list.append(li);
-    }
-    $('vr-id').textContent = r.documentId ?? '-';
-    $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
-    $('verify-result').hidden = false;
-    $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    showResult(r);
   },
   'Checking...',
 );

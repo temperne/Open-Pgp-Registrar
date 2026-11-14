@@ -94,7 +94,14 @@ gives counter staff a way to check a filing.
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
    body), not a file, so it can be checked from paper. Load the parcel's registration
    first (PDF, scan or photo) so the tool knows every owner who must sign, and refuses
-   a key that isn't listed or text that doesn't name the parcel. Pick a template
+   a key that isn't listed, and a recordable document (deed) that doesn't name the
+   parcel. A file or a non-recorded document that doesn't name the parcel can be
+   signed, with a warning: **for third parties only, not for recording** (also printed
+   on the cover / signature page banner). Or tick **Ready this document for parcel
+   filing** (`parcelFilingStatement`): a signed statement that the signers sign it for
+   use with the registered parcel, put at the start of a document's text or in a
+   file's signed text (`fileSignedText`'s third argument, `source.parcelStatement`,
+   boxed on the cover), so the check matches the parcel. Pick a template
    (warranty, quitclaim or beneficiary deed, based on A.R.S. 33-402/33-405, or blank)
    and edit freely. The signed bytes are the *canonical* text (`src/text.ts`):
    printable WinAnsi characters, upper-cased, whitespace collapsed. **Several owners
@@ -123,22 +130,33 @@ gives counter staff a way to check a filing.
    page** of ink signature blocks and notary acknowledgments. The originals are
    embedded so the next owner can sign exactly the same package; everything else
    (registration, co-signers, the check, the certificate) works as for documents.
-   The old byte-for-byte signing (`PGPSIG1`) can no longer be created; the check page
-   still reads old codes.
-4. **Check a filing** (Exhibit C): load the parcel registration (any owner's form
+   **Binary file signature** (advanced, `#bin-sign`, `signDocument`): a standard
+   detached signature over a file's exact bytes (`.sig`, plus a verification page
+   carrying a `PGPSIG1|FPR|sha256|sig` code). The page recommends against it for
+   filing: the Recorder takes paper (e-recording goes through approved submitters),
+   and paper cannot carry the bytes. It is for files sent directly to third parties
+   (a tenant, buyer, bank).
+4. **Check a document** (Exhibit C; for Recorder staff and anyone a document is
+   given to, such as a tenant checking a lease): load the parcel registration (any owner's form
    PDF, scan or photo; several may be loaded and must agree), then the signature
    codes: scanned in any order, or read from the signed PDF, the Recorder's scan or a
    phone photo. **Several files can be loaded at once** (the filed document and each
    owner's copy): each is listed with its document ID and signature count, every copy
    must carry the same text (a different one fails the check), and their signatures
    are combined. Good only if **every registered key** made a valid signature, no
-   unregistered key signed, all over the same text, and that text names the
-   registered parcel. When registrations for several parcels are loaded, the parcel
+   unregistered key signed, all over the same text. If the text does not name the
+   registered parcel, the result is "signed by the owners, for third parties only:
+   not for recording" (`notForRecording`), a warning rather than a failure. When registrations for several parcels are loaded, the parcel
    named in the signed text is used. The signed text is shown for comparison with the
    paper (there is no typed-comparison box). Staff can then print a **verification
    certificate** (`certificatePdf`) listing each scanned copy (same text) and each owner's result, their name, title and
    agency, ink signature and date lines, the document ID barcode, the signed text and
-   the codes reprinted. It is appended to the filing.
+   the codes reprinted. It is appended to the filing. A public key card can stand in
+   for the registration (the result then says it was checked against a key only).
+   **Check a binary-signed file** (`#bin-check`, `verifyBinaryFile`): the file plus
+   its `.sig` or verification page (PDF, scan, photo). After any check, a **checked
+   copy** (`checkedCopyPdf`) reprints the checked file(s), PDF pages or images, with
+   every page stamped with the result, date, document ID, "page i of n" and a barcode.
 
 5. **About the program** (first tab, the default): explains the problem (deed
    fraud and the cost of quiet title), why the program exists, how it works, how it

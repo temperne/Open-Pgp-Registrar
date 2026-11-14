@@ -77,11 +77,14 @@ describe('several owners signing one document', () => {
     expect(r.signers?.find((s) => !s.registered)?.detail).toMatch(/not registered/);
   });
 
-  it('bad: signatures valid but for a different parcel', async () => {
+  it('text that does not name the parcel: signed by the owners, but for third parties only', async () => {
     const both = await signText(b, text, await signText(a, text));
     const r = await verifyScannedText({ scanned: both.codes.join('\n'), registration: { ...reg, parcel: '999-99-9999' } });
-    expect(r.verdict).toBe('bad');
-    expect(r.checks.find((x) => x.label === 'Parcel number in the signed text')?.state).toBe('fail');
+    expect(r.verdict).toBe('good');
+    expect(r.notForRecording).toBe(true);
+    expect(r.checks.find((x) => x.label === 'For third parties only: not for recording')?.state).toBe('skipped');
+    const named = await verifyScannedText({ scanned: both.codes.join('\n'), registration: reg });
+    expect(named.notForRecording).toBe(false);
   });
 
   it('refuses different text or a second signature by the same key', async () => {

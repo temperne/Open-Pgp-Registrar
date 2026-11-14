@@ -70,7 +70,7 @@
       <button role="tab" id="tab-key" aria-controls="panel-key" aria-selected="false"><span>1</span> Your key</button>
       <button role="tab" id="tab-register" aria-controls="panel-register" aria-selected="false"><span>2</span> Register</button>
       <button role="tab" id="tab-sign" aria-controls="panel-sign" aria-selected="false"><span>3</span> Sign a document</button>
-      <button role="tab" id="tab-verify" aria-controls="panel-verify" aria-selected="false"><span>4</span> Check a filing</button>
+      <button role="tab" id="tab-verify" aria-controls="panel-verify" aria-selected="false"><span>4</span> Check a document</button>
     </nav>
 
     <main class="wrap">
@@ -477,10 +477,14 @@
             <div class="grid2 tight">
               <div><label for="doc-title">Title</label><input id="doc-title" /></div>
               <div id="doc-signers-wrap"><label for="doc-signers">Signature lines <span class="opt">(one name per line)</span></label><textarea id="doc-signers" rows="2" class="prose"></textarea></div>
-              <div id="doc-signers-auto" hidden><label>Signature lines</label><p class="hint">From the parcel registration: one signature line and notary acknowledgment for each registered key.</p><ul id="doc-signers-list" class="keylist"></ul></div>
+              <div id="doc-signers-auto" hidden><label>Signature lines</label><p class="hint" id="doc-signers-from"></p><p class="hint">Need different lines? <button type="button" class="linklike" id="doc-signers-type">Type them by hand</button> (documents without a registration only).</p><ul id="doc-signers-list" class="keylist"></ul></div>
               <div class="span2" id="doc-return-wrap"><label for="doc-return">When recorded, mail to <span class="opt">(printed in the top margin, not signed)</span></label><textarea id="doc-return" rows="3" class="prose"></textarea></div>
             </div>
             <p class="hint" id="disclaimer"></p>
+            </div>
+            <div id="parcel-ready-wrap" class="checkline" hidden>
+              <label><input type="checkbox" id="parcel-ready" /> Ready this document for parcel filing</label>
+              <p class="hint" id="parcel-ready-hint"></p>
             </div>
             <button type="button" id="text-sign-btn" class="primary">Sign</button>
             <p class="error" data-error role="alert"></p>
@@ -492,6 +496,7 @@
               <span id="tr-status" class="pill"></span>
             </div>
             <ul id="tr-signers" class="keylist"></ul>
+            <p id="tr-parcel-warn" class="callout warn" hidden></p>
             <dl class="facts">
               <dt>Document ID</dt>
               <dd id="tr-id" class="mono"></dd>
@@ -518,19 +523,54 @@
           </div>
 
 
+          <details class="card" id="bin-sign">
+            <summary>Binary file signature (advanced; not for recording)</summary>
+            <div class="callout warn">
+              <strong>Not for filing with the Recorder.</strong> This signs the file's exact bytes, so it can only be checked
+              against the file itself, never against a printout or a scan, and this program's check at the Recorder works
+              from paper. Use it to send a signed file directly to someone (a tenant, buyer, bank or agency) who checks it
+              on the "Check a document" page. For anything you will print or file, use <strong>Sign a file</strong> above.
+            </div>
+            <label for="bin-file">File to sign <span class="opt">(any kind)</span></label>
+            <input id="bin-file" type="file" />
+            <label for="bin-title">Title <span class="opt">(printed on the verification page)</span></label>
+            <input id="bin-title" placeholder="e.g. Lease for 100 Example St" />
+            <button type="button" id="bin-btn">Sign the file's bytes</button>
+            <p class="error" data-error role="alert"></p>
+            <div id="bin-result" hidden>
+              <dl class="facts">
+                <dt>File</dt>
+                <dd id="bin-r-file"></dd>
+                <dt>SHA-256</dt>
+                <dd id="bin-r-hash" class="mono small"></dd>
+              </dl>
+              <div class="actions">
+                <button type="button" id="dl-binsig" class="primary">Signature file (.sig)</button>
+                <button type="button" id="dl-binpage">Verification page (PDF)</button>
+                <button type="button" id="dl-bincopy" hidden>File + verification page (PDF)</button>
+              </div>
+              <p class="hint">Send the file unchanged, with the .sig file or the verification page. Any change to the file,
+                even re-saving it, makes the check fail.</p>
+            </div>
+          </details>
         </div>
       </section>
 
       <!-- 4. VERIFY -->
       <section role="tabpanel" id="panel-verify" aria-labelledby="tab-verify" hidden>
         <form id="verify-form" class="card">
-          <h2>Check a filing</h2>
-          <p class="muted">For Recorder staff, or an owner checking their own paperwork. A handheld scanner or a phone's QR reader types straight into these boxes.</p>
+          <h2>Check a document</h2>
+          <p class="muted">
+            For <strong>anyone an owner gives a signed document</strong>: a tenant checking a lease, a buyer checking an
+            offer, a bank checking a statement of ownership, or someone sent a signed file. And for Recorder staff
+            checking a filing. A handheld scanner or a phone's QR reader types straight into these boxes.
+          </p>
 
-          <label for="v-reg-file">Parcel registration</label>
+          <label for="v-reg-file">The owner's registration or public key card</label>
           <p class="hint">
-            The registration form on file for the parcel: the PDF, a scan or a photo. One owner's form is enough; it lists
-            every owner's key. You can load several (for example each co-owner's form) to confirm they agree.
+            The registration form for the parcel (the PDF, a scan or a photo; one owner's form lists every key), or the
+            owner's public key card. A registration is best: it proves the keys belong to the parcel's owners. With only a
+            key card, confirm with the County Recorder that the key is registered for the parcel.
           </p>
           <div class="row small-gap">
             <input id="v-reg-file" type="file" multiple accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,image/*" aria-label="Registration forms" />
@@ -548,10 +588,16 @@
           <p class="hint">You can choose several files at once (the filed document and each owner's copy). Every copy must carry the same signed text.</p>
           <p id="v-progress" class="hint" role="status"></p>
 
-          <details class="advanced">
-            <summary>Electronic filing: check a signed file</summary>
-            <label for="v-doc">Signed document file <span class="opt">(for a PGPSIG1 code from "sign a file")</span></label>
-            <input id="v-doc" type="file" />
+          <details class="advanced" id="bin-check">
+            <summary>Check a binary-signed file (a file the owner sent you)</summary>
+            <p class="hint">For a file signed with a <em>binary file signature</em>. Load the file exactly as you received it, and
+              its signature: the .sig file, or the verification page (the PDF, a scan or a photo).</p>
+            <div class="grid2 tight">
+              <div><label for="bin-v-file">The signed file</label><input id="bin-v-file" type="file" /></div>
+              <div><label for="bin-v-sig">Its signature (.sig, or the verification page)</label><input id="bin-v-sig" type="file" accept=".sig,.asc,.pdf,application/pdf,image/*" /></div>
+            </div>
+            <button type="button" id="bin-v-btn">Check the file</button>
+            <p class="error" data-error role="alert"></p>
           </details>
 
           <button type="button" id="verify-btn" class="primary">Check</button>
@@ -572,6 +618,15 @@
             <dt>Signed at</dt>
             <dd id="vr-when"></dd>
           </dl>
+          <div id="copy-wrap" class="cert" hidden>
+            <h3>Download a checked copy</h3>
+            <p class="hint">
+              The file you checked, every page stamped with the result, the date and the document ID (images become
+              pages). Keep it with your records, or hand it back with the result.
+            </p>
+            <button type="button" id="copy-btn">Download checked copy (PDF)</button>
+            <p class="error" data-error role="alert"></p>
+          </div>
           <div id="cert-wrap" class="cert" hidden>
             <h3>Print a verification certificate</h3>
             <p class="hint">
