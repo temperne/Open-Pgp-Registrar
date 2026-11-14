@@ -49,6 +49,8 @@ import {
   instrumentPdf,
   setBrandSeal,
   certificatePdf,
+  filePackagePdf,
+  sourceFromPdf,
   signerBlocksForKey,
   registrationDraftFromPdf,
   holderUpdatePdf,
@@ -65,6 +67,7 @@ import {
 import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText } from './text';
+import { extractFile, extractImages, fileSignedText, needsDescription, looksImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -77,12 +80,22 @@ interface State {
   privateArmored: string | null;
   /** A freshly generated key that has not been downloaded yet. */
   unsaved: boolean;
-  signed: { doc: SignedDocument; file: File; bytes: Uint8Array; info: SignaturePageInfo } | null;
   /**
    * The document being signed: its text and every owner's signature so far.
    * Kept when keys are switched, so several owners can sign on one computer.
    */
-  draft: { signed: SignedText; title: string; text: string; returnTo: string; signers: string; recordable: boolean } | null;
+  draft: {
+    signed: SignedText;
+    title: string;
+    text: string;
+    returnTo: string;
+    signers: string;
+    recordable: boolean;
+    /** A signed file: printed as cover page, the file's pages, and signatures. */
+    source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string };
+  } | null;
+  /** The file being signed (its pages and images), when signing a file. */
+  source: ExtractedFile | null;
   /** Registration of the parcel being signed for (who must sign). */
   signReg: Registration | null;
   /** Other keys to list on this owner's registration forms (co-owners, trust, beneficiary...). */
@@ -101,7 +114,7 @@ interface State {
     proofs: Record<string, SignedText>;
   } | null;
 }
-const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, signed: null, draft: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
+const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, draft: null, source: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -341,7 +354,6 @@ function refresh() {
   needEl.hidden = !!state.signer;
   $('sign-area').hidden = !state.signer;
   const firstParcel = splitParcels(textarea('reg-parcels').value)[0];
-  if (!input('sign-parcels').value && firstParcel) input('sign-parcels').value = firstParcel;
   // Carry details from the registration step into the document fields.
   let carried = false;
   for (const [from, to] of [
@@ -374,8 +386,6 @@ function setKey(key: AnyKey, privateArmored: string | null, unsaved: boolean, si
   state.signer = signer ?? (isPrivate(key) && key.isDecrypted() ? key : null);
   state.privateArmored = privateArmored;
   state.unsaved = unsaved;
-  state.signed = null;
-  $('sign-result').hidden = true;
   $('dl-note').textContent = '';
   input('reg-owner').value = '';
   // Your own key is listed automatically; it never belongs in the co-owner list.
@@ -508,8 +518,6 @@ $('forget-key').addEventListener('click', () => {
   state.signer = null;
   state.privateArmored = null;
   state.unsaved = false;
-  state.signed = null;
-  $('sign-result').hidden = true;
   refresh();
 });
 
@@ -831,63 +839,6 @@ function describeRegistration(r: Registration) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: sign
-// ---------------------------------------------------------------------------
-action(
-  'sign-btn',
-  async () => {
-    if (!state.signer) return;
-    const file = input('sign-file').files?.[0];
-    if (!file) throw new UserError('Choose the document file to sign.');
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const doc = await signDocument(state.signer, bytes);
-    const info: SignaturePageInfo = {
-      documentTitle: input('sign-title').value.trim(),
-      fileName: file.name,
-      fileSize: bytes.length,
-      parcels: input('sign-parcels').value.trim(),
-      userID: doc.userID,
-      fingerprint: doc.fingerprint,
-      signedAt: doc.signedAt,
-      sha256: doc.sha256,
-      documentId: doc.documentId,
-      payload: doc.payload,
-    };
-    state.signed = { doc, file, bytes, info };
-    $('sr-file').textContent = `${file.name} (${bytes.length.toLocaleString()} bytes)`;
-    $('sr-id').textContent = doc.documentId;
-    $('sr-hash').textContent = doc.sha256;
-    const pdf = isPdfBytes(bytes);
-    $('dl-printcopy').hidden = !pdf;
-    $('printcopy-note').textContent = pdf
-      ? 'The combined PDF is only for printing. It is a new file, so check signatures against the original.'
-      : 'This file is not a PDF, so print the verification page and attach it to the printed document.';
-    $('sign-dl-error').textContent = '';
-    $('sign-result').hidden = false;
-    $('sign-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  },
-  'Signing...',
-);
-
-action('dl-sigpage', async () => {
-  const s = state.signed;
-  if (!s) return;
-  download(await signaturePagePdf(s.info), `${baseName(s.file.name)}-verification-page.pdf`, 'application/pdf');
-});
-
-action('dl-printcopy', async () => {
-  const s = state.signed;
-  if (!s) return;
-  download(await printCopyPdf(s.bytes, s.info), `${baseName(s.file.name)}-print-copy.pdf`, 'application/pdf');
-});
-
-action('dl-sig', () => {
-  const s = state.signed;
-  if (!s) return;
-  download(s.doc.signature, `${s.file.name}.sig`, 'application/pgp-signature');
-});
-
-// ---------------------------------------------------------------------------
 // Step 3: sign document text (paper workflow), by one owner or several
 // ---------------------------------------------------------------------------
 const FIELD_IDS: (keyof TemplateFields)[] = ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date', 'terms'];
@@ -922,7 +873,7 @@ function updateCount() {
 
 /** Rebuilds the document text from the template, unless the user has edited it. */
 function syncTemplate(force = false) {
-  if (state.draft) return; // text is locked once anyone has signed
+  if (state.draft || state.source) return; // locked once anyone has signed; a file supplies its own text
   const t = currentTemplate();
   $('tpl-note').textContent = t.note;
   document.querySelectorAll<HTMLElement>('#tpl-fields [data-field]').forEach((el) => {
@@ -977,9 +928,15 @@ function lockDraft() {
     if (el.id === 'doc-signers' || el.id === 'doc-return') return;
     el.disabled = locked;
   });
-  // The template and its fields only build new text; hide them while the text is locked.
-  for (const el of [document.querySelector<HTMLElement>('label[for="tpl"]')!, $('tpl'), $('tpl-note'), $('tpl-fields')]) el.hidden = locked;
-  if (!locked) syncTemplate();
+  // The template and its fields only build new text; hide them while the text is locked or a file is being signed.
+  const hideTemplate = locked || !!state.source;
+  for (const el of [document.querySelector<HTMLElement>('label[for="tpl"]')!, $('tpl'), $('tpl-note'), $('tpl-fields')]) el.hidden = hideTemplate;
+  if (state.source && !locked) {
+    // A file's own text cannot be edited; an image's or scan's description can, until someone signs.
+    textarea('doc-text').disabled = !needsDescription(state.source);
+    input('doc-title').disabled = true;
+  }
+  if (!locked && !state.source) syncTemplate();
   const note = $('locked-note');
   note.hidden = !locked;
   note.innerHTML = '';
@@ -990,6 +947,7 @@ function lockDraft() {
       if (!confirm(`This discards the ${n} signature${n === 1 ? '' : 's'} on this document. Start over?`)) return;
       state.draft = null;
       $('text-result').hidden = true;
+      clearSource();
       lockDraft();
       syncTemplate();
     });
@@ -1172,6 +1130,71 @@ input('s-reg-file').addEventListener('change', async () => {
   }
 });
 
+// ---- Sign a file: recreated as a printable package, and that recreation is signed ----
+function showSource() {
+  const src = state.source;
+  const info = $('src-info');
+  $('src-clear').hidden = !src;
+  if (!src) $('src-pdf-tip').hidden = true;
+  if (!src) {
+    info.textContent = '';
+    textarea('doc-text').placeholder = '';
+    return;
+  }
+  const kinds = { pdf: 'PDF', docx: 'Word document', odt: 'OpenDocument text', text: 'text file', image: 'image', scan: 'scanned PDF (no text)' };
+  info.className = 'hint ok';
+  info.textContent =
+    `${src.name}: ${kinds[src.kind]}${src.pageCount ? `, ${src.pageCount} page${src.pageCount === 1 ? '' : 's'}` : ''}. ` +
+    (needsDescription(src)
+      ? 'It has no text of its own: describe or transcribe what it shows in the box below. That description is what gets signed, and the Recorder compares it with the printed pages.'
+      : src.kind === 'pdf'
+        ? 'Its text is shown below, exactly as it will be signed. The PDF’s own pages are reprinted in the package.'
+        : 'Its text is shown below, exactly as it will be signed, and is recreated as plain text pages in the package.');
+  // Formatting is only kept for PDFs: say so plainly, so nobody is surprised by the printout.
+  $('src-pdf-tip').hidden = src.kind === 'pdf' || src.kind === 'scan' || src.kind === 'image';
+  input('doc-title').value = '';
+  textarea('doc-text').value = needsDescription(src) ? '' : src.pages.join('\n\n');
+  textarea('doc-text').placeholder = needsDescription(src) ? 'Describe or transcribe what the file shows. Include the parcel number.' : '';
+  edited.add('doc-text');
+  edited.add('doc-title');
+  $('doc-return-wrap').hidden = true;
+  lockDraft();
+  updateCount();
+}
+
+function clearSource() {
+  state.source = null;
+  textarea('doc-text').disabled = false;
+  input('doc-title').disabled = false;
+  edited.delete('doc-text');
+  edited.delete('doc-title');
+  showSource();
+}
+
+input('src-file').addEventListener('change', async () => {
+  const files = [...(input('src-file').files ?? [])];
+  if (!files.length) return;
+  const info = $('src-info');
+  info.className = 'hint';
+  info.textContent = 'Reading the file...';
+  try {
+    if (state.draft) throw new Error('A signed document is already loaded. Choose "Start over with new text" first.');
+    state.source = files.length > 1 || files.every((f) => looksImage(f)) ? await extractImages(files) : await extractFile(files[0]);
+    showSource();
+  } catch (err) {
+    info.className = 'hint error';
+    info.textContent = (err as Error).message;
+  } finally {
+    input('src-file').value = '';
+  }
+});
+$('src-clear').addEventListener('click', () => {
+  clearSource();
+  syncTemplate(true);
+  lockDraft();
+});
+$('src-types').textContent = SUPPORTED_ALL;
+
 /** Sign exactly as others: load a document another owner signed. */
 input('continue-file').addEventListener('change', async () => {
   const f = input('continue-file').files?.[0];
@@ -1189,11 +1212,24 @@ input('continue-file').addEventListener('change', async () => {
         bytes: fromBase64(x.sig),
       }));
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
+      if (embedded.source) {
+        const files = await sourceFromPdf(bytes);
+        state.source = { ...embedded.source, pdf: files.pdf, images: files.images.length ? files.images : undefined };
+        showSource();
+      }
       if (embedded.registration && !state.signReg) {
         const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
         useSignRegistration([{ parcel: embedded.registration.parcel, keys, labels: embedded.registration.labels }]);
       }
-      setDraft({ signed, title: embedded.title, text: embedded.text, returnTo: embedded.returnTo, signers: embedded.signers, recordable: embedded.recordable !== false });
+      setDraft({
+        signed,
+        title: embedded.title,
+        text: embedded.text,
+        returnTo: embedded.returnTo,
+        signers: embedded.signers,
+        recordable: embedded.recordable !== false,
+        source: embedded.source,
+      });
     } else {
       // A scan or photo of the signature page: the codes carry the text and signatures.
       const { readCodesFromFile } = await import('./qrscan');
@@ -1229,6 +1265,30 @@ action(
       const d = state.draft;
       const signed = await signText(state.signer, fullText(d.title, d.text), d.signed);
       setDraft({ ...d, signed, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    } else if (state.source) {
+      const src = state.source;
+      const description = textarea('doc-text').value;
+      if (needsDescription(src) && canonicalText(description).length < 20) {
+        throw new UserError('Describe or transcribe what the file shows (at least a sentence). That description is what gets signed and checked.');
+      }
+      const full = fileSignedText(src, description);
+      if (state.signReg?.parcel && !parcelKey(full).includes(parcelKey(state.signReg.parcel))) {
+        throw new UserError(
+          needsDescription(src)
+            ? `Include the registered parcel number, ${state.signReg.parcel}, in your description, or the Recorder's check will fail.`
+            : `The file's text does not name the registered parcel, ${state.signReg.parcel}, so the Recorder's check would fail.`,
+        );
+      }
+      const signed = await signText(state.signer, full);
+      setDraft({
+        signed,
+        title: '',
+        text: full,
+        returnTo: '',
+        signers: textarea('doc-signers').value,
+        recordable: false,
+        source: { kind: src.kind, name: src.name, pages: src.pages, pageCount: src.pageCount, sha256: src.sha256, description: needsDescription(src) ? description : undefined },
+      });
     } else {
       const text = textarea('doc-text').value;
       const title = input('doc-title').value.trim();
@@ -1256,6 +1316,7 @@ function draftForPdf(): DocumentDraft | undefined {
     returnTo: textarea('doc-return').value,
     signers: textarea('doc-signers').value,
     recordable: d.recordable,
+    source: d.source,
     signatures: d.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
     registration: state.signReg
       ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()), labels: state.signReg.labels }
@@ -1266,6 +1327,30 @@ function draftForPdf(): DocumentDraft | undefined {
 async function downloadInstrument() {
   const d = state.draft;
   if (!d) return;
+  const signerBlocks = state.signReg
+    ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
+    : undefined;
+  const required = state.signReg
+    ? {
+        parcel: state.signReg.parcel,
+        keys: state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '', label: keyLabel(state.signReg, k.getFingerprint()) })),
+      }
+    : undefined;
+  if (d.source && state.source) {
+    const pkg = await filePackagePdf({
+      source: state.source,
+      description: d.source.description,
+      signatures: d.signed.signatures,
+      documentId: d.signed.documentId,
+      codes: d.signed.codes,
+      required,
+      signerBlocks,
+      draft: draftForPdf(),
+    });
+    const done = !missingSigners().length;
+    download(pkg, `${fileSlug(baseName(d.source.name))}-${done ? 'signed' : 'partly-signed'}-${d.signed.documentId.slice(0, 8)}.pdf`, 'application/pdf');
+    return;
+  }
   const pdf = await instrumentPdf({
     signerBlocks: state.signReg
       ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))

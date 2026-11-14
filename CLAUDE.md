@@ -108,8 +108,23 @@ gives counter staff a way to check a filing.
    title and text, **one complete signature block per signer (signature line with
    that signer's notary acknowledgment directly below; still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
    banner against the registration, the document ID barcode and the codes. The `.txt`
-   and `.sig` files verify with stock `gpg` (it checks each signature). Signing a file
-   byte for byte (`PGPSIG1`) remains for electronic filing (single signer).
+   and `.sig` files verify with stock `gpg` (it checks each signature).
+   **Signing a file** ("Sign a file", `src/extract.ts`, `filePackagePdf`): paper is
+   the proof, so a file is *recreated* as a printable package and the recreation is
+   signed, not the file's bytes. Supported: PDF with text (its pages are reprinted,
+   shrunk slightly so nothing is covered), Word .docx and OpenDocument .odt (text
+   recreated as plain pages), plain text, images (one page each; several at once),
+   and scanned PDFs without text. Images and scans have no text, so the signer writes
+   a description or transcription, which is signed and printed after the file. The
+   signed text is `fileSignedText`: file name, SHA-256 of the original file(s), page
+   count, then the file's text or the description. The package: a **cover page**
+   (explanation, document ID barcode, signature codes), the **file's pages**, each
+   stamped with the document ID, "page i of n" and a small barcode, and a **final
+   page** of ink signature blocks and notary acknowledgments. The originals are
+   embedded so the next owner can sign exactly the same package; everything else
+   (registration, co-signers, the check, the certificate) works as for documents.
+   The old byte-for-byte signing (`PGPSIG1`) can no longer be created; the check page
+   still reads old codes.
 4. **Check a filing** (Exhibit C): load the parcel registration (any owner's form
    PDF, scan or photo; several may be loaded and must agree), then the signature
    codes: scanned in any order, or read from the signed PDF, the Recorder's scan or a
@@ -159,7 +174,8 @@ at fractional pixel sizes, which real scans and photos produce.
 - `src/codes.ts`: QR (`qrcode`) and Code 128 (`jsbarcode` encoder) as module data,
   drawn as vector shapes
 - `src/text.ts`: printable-text mapping and the canonical form that gets signed
-- `src/templates.ts`: deed templates
+- `src/templates.ts`: document templates
+- `src/extract.ts`: reading files to sign (PDF, Word, OpenDocument, text, images)
 - `src/brand.ts`: program name, web address, proposed/adopted notice
 - `src/qrscan.ts`: QR reading from PDFs, scans and photos
 - `src/main.ts`, `index.html`, `src/style.css`: the UI (plain TypeScript, no framework)

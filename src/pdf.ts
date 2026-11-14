@@ -36,6 +36,7 @@ import {
   type HolderUpdate,
 } from './crypto';
 import { canonicalText } from './text';
+import { needsDescription, type ExtractedFile, type SourceImage } from './extract';
 import type * as openpgp from 'openpgp';
 import { safeText } from './text';
 import { BRAND, brandLine } from './brand';
@@ -1121,6 +1122,8 @@ export interface DocumentDraft {
   signers: string;
   /** Recorded with the County Recorder (deeds); otherwise printed without the recording margin. */
   recordable?: boolean;
+  /** A signed file: what it is, so the next owner can recreate exactly the same package. */
+  source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string };
   /** Base64 of each owner's detached signature, in signing order. */
   signatures: { fingerprint: string; userID: string; signedAt: string; sig: string }[];
   /** The parcel's registration, when one was loaded. */
@@ -1128,6 +1131,75 @@ export interface DocumentDraft {
 }
 
 export const DOCUMENT_ATTACHMENT = 'stop-document.json';
+
+type SignatureBlock = { caption: string; ack: string; printedName?: boolean };
+
+/**
+ * One complete signature block per signer: a signature line, then that signer's
+ * notary acknowledgment directly below. `ensure(h)` starts a new page when fewer
+ * than h points remain, returning the current page and y.
+ */
+function drawSignatureBlocks(
+  fonts: Fonts,
+  blocks: SignatureBlock[],
+  page: PDFPage,
+  y: number,
+  ensure: (h: number, page: PDFPage, y: number) => { page: PDFPage; y: number },
+) {
+  // One complete signature block per signer: signature line, then that signer's
+  // notary acknowledgment (completed on paper; not part of the signed text).
+  // Owners may sign at different times before different notaries.
+  blocks.forEach((b, i) => {
+    ({ page, y } = ensure(205, page, y));
+    y -= i ? 22 : 12;
+    if (blocks.length > 1) {
+      page.drawText(`SIGNER ${i + 1} OF ${blocks.length}`, { x: M, y: y - 9, size: 8, font: fonts.bold, color: MUTED });
+      y -= 12;
+    }
+    y -= 30;
+    if (b.printedName) {
+      rule(page, y, M, M + 250, INK);
+      rule(page, y, M + 270, M + 410, INK);
+      rule(page, y, M + 430, PAGE_W - M, INK);
+      text(page, fonts, `By: ${b.caption}`, y - 3, { size: 9, color: MUTED, width: 250 });
+      text(page, fonts, 'Printed name', y - 3, { x: M + 270, size: 9, color: MUTED });
+      text(page, fonts, 'Date', y - 3, { x: M + 430, size: 9, color: MUTED });
+    } else {
+      rule(page, y, M, M + 300, INK);
+      rule(page, y, M + 330, PAGE_W - M, INK);
+      text(page, fonts, b.caption || 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
+      text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
+    }
+    y -= 30;
+    const venue: [string, string][] = [
+      [`STATE OF ${BRAND.state.toUpperCase()}`, ')'],
+      ['', ') ss.'],
+      ['COUNTY OF ______________________', ')'],
+    ];
+    for (const [left, right] of venue) {
+      if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
+      page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
+      y -= 13;
+    }
+    y = text(
+      page,
+      fonts,
+      'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
+        (b.ack ? `${b.ack}.` : '______________________________________________________.'),
+      y - 8,
+      { size: 10, width: CONTENT_W },
+    );
+    y -= 34;
+    rule(page, y, M, M + 260, INK);
+    rule(page, y, M + 330, PAGE_W - M, INK);
+    text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
+    text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
+    text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
+    y -= 30;
+    if (i < blocks.length - 1) rule(page, y, M, PAGE_W - M, RULE);
+  });
+  return { page, y };
+}
 
 export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   const title = info.title.trim();
@@ -1190,58 +1262,12 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
           .map((x) => ({ caption: x, ack: x, printedName: false }));
   if (!blocks.length) blocks.push({ caption: '', ack: '', printedName: false });
 
-  // One complete signature block per signer: signature line, then that signer's
-  // notary acknowledgment (completed on paper; not part of the signed text).
-  // Owners may sign at different times before different notaries.
-  blocks.forEach((b, i) => {
-    ensure(205);
-    y -= i ? 22 : 12;
-    if (blocks.length > 1) {
-      page.drawText(`SIGNER ${i + 1} OF ${blocks.length}`, { x: M, y: y - 9, size: 8, font: fonts.bold, color: MUTED });
-      y -= 12;
-    }
-    y -= 30;
-    if (b.printedName) {
-      rule(page, y, M, M + 250, INK);
-      rule(page, y, M + 270, M + 410, INK);
-      rule(page, y, M + 430, PAGE_W - M, INK);
-      text(page, fonts, `By: ${b.caption}`, y - 3, { size: 9, color: MUTED, width: 250 });
-      text(page, fonts, 'Printed name', y - 3, { x: M + 270, size: 9, color: MUTED });
-      text(page, fonts, 'Date', y - 3, { x: M + 430, size: 9, color: MUTED });
-    } else {
-      rule(page, y, M, M + 300, INK);
-      rule(page, y, M + 330, PAGE_W - M, INK);
-      text(page, fonts, b.caption || 'Signature', y - 3, { size: 9, color: MUTED, width: 300 });
-      text(page, fonts, 'Date', y - 3, { x: M + 330, size: 9, color: MUTED });
-    }
-    y -= 30;
-    const venue: [string, string][] = [
-      [`STATE OF ${BRAND.state.toUpperCase()}`, ')'],
-      ['', ') ss.'],
-      ['COUNTY OF ______________________', ')'],
-    ];
-    for (const [left, right] of venue) {
-      if (left) page.drawText(left, { x: M, y: y - 10, size: 10, font: fonts.reg, color: INK });
-      page.drawText(right, { x: M + 200, y: y - 10, size: 10, font: fonts.reg, color: INK });
-      y -= 13;
-    }
-    y = text(
-      page,
-      fonts,
-      'The foregoing instrument was acknowledged before me this ______ day of ____________________, 20____, by ' +
-        (b.ack ? `${b.ack}.` : '______________________________________________________.'),
-      y - 8,
-      { size: 10, width: CONTENT_W },
-    );
-    y -= 34;
-    rule(page, y, M, M + 260, INK);
-    rule(page, y, M + 330, PAGE_W - M, INK);
-    text(page, fonts, 'Notary Public', y - 3, { size: 9, color: MUTED });
-    text(page, fonts, 'My commission expires', y - 3, { x: M + 330, size: 9, color: MUTED });
-    text(page, fonts, '(Seal)', y - 20, { size: 9, color: MUTED });
-    y -= 30;
-    if (i < blocks.length - 1) rule(page, y, M, PAGE_W - M, RULE);
-  });
+  ({ page, y } = drawSignatureBlocks(fonts, blocks, page, y, (h, pg, yy) => {
+    page = pg;
+    y = yy;
+    ensure(h);
+    return { page, y };
+  }));
 
   // ---- Signature page(s): QR codes ----
   let sp = doc.addPage([PAGE_W, PAGE_H]);
@@ -1734,4 +1760,228 @@ export async function holderUpdateFromPdf(bytes: Uint8Array): Promise<{ update: 
     })),
   );
   return { key, update: { fingerprint: j.fingerprint, holder: j.holder, effective: j.effective, signed } };
+}
+
+// ---------------------------------------------------------------------------
+// Signed file package: a printed recreation of a file.
+//
+//   1. Cover page: explains the process; document ID barcode; the signature
+//      codes, which carry everything that was signed.
+//   2. The file: a PDF's own pages, the images, or the text recreated as pages.
+//      Every page is stamped with the document ID and "page i of n".
+//   3. Final page: who signed, ink signature blocks and notary acknowledgments.
+//
+// What is signed is the recreation (the file's text, or the signer's
+// description of an image or scan, plus the file's name and fingerprint), so the
+// package can be checked from paper.
+// ---------------------------------------------------------------------------
+export interface FilePackageInfo {
+  source: ExtractedFile;
+  /** The signer's description (images and scans); shown on its own page. */
+  description?: string;
+  signatures: { fingerprint: string; userID: string; signedAt: Date }[];
+  documentId: string;
+  codes: string[];
+  required?: InstrumentInfo['required'];
+  signerBlocks?: InstrumentInfo['signerBlocks'];
+  draft?: DocumentDraft;
+}
+
+export const SOURCE_ATTACHMENT = 'stop-source';
+
+function stampPage(page: PDFPage, fonts: Fonts, documentId: string, n: number, total: number) {
+  const { width } = page.getSize();
+  const h = 20;
+  page.drawRectangle({ x: 0, y: 0, width, height: h + 4, color: rgb(1, 1, 1) });
+  page.drawLine({ start: { x: 18, y: h + 3 }, end: { x: width - 18, y: h + 3 }, thickness: 0.5, color: RULE });
+  const label = safeText(`${BRAND.name} signed file  |  Document ID ${documentId}  |  Page ${n} of ${total}  |  Signature codes on the cover page`);
+  const moduleW = 0.42;
+  const barW = code128Bits(documentId).length * moduleW;
+  const size = Math.min(7, ((width - 36 - barW - 12) / fonts.reg.widthOfTextAtSize(label, 7)) * 7);
+  page.drawText(label, { x: 18, y: 8, size, font: fonts.reg, color: INK });
+  drawCode128(page, documentId, width - 18 - barW, 5, moduleW, 14);
+}
+
+export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array> {
+  const src = info.source;
+  const { doc, fonts } = await newDoc(`Signed file - ${src.name}`);
+  // Embedded so the next owner can load this PDF and add their signature.
+  if (info.draft) {
+    await doc.attach(new TextEncoder().encode(JSON.stringify(info.draft)), DOCUMENT_ATTACHMENT, {
+      mimeType: 'application/json',
+      description: 'Signed file: text, metadata and signatures, so other owners can add theirs',
+    });
+  }
+  if (src.pdf) await doc.attach(src.pdf, `${SOURCE_ATTACHMENT}.pdf`, { mimeType: 'application/pdf', description: 'The original file' });
+  for (const [i, im] of (src.images ?? []).entries()) {
+    await doc.attach(im.bytes, `${SOURCE_ATTACHMENT}-${i + 1}.${im.format}`, { mimeType: im.format === 'png' ? 'image/png' : 'image/jpeg', description: im.name });
+  }
+
+  // ---- 1. Cover page ----
+  let cover = doc.addPage([PAGE_W, PAGE_H]);
+  const coverPages = [cover];
+  let y = header(cover, fonts, 'Signed file  |  Cover page', 'Signed File', src.name);
+  y = text(
+    cover,
+    fonts,
+    'This package is a printed recreation of the file named above, signed with OpenPGP. This cover page carries the signature codes. ' +
+      'The pages that follow are the file, each stamped with the document ID and its page number. The last page has the ink signatures ' +
+      'and notary acknowledgments. What is signed is the recreation: the file’s text' +
+      (needsDescription(src) ? ' (for an image or a scan, the signer’s description of it, printed after the file)' : '') +
+      ', its name and its digital fingerprint. The codes carry all of it, so the package can be checked from paper or a scan. ' +
+      'Compare the signed text the checking tool shows with the pages of the file.',
+    y,
+    { size: 9.5 },
+  );
+  y -= 8;
+  if (info.required?.keys.length) {
+    const signed = new Set(info.signatures.map((x) => x.fingerprint.toUpperCase()));
+    const missing = info.required.keys.filter((k) => !signed.has(k.fingerprint.toUpperCase()));
+    const done = !missing.length;
+    const msg = done
+      ? `COMPLETE: signed by all ${info.required.keys.length} key${info.required.keys.length > 1 ? 's' : ''} registered for parcel ${info.required.parcel}.`
+      : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered keys have signed. Still needed: ${missing.map((k) => k.userID || k.fingerprint.slice(-16)).join(', ')}.`;
+    const lines = wrap(msg, fonts.bold, 9, CONTENT_W - 20);
+    const h = lines.length * 12 + 12;
+    cover.drawRectangle({ x: M, y: y - h, width: CONTENT_W, height: h, color: done ? rgb(0.9, 0.96, 0.92) : rgb(0.98, 0.91, 0.91), borderColor: done ? rgb(0.08, 0.42, 0.18) : WARN, borderWidth: 1 });
+    lines.forEach((l, i) => cover.drawText(l, { x: M + 10, y: y - 15 - i * 12, size: 9, font: fonts.bold, color: done ? rgb(0.08, 0.42, 0.18) : WARN }));
+    y -= h + 8;
+  }
+  const kindLabel = { pdf: 'PDF', docx: 'Word document (recreated as text)', odt: 'OpenDocument text (recreated as text)', text: 'Text file', image: 'Image', scan: 'Scanned PDF (no text)' }[src.kind];
+  const tableTop = y;
+  y = table(
+    cover,
+    fonts,
+    [
+      { label: 'File', value: src.name },
+      { label: 'Kind', value: kindLabel },
+      { label: 'Fingerprint (SHA-256)', value: src.sha256.map((h) => `${h.slice(0, 32)}\n${h.slice(32)}`).join('\n'), mono: true },
+      ...info.signatures.map((x, i) => ({
+        label: info.signatures.length > 1 ? `Signer ${i + 1}` : 'Signed by',
+        value: `${x.userID || '(name not given)'}\n${formatFingerprint(x.fingerprint)}  ${isoDateTime(x.signedAt)}`,
+      })),
+      { label: 'Document ID', value: info.documentId, mono: true },
+    ],
+    tableTop,
+    CONTENT_W - 190,
+    110,
+  );
+  const bx = PAGE_W - M - 175;
+  const moduleW = Math.min(0.8, 175 / (code128Bits(info.documentId).length + 20));
+  const bw = drawCode128(cover, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
+  const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
+  cover.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y -= 14;
+  const size = 120;
+  const perRow = 3;
+  const gap = (CONTENT_W - perRow * size) / (perRow - 1);
+  info.codes.forEach((code, i) => {
+    const col = i % perRow;
+    if (col === 0 && y - size - 24 < 64) {
+      cover = doc.addPage([PAGE_W, PAGE_H]);
+      coverPages.push(cover);
+      y = header(cover, fonts, 'Signed file  |  Cover page (continued)', 'Signature Codes');
+    }
+    const x = M + col * (size + gap);
+    const qr = bestQr(code);
+    if (qr) drawQr(cover, qr, x, y, size);
+    const label = `Code ${i + 1} of ${info.codes.length}`;
+    cover.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+    if (col === perRow - 1 || i === info.codes.length - 1) y -= size + 50;
+  });
+
+  // ---- 2. The file ----
+  const filePages: PDFPage[] = [];
+  if (src.pdf) {
+    // Each original page, shrunk just enough that the stamp below it covers nothing.
+    const original = await PDFDocument.load(src.pdf, { ignoreEncryption: true });
+    const embedded = await doc.embedPages(original.getPages());
+    for (const ep of embedded) {
+      const { width, height } = ep;
+      const pg = doc.addPage([width, height]);
+      const scale = (height - 28) / height;
+      pg.drawPage(ep, { x: (width - width * scale) / 2, y: 26, xScale: scale, yScale: scale });
+      filePages.push(pg);
+    }
+  } else if (src.images?.length) {
+    for (const im of src.images) {
+      const img = im.format === 'png' ? await doc.embedPng(im.bytes) : await doc.embedJpg(im.bytes);
+      const pg = doc.addPage([PAGE_W, PAGE_H]);
+      const scale = Math.min(CONTENT_W / img.width, (PAGE_H - 2 * M - 30) / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      pg.drawImage(img, { x: (PAGE_W - w) / 2, y: PAGE_H - M - h, width: w, height: h });
+      filePages.push(pg);
+    }
+  } else {
+    // Word, OpenDocument and text files are recreated as plain text pages.
+    let pg = doc.addPage([PAGE_W, PAGE_H]);
+    filePages.push(pg);
+    let ty = PAGE_H - M;
+    for (const line of wrap(src.pages.join('\n\n'), fonts.reg, 10.5, CONTENT_W)) {
+      if (ty - 14.5 < 50) {
+        pg = doc.addPage([PAGE_W, PAGE_H]);
+        filePages.push(pg);
+        ty = PAGE_H - M;
+      }
+      if (line) pg.drawText(line, { x: M, y: ty - 10.5, size: 10.5, font: fonts.reg, color: INK });
+      ty -= line ? 14.5 : 9;
+    }
+  }
+  // The signer's description of an image or scan is part of what is signed: print it too.
+  if (needsDescription(src) && info.description?.trim()) {
+    let pg = doc.addPage([PAGE_W, PAGE_H]);
+    filePages.push(pg);
+    let ty = header(pg, fonts, 'Part of the signed text', 'Signer’s Description of the File');
+    for (const line of wrap(info.description.trim(), fonts.reg, 10.5, CONTENT_W)) {
+      if (ty - 14.5 < 50) {
+        pg = doc.addPage([PAGE_W, PAGE_H]);
+        filePages.push(pg);
+        ty = PAGE_H - M;
+      }
+      if (line) pg.drawText(line, { x: M, y: ty - 10.5, size: 10.5, font: fonts.reg, color: INK });
+      ty -= line ? 14.5 : 9;
+    }
+  }
+  filePages.forEach((pg, i) => stampPage(pg, fonts, info.documentId, i + 1, filePages.length));
+
+  // ---- 3. Final page: signatures ----
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  const finalPages = [page];
+  y = header(page, fonts, 'Signed file  |  Signatures', 'Signatures', `For: ${src.name}`);
+  y = text(
+    page,
+    fonts,
+    'Each signer signs in ink below, before a notary. The digital signatures on the cover page are an extra layer on top of these signatures; they do not replace them.',
+    y,
+    { size: 9.5 },
+  );
+  const blocks = info.signerBlocks?.length
+    ? info.signerBlocks
+    : info.signatures.map((x) => ({ caption: x.userID.replace(/\s*<[^>]*>\s*$/, ''), ack: x.userID.replace(/\s*<[^>]*>\s*$/, '') }));
+  ({ page, y } = drawSignatureBlocks(fonts, blocks.length ? blocks : [{ caption: '', ack: '' }], page, y, (h, pg, yy) => {
+    if (yy - h < 64) {
+      const np = doc.addPage([PAGE_W, PAGE_H]);
+      finalPages.push(np);
+      return { page: np, y: PAGE_H - M };
+    }
+    return { page: pg, y: yy };
+  }));
+
+  const total = doc.getPageCount();
+  doc.getPages().forEach((pg, i) => {
+    if (coverPages.includes(pg) || finalPages.includes(pg)) footer(pg, fonts, `Signed file  |  Document ID ${info.documentId}`, i + 1, total);
+  });
+  return doc.save();
+}
+
+/** The original file(s) embedded in a signed file package, to sign it again exactly. */
+export async function sourceFromPdf(bytes: Uint8Array): Promise<{ pdf?: Uint8Array; images: SourceImage[] }> {
+  const files = await pdfAttachments(bytes).catch(() => []);
+  const pdf = files.find((f) => f.name === `${SOURCE_ATTACHMENT}.pdf`)?.data;
+  const images = files
+    .filter((f) => /^stop-source-\d+\.(png|jpg)$/.test(f.name))
+    .sort((a, b) => Number(a.name.match(/\d+/)![0]) - Number(b.name.match(/\d+/)![0]))
+    .map((f) => ({ bytes: f.data, format: f.name.endsWith('.png') ? ('png' as const) : ('jpg' as const), name: f.name }));
+  return { pdf, images };
 }

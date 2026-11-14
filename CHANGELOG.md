@@ -7,6 +7,19 @@ All notable changes to this project are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Sign a file**: PDF (with text), Word (.docx), OpenDocument (.odt), plain text,
+  images (several at once, one page each) and scanned PDFs. The file is recreated as
+  a printable package (cover page with the document ID barcode and signature codes;
+  the file's pages, each stamped with the document ID and "page i of n"; a final page
+  of ink signature blocks and notary acknowledgments) and the recreation is signed,
+  so it can be checked from paper. Images and scans are signed with the signer's
+  description. Works with registrations, several owners and the check. PDFs are
+  recommended (reprinted exactly); Word, OpenDocument and text files are recreated
+  as plain text, and the app says so when one is loaded.
+
+### Removed
+- The byte-for-byte "electronic filing" file signature, which could not be checked
+  from paper. The check page still reads codes made by it.
 - Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
   the README, and printed on every page and PDF as the program's web address).
 

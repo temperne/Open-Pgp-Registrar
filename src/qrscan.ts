@@ -172,7 +172,7 @@ let pdfjsPromise: Promise<typeof import('pdfjs-dist')> | null = null;
  * pdf.js runs on the main thread: importing its worker module registers the
  * worker code in-page, so no separate worker file or network access is needed.
  */
-function loadPdfjs() {
+export function loadPdfjs() {
   pdfjsPromise ??= (async () => {
     await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
     return (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as typeof import('pdfjs-dist');
