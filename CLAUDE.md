@@ -123,9 +123,14 @@ gives counter staff a way to check a filing.
    page** of ink signature blocks and notary acknowledgments. The originals are
    embedded so the next owner can sign exactly the same package; everything else
    (registration, co-signers, the check, the certificate) works as for documents.
-   The old byte-for-byte signing (`PGPSIG1`) can no longer be created; the check page
-   still reads old codes.
-4. **Check a filing** (Exhibit C): load the parcel registration (any owner's form
+   **Binary file signature** (advanced, `#bin-sign`, `signDocument`): a standard
+   detached signature over a file's exact bytes (`.sig`, plus a verification page
+   carrying a `PGPSIG1|FPR|sha256|sig` code). The page recommends against it for
+   filing: the Recorder takes paper (e-recording goes through approved submitters),
+   and paper cannot carry the bytes. It is for files sent directly to third parties
+   (a tenant, buyer, bank).
+4. **Check a document** (Exhibit C; for Recorder staff and anyone a document is
+   given to, such as a tenant checking a lease): load the parcel registration (any owner's form
    PDF, scan or photo; several may be loaded and must agree), then the signature
    codes: scanned in any order, or read from the signed PDF, the Recorder's scan or a
    phone photo. **Several files can be loaded at once** (the filed document and each
@@ -138,7 +143,12 @@ gives counter staff a way to check a filing.
    paper (there is no typed-comparison box). Staff can then print a **verification
    certificate** (`certificatePdf`) listing each scanned copy (same text) and each owner's result, their name, title and
    agency, ink signature and date lines, the document ID barcode, the signed text and
-   the codes reprinted. It is appended to the filing.
+   the codes reprinted. It is appended to the filing. A public key card can stand in
+   for the registration (the result then says it was checked against a key only).
+   **Check a binary-signed file** (`#bin-check`, `verifyBinaryFile`): the file plus
+   its `.sig` or verification page (PDF, scan, photo). After any check, a **checked
+   copy** (`checkedCopyPdf`) reprints the checked file(s), PDF pages or images, with
+   every page stamped with the result, date, document ID, "page i of n" and a barcode.
 
 5. **About the program** (first tab, the default): explains the problem (deed
    fraud and the cost of quiet title), why the program exists, how it works, how it

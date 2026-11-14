@@ -811,9 +811,9 @@ async function drawSignaturePage(doc: PDFDocument, fonts: Fonts, info: Signature
   let y = header(
     p,
     fonts,
-    'Signature verification page',
-    info.documentTitle?.trim() || 'Signed Instrument',
-    'Attach this page to the instrument it describes.',
+    'Binary file signature  |  Verification page',
+    info.documentTitle?.trim() || info.fileName,
+    'Not for recording. This signature covers the file byte for byte, so it can only be checked against the file itself, not a printout.',
   );
 
   const rows: Row[] = [
@@ -844,15 +844,15 @@ async function drawSignaturePage(doc: PDFDocument, fonts: Fonts, info: Signature
   const idW = fonts.mono.widthOfTextAtSize(info.documentId, 10);
   p.drawText(info.documentId, { x: rx + 10 * moduleW + (bw - idW) / 2, y: ry - 10, size: 10, font: fonts.mono, color: INK });
   ry -= 22;
-  ry = text(p, fonts, 'First 24 hex digits of the document hash, for the filing record.', ry, { x: rx, size: 8, color: MUTED, width: rw });
+  ry = text(p, fonts, 'First 24 hex digits of the file\u2019s hash.', ry, { x: rx, size: 8, color: MUTED, width: rw });
 
-  ry = text(p, fonts, 'How the Recorder checks it', ry - 14, { x: rx, size: 9.5, font: fonts.bold, width: rw });
+  ry = text(p, fonts, 'How to check it', ry - 14, { x: rx, size: 9.5, font: fonts.bold, width: rw });
   ry = text(
     p,
     fonts,
-    'Scan the QR code. The tool reads the key fingerprint, document hash and signature, compares the fingerprint with the key ' +
-      'registered for the parcel, recomputes the hash of the signed file, and checks the signature. A match is recorded as usual. ' +
-      'A missing or failing signature on a registered parcel is held for investigation.',
+    `On the ${BRAND.name} website (${BRAND.projectUrl}), open "Check a document", load the owner\u2019s registration or public key ` +
+      'card, then the signed file and this page (or the .sig file). The tool checks the signature against the exact file. ' +
+      'Any change to the file, even re-saving it, makes the check fail.',
     ry - 3,
     { x: rx, size: 8.5, width: rw },
   );
@@ -1325,7 +1325,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     fonts,
     `The digital signature${sigs.length > 1 ? 's are' : ' is'} an extra layer. ${sigs.length > 1 ? 'They do' : 'It does'} not replace the ink ` +
       `signatures or the notary acknowledgment on the document, which are still required. ` +
-      `To check: open the ${BRAND.name} website (${BRAND.projectUrl}), go to "Check a filing", load the key registered for the parcel, and scan ` +
+      `To check: open the ${BRAND.name} website (${BRAND.projectUrl}), go to "Check a document", load the key registered for the parcel, and scan ` +
       `every code below, in any order. The tool shows the exact text the owner signed. Compare it with the pages of this ` +
       `document. The signature covers every word, number and punctuation mark; capital letters, line breaks and spacing do not matter.`,
     y - 12,
@@ -1790,15 +1790,21 @@ export interface FilePackageInfo {
 export const SOURCE_ATTACHMENT = 'stop-source';
 
 function stampPage(page: PDFPage, fonts: Fonts, documentId: string, n: number, total: number) {
+  stampWith(page, fonts, `${BRAND.name} signed file  |  Document ID ${documentId}  |  Page ${n} of ${total}  |  Signature codes on the cover page`, documentId, INK, false);
+}
+
+/** A strip across the bottom of a page: a label and a small Code 128 barcode. */
+function stampWith(page: PDFPage, fonts: Fonts, text0: string, documentId: string, color: RGB, bold = true) {
+  const font = bold ? fonts.bold : fonts.reg;
   const { width } = page.getSize();
   const h = 20;
   page.drawRectangle({ x: 0, y: 0, width, height: h + 4, color: rgb(1, 1, 1) });
   page.drawLine({ start: { x: 18, y: h + 3 }, end: { x: width - 18, y: h + 3 }, thickness: 0.5, color: RULE });
-  const label = safeText(`${BRAND.name} signed file  |  Document ID ${documentId}  |  Page ${n} of ${total}  |  Signature codes on the cover page`);
+  const label = safeText(text0);
   const moduleW = 0.42;
   const barW = code128Bits(documentId).length * moduleW;
-  const size = Math.min(7, ((width - 36 - barW - 12) / fonts.reg.widthOfTextAtSize(label, 7)) * 7);
-  page.drawText(label, { x: 18, y: 8, size, font: fonts.reg, color: INK });
+  const size = Math.min(7, ((width - 36 - barW - 12) / font.widthOfTextAtSize(label, 7)) * 7);
+  page.drawText(label, { x: 18, y: 8, size, font, color });
   drawCode128(page, documentId, width - 18 - barW, 5, moduleW, 14);
 }
 
@@ -1984,4 +1990,64 @@ export async function sourceFromPdf(bytes: Uint8Array): Promise<{ pdf?: Uint8Arr
     .sort((a, b) => Number(a.name.match(/\d+/)![0]) - Number(b.name.match(/\d+/)![0]))
     .map((f) => ({ bytes: f.data, format: f.name.endsWith('.png') ? ('png' as const) : ('jpg' as const), name: f.name }));
   return { pdf, images };
+}
+
+// ---------------------------------------------------------------------------
+// Checked copy: the file that was checked (PDF pages or images), every page
+// stamped with the result of the check, like the stamps on a signed file.
+// ---------------------------------------------------------------------------
+export interface CheckedFile {
+  name: string;
+  /** A PDF, or an image already in PNG or JPEG form. Anything else is listed, not reproduced. */
+  pdf?: Uint8Array;
+  image?: SourceImage;
+  sha256: string;
+}
+
+export async function checkedCopyPdf(info: {
+  files: CheckedFile[];
+  result: 'good' | 'bad' | 'incomplete';
+  /** One line, e.g. "every registered key signed". */
+  summary: string;
+  documentId?: string;
+  checkedAt: Date;
+}): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc('Checked copy');
+  const pages: PDFPage[] = [];
+  for (const f of info.files) {
+    if (f.pdf) {
+      try {
+        const original = await PDFDocument.load(f.pdf, { ignoreEncryption: true });
+        for (const ep of await doc.embedPages(original.getPages())) {
+          const pg = doc.addPage([ep.width, ep.height]);
+          const scale = (ep.height - 28) / ep.height;
+          pg.drawPage(ep, { x: (ep.width - ep.width * scale) / 2, y: 26, xScale: scale, yScale: scale });
+          pages.push(pg);
+        }
+        continue;
+      } catch {
+        /* fall through: listed instead */
+      }
+    }
+    if (f.image) {
+      const img = f.image.format === 'png' ? await doc.embedPng(f.image.bytes) : await doc.embedJpg(f.image.bytes);
+      const pg = doc.addPage([PAGE_W, PAGE_H]);
+      const scale = Math.min(CONTENT_W / img.width, (PAGE_H - 2 * M - 30) / img.height);
+      pg.drawImage(img, { x: (PAGE_W - img.width * scale) / 2, y: PAGE_H - M - img.height * scale, width: img.width * scale, height: img.height * scale });
+      pages.push(pg);
+      continue;
+    }
+    const pg = doc.addPage([PAGE_W, PAGE_H]);
+    const y = header(pg, fonts, 'Checked copy', f.name, 'This kind of file cannot be reproduced here. Its fingerprint identifies the exact file that was checked.');
+    table(pg, fonts, [{ label: 'SHA-256', value: `${f.sha256.slice(0, 32)}\n${f.sha256.slice(32)}`, mono: true }], y, CONTENT_W);
+    pages.push(pg);
+  }
+  const word = info.result === 'good' ? 'GOOD' : info.result === 'bad' ? 'DOES NOT VERIFY' : 'NOT COMPLETE';
+  const color = info.result === 'good' ? rgb(0.08, 0.42, 0.18) : WARN;
+  const date = info.checkedAt.toISOString().slice(0, 10);
+  const id = info.documentId || 'NONE';
+  pages.forEach((pg, i) =>
+    stampWith(pg, fonts, `CHECKED ${date}: ${word} (${info.summary})  |  Document ID ${id}  |  Page ${i + 1} of ${pages.length}  |  ${BRAND.name}`, id, color),
+  );
+  return doc.save();
 }

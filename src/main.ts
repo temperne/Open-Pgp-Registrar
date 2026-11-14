@@ -7,9 +7,10 @@ import {
   summarize,
   isPrivate,
   signDocument,
-  verifyFiling,
   signText,
   verifyScannedText,
+  verifyBinaryFile,
+  binarySignatureFrom,
   keyFromCodes,
   codesHaveKey,
   orderedCodes,
@@ -28,7 +29,6 @@ import {
   signHolderUpdate,
   checkHolderUpdate,
   registrationStatement,
-  parsePayload,
   toBase64,
   fromBase64,
   type Registration,
@@ -63,11 +63,13 @@ import {
   splitParcels,
   type DocumentDraft,
   type SignaturePageInfo,
+  checkedCopyPdf,
+  type CheckedFile,
 } from './pdf';
 import { BRAND } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText } from './text';
-import { extractFile, extractImages, fileSignedText, needsDescription, looksImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
+import { extractFile, extractImages, fileSignedText, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
 
 // ---------------------------------------------------------------------------
 // In-memory state only. Nothing is written to storage or sent anywhere.
@@ -1401,6 +1403,46 @@ action('dl-text-sig', () => {
   if (d) download(d.signed.signature, `${fileSlug(d.title || 'document')}-${d.signed.documentId.slice(0, 8)}.txt.sig`, 'application/pgp-signature');
 });
 
+// ---- Binary file signature (advanced; for third parties, not for recording) ----
+let binSigned: { doc: SignedDocument; file: File; bytes: Uint8Array; info: SignaturePageInfo } | null = null;
+action(
+  'bin-btn',
+  async () => {
+    if (!state.signer) throw new UserError('Unlock your private key in step 1 first.');
+    const file = input('bin-file').files?.[0];
+    if (!file) throw new UserError('Choose the file to sign.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const doc = await signDocument(state.signer, bytes);
+    const info: SignaturePageInfo = {
+      documentTitle: input('bin-title').value.trim(),
+      fileName: file.name,
+      fileSize: bytes.length,
+      parcels: '',
+      userID: describeKey(state.signer),
+      fingerprint: doc.fingerprint,
+      signedAt: doc.signedAt,
+      sha256: doc.sha256,
+      documentId: doc.documentId,
+      payload: doc.payload,
+    };
+    binSigned = { doc, file, bytes, info };
+    $('bin-r-file').textContent = `${file.name} (${bytes.length.toLocaleString()} bytes)`;
+    $('bin-r-hash').textContent = doc.sha256;
+    $('dl-bincopy').hidden = !isPdfBytes(bytes);
+    $('bin-result').hidden = false;
+  },
+  'Signing...',
+);
+action('dl-binsig', () => {
+  if (binSigned) download(binSigned.doc.signature, `${binSigned.file.name}.sig`, 'application/pgp-signature');
+});
+action('dl-binpage', async () => {
+  if (binSigned) download(await signaturePagePdf(binSigned.info), `${baseName(binSigned.file.name)}-verification-page.pdf`, 'application/pdf');
+});
+action('dl-bincopy', async () => {
+  if (binSigned) download(await printCopyPdf(binSigned.bytes, binSigned.info), `${baseName(binSigned.file.name)}-with-verification-page.pdf`, 'application/pdf');
+});
+
 // ---------------------------------------------------------------------------
 // Step 4: verify
 // ---------------------------------------------------------------------------
@@ -1465,6 +1507,52 @@ $('v-use-mine').addEventListener('click', () => {
   if (state.key) verifyRegs = [{ parcel: '', keys: [state.key.toPublic()] }];
   showVerifyRegs();
 });
+
+action(
+  'bin-v-btn',
+  async () => {
+    if (!verifyRegs.length) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
+    const file = input('bin-v-file').files?.[0];
+    const sigFile = input('bin-v-sig').files?.[0];
+    if (!file) throw new UserError('Choose the signed file, exactly as you received it.');
+    if (!sigFile) throw new UserError('Choose its signature: the .sig file, or the verification page.');
+    const sigBytes = new Uint8Array(await sigFile.arrayBuffer());
+    let signature: Uint8Array;
+    if (isPdfBytes(sigBytes) || isImage(sigFile)) {
+      // The verification page: read its PGPSIG1 code.
+      const { readCodesFromFile } = await import('./qrscan');
+      const codes = await readCodesFromFile(sigFile, undefined, (c) => c.some((x) => x.startsWith('PGPSIG1|')));
+      const code = codes.find((x) => x.startsWith('PGPSIG1|'));
+      if (!code) throw new UserError('No binary signature code was found on that page. Load the verification page, or the .sig file.');
+      signature = await binarySignatureFrom(code);
+    } else {
+      signature = await binarySignatureFrom(sigBytes).catch(() => {
+        throw new UserError('That is not a signature file. Load the .sig file, or the verification page.');
+      });
+    }
+    await checkBinary(file, signature);
+  },
+  'Checking...',
+);
+
+/** Checks a binary-signed file against the loaded keys and shows the result. */
+async function checkBinary(file: File, signature: Uint8Array) {
+  const keys = mergeRegistrations(verifyRegs).keys;
+  const r = await verifyBinaryFile({ signature, document: new Uint8Array(await file.arrayBuffer()), keys });
+  r.checks.push({
+    label: 'What this proves',
+    state: 'skipped',
+    detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
+  });
+  lastCheck = null;
+  checkedFiles = [file];
+  $('cert-wrap').hidden = true;
+  $('vr-text-wrap').hidden = true;
+  showResult(r);
+}
+
+/** The files that were checked, for the stamped "checked copy". */
+let checkedFiles: File[] = [];
 
 /** The registration to check against: the loaded parcel, or the one the signed text names. */
 async function registrationFor(payload: string): Promise<Registration> {
@@ -1541,6 +1629,7 @@ input('v-codes-file').addEventListener('change', async () => {
     if (legacy && files.length === 1) {
       scannedFiles = [];
       setPayload(legacy.legacy!.join('\n') + '\n');
+      el.textContent = 'This is the verification page of a binary file signature. Open "Check a binary-signed file" below and load the signed file with this page.';
       return;
     }
     const readable = results.filter((r) => r.signed);
@@ -1568,6 +1657,7 @@ input('v-codes-file').addEventListener('change', async () => {
       same: !!r.signed && r.signed.canonical === reference,
       problem: r.problem ?? (r.legacy ? 'electronic-filing code; check it on its own' : undefined),
     }));
+    checkedFiles = files;
     setPayload(merged.codes.join('\n') + '\n');
     // Check right away when everything needed is there.
     if (verifyRegs.length) $('verify-btn').click();
@@ -1593,7 +1683,10 @@ let lastCheck: {
 
 
 textarea('v-payload').addEventListener('input', () => {
-  if (!settingPayload) scannedFiles = [];
+  if (!settingPayload) {
+    scannedFiles = [];
+    checkedFiles = [];
+  }
   const v = textarea('v-payload').value;
   const p = scanProgress(v);
   const el = $('v-progress');
@@ -1612,7 +1705,7 @@ action(
   'cert-btn',
   async () => {
     const c = lastCheck;
-    if (!c) throw new UserError('Check a filing first.');
+    if (!c) throw new UserError('Check a document first.');
     const pdf = await certificatePdf({
       result: c.result,
       checks: c.checks,
@@ -1632,14 +1725,72 @@ action(
   'Preparing PDF...',
 );
 
+function showResult(r: { verdict: Verdict; checks: { label: string; state: string; detail: string }[]; documentId?: string; signedAt?: Date }) {
+  const b = $('vr-banner');
+  b.className = `verdict ${r.verdict}`;
+  b.innerHTML = '';
+  b.append(
+    Object.assign(document.createElement('strong'), { textContent: VERDICT[r.verdict].title }),
+    Object.assign(document.createElement('span'), { textContent: VERDICT[r.verdict].action }),
+  );
+  const list = $('vr-checks');
+  list.innerHTML = '';
+  for (const c of r.checks) {
+    const li = document.createElement('li');
+    li.className = c.state;
+    const mark = c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked';
+    li.append(
+      Object.assign(document.createElement('span'), { className: 'mark', textContent: mark }),
+      Object.assign(document.createElement('strong'), { textContent: c.label }),
+      Object.assign(document.createElement('span'), { className: 'detail', textContent: c.detail }),
+    );
+    list.append(li);
+  }
+  $('vr-id').textContent = r.documentId ?? '-';
+  $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
+  lastVerdict = { verdict: r.verdict, documentId: r.documentId };
+  $('copy-wrap').hidden = r.verdict === 'incomplete' || !checkedFiles.length;
+  $('verify-result').hidden = false;
+  $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+let lastVerdict: { verdict: Verdict; documentId?: string } | null = null;
+
+action(
+  'copy-btn',
+  async () => {
+    if (!lastVerdict || !checkedFiles.length) throw new UserError('Check a document first.');
+    const files: CheckedFile[] = [];
+    for (const f of checkedFiles) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
+      const sha256 = [...d].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+      const entry: CheckedFile = { name: f.name, sha256 };
+      if (isPdfBytes(bytes)) entry.pdf = bytes;
+      else if (isImage(f)) entry.image = await toPrintableImage(f, bytes).catch(() => undefined);
+      files.push(entry);
+    }
+    const v = lastVerdict.verdict === 'incomplete' ? 'bad' : lastVerdict.verdict;
+    const pdf = await checkedCopyPdf({
+      files,
+      result: v,
+      summary: v === 'good' ? 'every key signed' : 'do not rely on it',
+      documentId: lastVerdict.documentId,
+      checkedAt: new Date(),
+    });
+    download(pdf, `checked-copy-${(lastVerdict.documentId ?? 'document').slice(0, 12)}.pdf`, 'application/pdf');
+  },
+  'Preparing PDF...',
+);
+
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
   good: {
     title: 'GOOD. Every registered key signed.',
-    action: 'Compare the signed text below with the paper. If it matches, record as usual.',
+    action: 'Compare the signed text below with the paper. If it matches, the document is genuine (Recorder staff: record as usual).',
   },
   bad: {
     title: 'DOES NOT VERIFY.',
-    action: 'Hold the filing. Flag as suspected forgery, preserve the submission, and notify the owner of record.',
+    action: 'Do not rely on this document. Recorder staff: hold the filing, flag it as a suspected forgery, preserve it, and notify the owner of record.',
   },
   incomplete: {
     title: 'NOT CHECKED YET.',
@@ -1677,7 +1828,13 @@ action(
         });
         if (!f.same && r.verdict === 'good') r.verdict = 'bad';
       }
-      if (r.verdict !== 'incomplete') {
+      if (r.verdict !== 'incomplete' && !registration.parcel) {
+        r.checks.push({
+          label: 'Checked against a key, not a registration',
+          state: 'skipped',
+          detail: 'Only a public key (card) was loaded. Confirm with the County Recorder that this key is registered for the parcel.',
+        });
+      } else if (r.verdict !== 'incomplete') {
         const ps = await checkRegistrationProof(registration);
         r.checks.push({
           label: 'Registration proven by every key',
@@ -1714,45 +1871,18 @@ action(
         $('vr-text-wrap').hidden = false;
       }
     } else {
-      // Electronic filing: a PGPSIG1 code plus the signed file.
-      const file = input('v-doc').files?.[0];
-      const keys = verifyRegs.flatMap((x) => x.keys);
-      let named = '';
-      try {
-        named = parsePayload(payload).fingerprint;
-      } catch {
-        /* reported by the check */
+      // A binary file signature (PGPSIG1): it needs the signed file itself.
+      const code = payload.split(/\s+/).find((x) => x.startsWith('PGPSIG1|'));
+      if (!code) throw new UserError('Those are not signature codes from this program. Scan the codes on the signature page (they start with PGPQ1|).');
+      const file = input('bin-v-file').files?.[0];
+      if (!file) {
+        $('bin-check').setAttribute('open', '');
+        throw new UserError('That is a binary file signature. Choose the signed file under "Check a binary-signed file", then check again.');
       }
-      r = await verifyFiling({
-        payload,
-        registeredKey: keys.find((k) => k.getFingerprint().toUpperCase() === named) ?? keys[0],
-        document: file ? new Uint8Array(await file.arrayBuffer()) : undefined,
-      });
+      await checkBinary(file, await binarySignatureFrom(code));
+      return;
     }
-    const b = $('vr-banner');
-    b.className = `verdict ${r.verdict}`;
-    b.innerHTML = '';
-    b.append(
-      Object.assign(document.createElement('strong'), { textContent: VERDICT[r.verdict].title }),
-      Object.assign(document.createElement('span'), { textContent: VERDICT[r.verdict].action }),
-    );
-    const list = $('vr-checks');
-    list.innerHTML = '';
-    for (const c of r.checks) {
-      const li = document.createElement('li');
-      li.className = c.state;
-      const mark = c.state === 'pass' ? 'Pass' : c.state === 'fail' ? 'Fail' : 'Not checked';
-      li.append(
-        Object.assign(document.createElement('span'), { className: 'mark', textContent: mark }),
-        Object.assign(document.createElement('strong'), { textContent: c.label }),
-        Object.assign(document.createElement('span'), { className: 'detail', textContent: c.detail }),
-      );
-      list.append(li);
-    }
-    $('vr-id').textContent = r.documentId ?? '-';
-    $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
-    $('verify-result').hidden = false;
-    $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    showResult(r);
   },
   'Checking...',
 );

@@ -6,9 +6,9 @@ import { zipSync, strToU8 } from 'fflate';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
-import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText } from '../src/crypto';
+import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom } from '../src/crypto';
 import { extractFile, fileSignedText, docxText } from '../src/extract';
-import { filePackagePdf, sourceFromPdf } from '../src/pdf';
+import { filePackagePdf, sourceFromPdf, checkedCopyPdf } from '../src/pdf';
 
 function has(cmd: string, arg = '--version') {
   try {
@@ -120,4 +120,50 @@ describe.skipIf(!has('pdftoppm', '-v') || !has('zbarimg') || !has('pdftotext', '
       }
     });
   }
+});
+
+describe('binary file signature (for third parties)', () => {
+  it('verifies the exact file, from the .sig or the PGPSIG1 code, and rejects a changed file', async () => {
+    const bytes = new TextEncoder().encode('any file at all');
+    const signed = await signDocument(key, bytes);
+    const pub = key.toPublic();
+    for (const sig of [signed.signature, await binarySignatureFrom(signed.payload), await binarySignatureFrom(signed.armoredSignature)]) {
+      const good = await verifyBinaryFile({ signature: sig, document: bytes, keys: [pub] });
+      expect(good.verdict).toBe('good');
+    }
+    const changed = await verifyBinaryFile({ signature: signed.signature, document: new TextEncoder().encode('any file at al1'), keys: [pub] });
+    expect(changed.verdict).toBe('bad');
+    const { privateArmored } = await generateKeyPair({ name: 'Someone Else', passphrase: 'pw-123456' });
+    const other = (await readAnyKey(privateArmored)).toPublic();
+    expect((await verifyBinaryFile({ signature: signed.signature, document: bytes, keys: [other] })).verdict).toBe('bad');
+  });
+});
+
+describe('checked copy', () => {
+  it('stamps every page of the checked PDFs and images', async () => {
+    const pdf = await textPdf(['page one', 'page two']);
+    const png = new PNG({ width: 20, height: 10 });
+    png.data.fill(200);
+    const out = await checkedCopyPdf({
+      files: [
+        { name: 'a.pdf', pdf, sha256: 'A'.repeat(64) },
+        { name: 'b.png', image: { bytes: PNG.sync.write(png), format: 'png', name: 'b.png' }, sha256: 'B'.repeat(64) },
+        { name: 'c.docx', sha256: 'C'.repeat(64) },
+      ],
+      result: 'good',
+      summary: 'every key signed',
+      documentId: 'ABCD-1234',
+      checkedAt: new Date('2026-11-14T00:00:00Z'),
+    });
+    const doc = await PDFDocument.load(out);
+    expect(doc.getPageCount()).toBe(4);
+    if (has('pdftotext', '-v')) {
+      const dir = mkdtempSync(join('/tmp', 'cc-'));
+      writeFileSync(join(dir, 'c.pdf'), out);
+      const text = execFileSync('pdftotext', [join(dir, 'c.pdf'), '-']).toString();
+      rmSync(dir, { recursive: true });
+      expect(text).toContain('CHECKED 2026-11-14: GOOD');
+      expect(text).toContain('Page 4 of 4');
+    }
+  });
 });

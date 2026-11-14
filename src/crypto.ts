@@ -1062,3 +1062,74 @@ export async function checkHolderUpdate(update: HolderUpdate, key: AnyKey) {
   const r = await verifyScannedText({ scanned: update.signed.codes.join('\n'), registration: { parcel: '', keys: [key.toPublic()] } });
   return r.verdict === 'good';
 }
+
+// ---------------------------------------------------------------------------
+// Binary file signature check (for third parties: a file sent by the owner)
+// ---------------------------------------------------------------------------
+/** The signature from a .sig/.asc file or a PGPSIG1 code (verification page). */
+export async function binarySignatureFrom(input: Uint8Array | string): Promise<Uint8Array> {
+  if (typeof input === 'string') {
+    if (input.trim().startsWith(`${PAYLOAD_PREFIX}|`)) return parsePayload(input).signature;
+    const sig = await openpgp.readSignature({ armoredSignature: input });
+    return sig.write();
+  }
+  const head = new TextDecoder().decode(input.subarray(0, 40));
+  if (head.includes('-----BEGIN PGP SIGNATURE-----') || head.startsWith(`${PAYLOAD_PREFIX}|`)) return binarySignatureFrom(new TextDecoder().decode(input));
+  await openpgp.readSignature({ binarySignature: input }); // throws if it is not a signature
+  return input;
+}
+
+/** Checks a binary file signature against the exact file and the owner's key(s). */
+export async function verifyBinaryFile(input: { signature: Uint8Array; document: Uint8Array; keys: AnyKey[] }): Promise<TextVerifyResult> {
+  const checks: Check[] = [];
+  const sha = await sha256Hex(input.document);
+  const signers: SignerResult[] = [];
+  try {
+    const v = await openpgp.verify({
+      message: await openpgp.createMessage({ binary: input.document }),
+      signature: await openpgp.readSignature({ binarySignature: input.signature }),
+      verificationKeys: input.keys.map((k) => k.toPublic()),
+      expectSigned: false,
+    });
+    for (const s of v.signatures) {
+      const key = input.keys.find((k) => [k, ...k.getSubkeys()].some((x) => x.getKeyID().equals(s.keyID)));
+      let ok = false;
+      let why = '';
+      try {
+        await s.verified;
+        ok = true;
+      } catch (e) {
+        why = (e as Error).message.replace(/^Error: /, '');
+      }
+      let signedAt: Date | undefined;
+      try {
+        signedAt = (await s.signature).packets[0]?.created ?? undefined;
+      } catch {
+        /* ignore */
+      }
+      signers.push({
+        fingerprint: key?.getFingerprint().toUpperCase() ?? s.keyID.toHex().toUpperCase(),
+        userID: key ? describeKey(key) : '',
+        label: '',
+        registered: !!key,
+        state: ok ? 'pass' : 'fail',
+        signedAt,
+        detail: ok ? `Valid signature over this exact file (SHA-256 ${sha.slice(0, 16)}...).` : key ? `Does not verify: ${why}. The file may have been changed or re-saved.` : 'Signed by a key you did not load.',
+      });
+    }
+  } catch (e) {
+    checks.push({ label: 'Signature readable', state: 'fail', detail: (e as Error).message });
+    return { verdict: 'bad', checks, documentId: documentId(sha) };
+  }
+  for (const s of signers) {
+    checks.push({ label: s.registered ? `Signed by ${s.userID || 'the owner\u2019s key'}` : 'Unknown signer', state: s.state, detail: `${formatFingerprint(s.fingerprint)}: ${s.detail}` });
+  }
+  if (!signers.length) checks.push({ label: 'Signature', state: 'fail', detail: 'No signature found.' });
+  for (const k of input.keys) {
+    if (!signers.some((s) => s.fingerprint === k.getFingerprint().toUpperCase() && s.state === 'pass')) {
+      checks.push({ label: `Signed by ${describeKey(k)}`, state: 'fail', detail: 'This key did not sign the file.' });
+    }
+  }
+  const verdict: Verdict = checks.some((c) => c.state === 'fail') ? 'bad' : 'good';
+  return { verdict, checks, documentId: documentId(sha), signedAt: signers[0]?.signedAt, signers };
+}

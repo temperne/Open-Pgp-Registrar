@@ -40,7 +40,7 @@ const isJpg = (b: Uint8Array) => b[0] === 0xff && b[1] === 0xd8;
 export const looksImage = (f: File) => f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|heic|heif|tiff?|avif)$/i.test(f.name);
 
 /** PNG and JPEG go in as they are; other formats are converted to PNG by the browser. */
-async function toPrintableImage(file: File, bytes: Uint8Array): Promise<SourceImage> {
+export async function toPrintableImage(file: File, bytes: Uint8Array): Promise<SourceImage> {
   if (isPng(bytes)) return { bytes, format: 'png', name: file.name };
   if (isJpg(bytes)) return { bytes, format: 'jpg', name: file.name };
   let bitmap: ImageBitmap;

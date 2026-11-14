@@ -17,9 +17,18 @@ All notable changes to this project are recorded here. The format follows
   recommended (reprinted exactly); Word, OpenDocument and text files are recreated
   as plain text, and the app says so when one is loaded.
 
-### Removed
-- The byte-for-byte "electronic filing" file signature, which could not be checked
-  from paper. The check page still reads codes made by it.
+- **Binary file signature** (advanced, on the Sign tab): signs a file's exact bytes,
+  for files sent directly to a tenant, buyer, bank or other third party. Not for
+  recording: the Recorder takes paper, and paper cannot carry a file's bytes. Gives a
+  `.sig` (checks with `gpg --verify`) and a verification page with its code.
+- **Check a document** (renamed from "Check a filing") invites anyone given a signed
+  document, not only Recorder staff, to check it. A public key card can be loaded in
+  place of a registration.
+- **Check a binary-signed file**: the file plus its `.sig` or verification page (PDF,
+  scan or photo).
+- **Checked copy**: after a check, download the checked file(s) as a PDF, every page
+  (PDF pages and images) stamped with the result, the date, the document ID and the
+  page number, with a barcode.
 - Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
   the README, and printed on every page and PDF as the program's web address).
 
