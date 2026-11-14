@@ -8,7 +8,7 @@ import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
 import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom } from '../src/crypto';
 import { extractFile, fileSignedText, docxText } from '../src/extract';
-import { filePackagePdf, sourceFromPdf, checkedCopyPdf } from '../src/pdf';
+import { filePackagePdf, sourceFromPdf, checkedCopyPdf, signerBlocksForUserID } from '../src/pdf';
 
 function has(cmd: string, arg = '--version') {
   try {
@@ -165,5 +165,28 @@ describe('checked copy', () => {
       expect(text).toContain('CHECKED 2026-11-14: GOOD');
       expect(text).toContain('Page 4 of 4');
     }
+  });
+});
+
+describe('signature blocks from a signature\'s user ID', () => {
+  it('gives every group member a block and names a position holder', () => {
+    expect(signerBlocksForUserID('Jane Doe and John Doe (group: Jane Doe; John Doe)').map((b) => b.caption)).toEqual(['Jane Doe', 'John Doe']);
+    expect(signerBlocksForUserID('Doe Holdings LLC (position: Secretary; holder: Jane Doe)')[0].ack).toBe('Jane Doe, as Secretary of Doe Holdings LLC');
+    expect(signerBlocksForUserID('Doe Holdings LLC (position: Secretary; holder: Jane Doe)', 'Pat Smith')[0].ack).toBe('Pat Smith, as Secretary of Doe Holdings LLC');
+    expect(signerBlocksForUserID('Jane Doe <jane@example.com>')).toEqual([{ caption: 'Jane Doe', ack: 'Jane Doe' }]);
+  });
+
+  it('a signed file without a registration gets one notary block per group member', async () => {
+    const { privateArmored } = await generateKeyPair({ name: 'Jane Doe and John Doe', members: ['Jane Doe', 'John Doe'], passphrase: 'pw-123456' });
+    const g = await unlockKey((await readAnyKey(privateArmored)) as openpgp.PrivateKey, 'pw-123456');
+    const src = await extractFile(file(new TextEncoder().encode('Note for parcel 123-45-6789.'), 'note.txt', 'text/plain'));
+    const signed = await signText(g, fileSignedText(src, ''));
+    const pdf = await filePackagePdf({ source: src, description: '', signatures: signed.signatures, documentId: signed.documentId, codes: signed.codes });
+    if (!has('pdftotext', '-v')) return;
+    const dir = mkdtempSync(join('/tmp', 'grp-'));
+    writeFileSync(join(dir, 'g.pdf'), pdf);
+    const text = execFileSync('pdftotext', [join(dir, 'g.pdf'), '-']).toString();
+    rmSync(dir, { recursive: true });
+    expect(text.match(/acknowledged before me/g)?.length).toBe(2);
   });
 });

@@ -26,6 +26,7 @@ import {
   readAnyKey,
   encodeRegistrationCodes,
   keyIdentity,
+  identityFromUserID,
   describeKey,
   registrationStatement,
   assembleSigned,
@@ -1102,7 +1103,12 @@ export function signerBlocksForKey(
   /** Current holder of a position key, from the latest holder update. */
   holderOverride?: string,
 ): { caption: string; ack: string; printedName?: boolean }[] {
-  const id = keyIdentity(key);
+  return signerBlocksForUserID(key.getUserIDs()[0] ?? '', holderOverride);
+}
+
+/** Signature blocks from a user ID alone (each signature carries its key's user ID). */
+export function signerBlocksForUserID(userID: string, holderOverride?: string): { caption: string; ack: string; printedName?: boolean }[] {
+  const id = identityFromUserID(userID);
   if (id.kind === 'position') {
     const holder = holderOverride ?? id.holder;
     return holder
@@ -1964,7 +1970,7 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
   );
   const blocks = info.signerBlocks?.length
     ? info.signerBlocks
-    : info.signatures.map((x) => ({ caption: x.userID.replace(/\s*<[^>]*>\s*$/, ''), ack: x.userID.replace(/\s*<[^>]*>\s*$/, '') }));
+    : info.signatures.flatMap((x) => signerBlocksForUserID(x.userID));
   ({ page, y } = drawSignatureBlocks(fonts, blocks.length ? blocks : [{ caption: '', ack: '' }], page, y, (h, pg, yy) => {
     if (yy - h < 64) {
       const np = doc.addPage([PAGE_W, PAGE_H]);

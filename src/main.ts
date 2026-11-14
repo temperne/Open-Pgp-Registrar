@@ -52,6 +52,7 @@ import {
   filePackagePdf,
   sourceFromPdf,
   signerBlocksForKey,
+  signerBlocksForUserID,
   registrationDraftFromPdf,
   holderUpdatePdf,
   holderUpdateFromPdf,
@@ -116,6 +117,9 @@ interface State {
     proofs: Record<string, SignedText>;
   } | null;
 }
+/** Signature lines typed by hand (documents without a registration), instead of from the keys. */
+let signersTyped = false;
+
 const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, draft: null, source: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -301,6 +305,7 @@ function isReplacement() {
 // Rendering
 // ---------------------------------------------------------------------------
 function refresh() {
+  showAutoSigners();
   const k = state.key;
   $('key-current').hidden = !k;
   $('key-choose').hidden = !!k;
@@ -970,6 +975,7 @@ function missingSigners() {
 }
 
 function renderDraft() {
+  showAutoSigners();
   const d = state.draft;
   if (!d) return;
   const list = $('tr-signers');
@@ -1037,11 +1043,26 @@ function setDraft(d: State['draft']) {
 
 /** With a registration loaded, signature lines come from its keys. */
 function showAutoSigners() {
-  const auto = !!state.signReg;
+  const auto = !!state.signReg || !!state.source || (!signersTyped && signingKeyIDs().length > 0);
   $('doc-signers-wrap').hidden = auto;
   $('doc-signers-auto').hidden = !auto;
+  $('doc-signers-from').textContent = state.signReg
+    ? 'From the parcel registration: one signature line and notary acknowledgment for each person who signs for each registered key.'
+    : 'From the signing key(s): one signature line and notary acknowledgment for each person who signs for each key (every member of a group; the holder of a position). Load the parcel registration to include every owner.';
   const list = $('doc-signers-list');
   list.innerHTML = '';
+  if (!state.signReg) {
+    for (const k of signingKeyIDs()) {
+      const li = document.createElement('li');
+      li.append(
+        Object.assign(document.createElement('strong'), { textContent: k.userID.replace(/\s*<[^>]*>\s*$/, '') || '(no name)' }),
+        Object.assign(document.createElement('span'), {
+          textContent: `Signs: ${signerBlocksForUserID(k.userID, state.holders.get(k.fingerprint)?.holder).map((b) => b.caption).join('; ')}`,
+        }),
+      );
+      list.append(li);
+    }
+  }
   for (const k of state.signReg?.keys ?? []) {
     const blocks = signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder);
     const li = keyItem(k, undefined, keyLabel(state.signReg, k.getFingerprint()));
@@ -1326,12 +1347,29 @@ function draftForPdf(): DocumentDraft | undefined {
   };
 }
 
+/**
+ * Who signs in ink, from the keys: the registration's keys when one is loaded,
+ * otherwise every key that has signed so far plus the key in use. A group key
+ * gives one block per member; a position key names its current holder.
+ */
+function signingKeyIDs(): { fingerprint: string; userID: string }[] {
+  if (state.signReg) return state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '' }));
+  const out = new Map<string, string>();
+  for (const s of state.draft?.signed.signatures ?? []) out.set(s.fingerprint.toUpperCase(), s.userID);
+  if (state.key) out.set(state.key.getFingerprint().toUpperCase(), state.key.getUserIDs()[0] ?? '');
+  return [...out].map(([fingerprint, userID]) => ({ fingerprint, userID }));
+}
+
+function currentSignerBlocks() {
+  return signingKeyIDs().flatMap((k) => signerBlocksForUserID(k.userID, state.holders.get(k.fingerprint)?.holder));
+}
+
 async function downloadInstrument() {
   const d = state.draft;
   if (!d) return;
-  const signerBlocks = state.signReg
-    ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
-    : undefined;
+  // A text document without a registration keeps any signature lines typed by hand.
+  const typed = !state.signReg && !d.source && textarea('doc-signers').value.trim() && signersTyped;
+  const signerBlocks = typed ? undefined : currentSignerBlocks();
   const required = state.signReg
     ? {
         parcel: state.signReg.parcel,
@@ -1354,9 +1392,7 @@ async function downloadInstrument() {
     return;
   }
   const pdf = await instrumentPdf({
-    signerBlocks: state.signReg
-      ? state.signReg.keys.flatMap((k) => signerBlocksForKey(k, state.holders.get(k.getFingerprint().toUpperCase())?.holder))
-      : undefined,
+    signerBlocks,
     title: d.title,
     text: d.text,
     recordable: d.recordable,
@@ -1382,6 +1418,13 @@ async function downloadInstrument() {
 }
 
 action('dl-instrument', downloadInstrument, 'Preparing PDF...');
+$('doc-signers-type').addEventListener('click', () => {
+  if (state.signReg || state.draft?.source || state.source) return;
+  signersTyped = true;
+  if (!textarea('doc-signers').value.trim()) textarea('doc-signers').value = currentSignerBlocks().map((b) => b.caption).join('\n');
+  showAutoSigners();
+  textarea('doc-signers').focus();
+});
 $('next-signer').addEventListener('click', () => {
   // Keep the document; switch to the next owner's key.
   state.key = null;

@@ -54,7 +54,12 @@ function parseUserID(uid: string) {
 }
 
 export function keyIdentity(key: AnyKey): KeyIdentity {
-  const { name, comment, email } = parseUserID(key.getUserIDs()[0] ?? '');
+  return identityFromUserID(key.getUserIDs()[0] ?? '');
+}
+
+/** The same, from a user ID alone (as carried with each signature). */
+export function identityFromUserID(userID: string): KeyIdentity {
+  const { name, comment, email } = parseUserID(userID);
   const lc = comment.toLowerCase();
   if (lc.startsWith(POSITION_TAG)) {
     const [position, ...rest] = comment.slice(POSITION_TAG.length).split(';');

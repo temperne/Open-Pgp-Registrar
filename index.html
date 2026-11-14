@@ -477,7 +477,7 @@
             <div class="grid2 tight">
               <div><label for="doc-title">Title</label><input id="doc-title" /></div>
               <div id="doc-signers-wrap"><label for="doc-signers">Signature lines <span class="opt">(one name per line)</span></label><textarea id="doc-signers" rows="2" class="prose"></textarea></div>
-              <div id="doc-signers-auto" hidden><label>Signature lines</label><p class="hint">From the parcel registration: one signature line and notary acknowledgment for each registered key.</p><ul id="doc-signers-list" class="keylist"></ul></div>
+              <div id="doc-signers-auto" hidden><label>Signature lines</label><p class="hint" id="doc-signers-from"></p><p class="hint">Need different lines? <button type="button" class="linklike" id="doc-signers-type">Type them by hand</button> (documents without a registration only).</p><ul id="doc-signers-list" class="keylist"></ul></div>
               <div class="span2" id="doc-return-wrap"><label for="doc-return">When recorded, mail to <span class="opt">(printed in the top margin, not signed)</span></label><textarea id="doc-return" rows="3" class="prose"></textarea></div>
             </div>
             <p class="hint" id="disclaimer"></p>

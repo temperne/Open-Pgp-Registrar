@@ -16,7 +16,8 @@ All notable changes to this project are recorded here. The format follows
   description. Works with registrations, several owners and the check. PDFs are
   recommended (reprinted exactly); Word, OpenDocument and text files are recreated
   as plain text, and the app says so when one is loaded.
-
+- Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
+  the README, and printed on every page and PDF as the program's web address).
 - **Binary file signature** (advanced, on the Sign tab): signs a file's exact bytes,
   for files sent directly to a tenant, buyer, bank or other third party. Not for
   recording: the Recorder takes paper, and paper cannot carry a file's bytes. Gives a
@@ -29,8 +30,14 @@ All notable changes to this project are recorded here. The format follows
 - **Checked copy**: after a check, download the checked file(s) as a PDF, every page
   (PDF pages and images) stamped with the result, the date, the document ID and the
   page number, with a barcode.
-- Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
-  the README, and printed on every page and PDF as the program's web address).
+
+### Fixed
+- Signature blocks always follow the signing key's identity: a group key gets a
+  signature line and notary acknowledgment for every member, and a position key names
+  its holder ("as Secretary of ..."), including for signed files and for documents
+  signed without a registration loaded (before, each signature got one block). The
+  Sign tab lists who signs in ink before signing; for a document without a
+  registration, the lines can still be typed by hand.
 
 ## [0.1.0] - 2026-11-12
 
