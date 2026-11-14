@@ -18,6 +18,7 @@
   },
   "homepage": "https://github.com/temperne/Open-Pgp-Registrar#readme",
   "dependencies": {
+    "fflate": "^0.8.2",
     "jsbarcode": "^3.12.1",
     "jsqr": "^1.4.0",
     "openpgp": "^6.3.2",

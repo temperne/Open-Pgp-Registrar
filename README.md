@@ -63,6 +63,12 @@ layer on equal footing with them.
   statutory short forms), plus a lease, an offer to sell or acceptance, a statement of
   ownership, and an authorization, or blank. Signature lines and a notary
   acknowledgment for every signer are generated from the registration.
+- **Sign a file**: a PDF, Word (.docx), OpenDocument (.odt) or text file, one or
+  more images, or a scanned PDF. It is recreated as a printable package (a cover page
+  with the signature codes, the file's pages each stamped with the document ID and
+  page number, and a signatures page) and that recreation is what's signed, so it
+  can be checked from paper. Images and scans are signed with the signer's written
+  description of them.
 - **Several owners, one document**: owners sign the same text on one computer, or
   pass the partly signed PDF along ("Sign exactly as others"). The text locks after
   the first signature.
@@ -118,6 +124,12 @@ codes. Sign in ink before a notary as usual.
 | Writing a lease | Signed |
 |---|---|
 | ![Sign a lease](docs/images/06-sign-lease.png) | ![Signed](docs/images/07-signed.png) |
+
+**Or sign a file.** Under **Sign a file**, load a PDF, Word or text file, or images.
+Its text appears, locked, as what will be signed. For an image or a scan, write what
+it shows (include the parcel number). Sign, and print the package: cover page, the
+file's pages (each stamped "page i of n" with the document ID), and the signatures
+page.
 
 ### For Recorder staff
 

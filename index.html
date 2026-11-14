@@ -429,6 +429,18 @@
               <input id="continue-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Signed document" />
               <p id="continue-status" class="hint" role="status"></p>
             </div>
+            <div class="subcard">
+              <h3>Sign a file <span class="opt">(instead of writing the document here)</span></h3>
+              <p class="hint">
+                Load a file: <span id="src-types"></span>. It is recreated as a printable package: a cover page with the
+                signature codes, the file's pages (each stamped with the document ID and page number), and a signatures
+                page. What is signed is that recreation, so it can be checked from paper. Choose several images at once
+                for several pages.
+              </p>
+              <input id="src-file" type="file" multiple accept=".pdf,.docx,.odt,.txt,.md,.csv,application/pdf,image/*" aria-label="File to sign" />
+              <button type="button" id="src-clear" class="linklike" hidden>Remove the file and use a template</button>
+              <p id="src-info" class="hint" role="status"></p>
+            </div>
             <div id="locked-note" class="callout warn" hidden></div>
 
             <div id="draft-fields">
@@ -497,47 +509,7 @@
             <p class="error" data-error role="alert"></p>
           </div>
 
-          <details class="card" id="file-sign">
-            <summary>Electronic filing: sign a file instead</summary>
-            <p class="muted">
-              For documents filed electronically. The signature covers the file byte for byte, so it can only be checked
-              against that same file, not against a paper copy.
-            </p>
-            <form id="sign-form">
-              <label for="sign-file">Document file</label>
-              <input id="sign-file" type="file" />
-              <div class="grid2 tight">
-                <div>
-                  <label for="sign-title">Document title <span class="opt">(printed on the page)</span></label>
-                  <input id="sign-title" placeholder="e.g. Warranty Deed" />
-                </div>
-                <div>
-                  <label for="sign-parcels">Parcel number(s)</label>
-                  <input id="sign-parcels" />
-                </div>
-              </div>
-              <button type="button" id="sign-btn" class="primary">Sign file</button>
-              <p class="error" data-error role="alert"></p>
-            </form>
 
-            <div id="sign-result" hidden>
-              <dl class="facts">
-                <dt>File</dt>
-                <dd id="sr-file"></dd>
-                <dt>Document ID</dt>
-                <dd id="sr-id" class="mono"></dd>
-                <dt>SHA-256</dt>
-                <dd id="sr-hash" class="mono small"></dd>
-              </dl>
-              <div class="actions">
-                <button type="button" id="dl-sigpage" class="primary">Verification page (PDF)</button>
-                <button type="button" id="dl-printcopy" hidden>Document + verification page (PDF)</button>
-                <button type="button" id="dl-sig">Signature file (.sig)</button>
-              </div>
-              <p id="sign-dl-error" class="error" role="alert"></p>
-              <p id="printcopy-note" class="hint"></p>
-            </div>
-          </details>
         </div>
       </section>
 
