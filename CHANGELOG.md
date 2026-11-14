@@ -31,6 +31,13 @@ All notable changes to this project are recorded here. The format follows
   (PDF pages and images) stamped with the result, the date, the document ID and the
   page number, with a barcode.
 
+### Changed
+- A file or non-recorded document whose text doesn't name the registered parcel is no
+  longer refused. It is signed with a warning, **for third parties only, not for
+  recording**, which is also printed on the package's cover. The check shows "Signed by
+  the owners. For third parties only: not for recording" instead of failing. Deeds
+  and other recordable documents must still name the parcel.
+
 ### Fixed
 - Signature blocks always follow the signing key's identity: a group key gets a
   signature line and notary acknowledgment for every member, and a position key names

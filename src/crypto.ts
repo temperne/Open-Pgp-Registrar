@@ -824,6 +824,8 @@ export interface TextVerifyResult extends VerifyResult {
   signedText?: string;
   /** One line per registered key, plus any signature from a key that is not registered. */
   signers?: SignerResult[];
+  /** Validly signed, but the text does not name the registered parcel: for third parties, not for recording. */
+  notForRecording?: boolean;
 }
 
 /**
@@ -939,19 +941,21 @@ export async function verifyScannedText(input: {
       detail: `${valid} owners signed exactly the same text (document ID ${d.documentId}).`,
     });
   }
+  let notForRecording = false;
   if (reg.parcel) {
     const inText = parcelKey(d.canonical).includes(parcelKey(reg.parcel));
+    notForRecording = !inText;
     checks.push({
-      label: 'Parcel number in the signed text',
-      state: inText ? 'pass' : 'fail',
+      label: inText ? 'Parcel number in the signed text' : 'For third parties only: not for recording',
+      state: inText ? 'pass' : 'skipped',
       detail: inText
         ? `The signed text names parcel ${reg.parcel}.`
-        : `The signed text does not mention the registered parcel ${reg.parcel}. These signatures may belong to a document for a different property.`,
+        : `The signed text does not name the registered parcel ${reg.parcel}. The owners of record signed it, but it cannot be recorded against the parcel. Read the text to see what it is about.`,
     });
   }
   const verdict: Verdict = checks.some((c) => c.state === 'fail') ? 'bad' : 'good';
   const first = signers.find((s) => s.signedAt)?.signedAt;
-  return { verdict, checks, signedAt: first, documentId: d.documentId, signedText: d.canonical, signers };
+  return { verdict, checks, signedAt: first, documentId: d.documentId, signedText: d.canonical, signers, notForRecording };
 }
 
 // ---------------------------------------------------------------------------

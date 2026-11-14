@@ -94,7 +94,10 @@ gives counter staff a way to check a filing.
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
    body), not a file, so it can be checked from paper. Load the parcel's registration
    first (PDF, scan or photo) so the tool knows every owner who must sign, and refuses
-   a key that isn't listed or text that doesn't name the parcel. Pick a template
+   a key that isn't listed, and a recordable document (deed) that doesn't name the
+   parcel. A file or a non-recorded document that doesn't name the parcel can be
+   signed, with a warning: **for third parties only, not for recording** (also printed
+   on the cover / signature page banner). Pick a template
    (warranty, quitclaim or beneficiary deed, based on A.R.S. 33-402/33-405, or blank)
    and edit freely. The signed bytes are the *canonical* text (`src/text.ts`):
    printable WinAnsi characters, upper-cased, whitespace collapsed. **Several owners
@@ -137,8 +140,9 @@ gives counter staff a way to check a filing.
    owner's copy): each is listed with its document ID and signature count, every copy
    must carry the same text (a different one fails the check), and their signatures
    are combined. Good only if **every registered key** made a valid signature, no
-   unregistered key signed, all over the same text, and that text names the
-   registered parcel. When registrations for several parcels are loaded, the parcel
+   unregistered key signed, all over the same text. If the text does not name the
+   registered parcel, the result is "signed by the owners, for third parties only:
+   not for recording" (`notForRecording`), a warning rather than a failure. When registrations for several parcels are loaded, the parcel
    named in the signed text is used. The signed text is shown for comparison with the
    paper (there is no typed-comparison box). Staff can then print a **verification
    certificate** (`certificatePdf`) listing each scanned copy (same text) and each owner's result, their name, title and

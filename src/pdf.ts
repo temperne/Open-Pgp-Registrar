@@ -1087,7 +1087,12 @@ export interface InstrumentInfo {
   documentId: string;
   codes: string[];
   /** The parcel's registered keys, when known: shows who still has to sign. */
-  required?: { parcel: string; keys: { fingerprint: string; userID: string; label?: string }[] };
+  required?: {
+    parcel: string;
+    keys: { fingerprint: string; userID: string; label?: string }[];
+    /** The signed text does not name the parcel: for third parties only, not for recording. */
+    notForRecording?: boolean;
+  };
   /** Embedded so the next owner can load this PDF and sign exactly the same text. */
   draft?: DocumentDraft;
   /**
@@ -1291,11 +1296,13 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     const signed = new Set(sigs.map((x) => x.fingerprint.toUpperCase()));
     const missing = info.required.keys.filter((k) => !signed.has(k.fingerprint.toUpperCase()));
     const done = missing.length === 0;
-    const msg = done
+    const named = !info.required.notForRecording;
+    const msg = (done
       ? `COMPLETE: signed by all ${info.required.keys.length} key${info.required.keys.length > 1 ? 's' : ''} registered for parcel ${info.required.parcel}.`
       : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered keys have signed. Still needed: ` +
         missing.map((k) => `${k.label ? `${k.label}: ` : ''}${k.userID || 'owner'} (${k.fingerprint.slice(-16)})`).join(', ') +
-        '. Do not file until every owner has signed.';
+        '. Do not file until every owner has signed.') +
+      (named ? '' : ` FOR THIRD PARTIES ONLY, NOT FOR RECORDING: the signed text does not name parcel ${info.required.parcel}.`);
     const lines = wrap(msg, fonts.bold, 9.5, CONTENT_W - 20);
     const h = lines.length * 12.5 + 14;
     sp.drawRectangle({
@@ -1850,9 +1857,11 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
     const signed = new Set(info.signatures.map((x) => x.fingerprint.toUpperCase()));
     const missing = info.required.keys.filter((k) => !signed.has(k.fingerprint.toUpperCase()));
     const done = !missing.length;
-    const msg = done
+    const named = !info.required.notForRecording;
+    const msg = (done
       ? `COMPLETE: signed by all ${info.required.keys.length} key${info.required.keys.length > 1 ? 's' : ''} registered for parcel ${info.required.parcel}.`
-      : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered keys have signed. Still needed: ${missing.map((k) => k.userID || k.fingerprint.slice(-16)).join(', ')}.`;
+      : `NOT COMPLETE: ${info.required.keys.length - missing.length} of ${info.required.keys.length} registered keys have signed. Still needed: ${missing.map((k) => k.userID || k.fingerprint.slice(-16)).join(', ')}.`) +
+      (named ? '' : ` FOR THIRD PARTIES ONLY, NOT FOR RECORDING: the signed text does not name parcel ${info.required.parcel}.`);
     const lines = wrap(msg, fonts.bold, 9, CONTENT_W - 20);
     const h = lines.length * 12 + 12;
     cover.drawRectangle({ x: M, y: y - h, width: CONTENT_W, height: h, color: done ? rgb(0.9, 0.96, 0.92) : rgb(0.98, 0.91, 0.91), borderColor: done ? rgb(0.08, 0.42, 0.18) : WARN, borderWidth: 1 });

@@ -976,6 +976,17 @@ function missingSigners() {
 
 function renderDraft() {
   showAutoSigners();
+  {
+    const d = state.draft;
+    const parcel = state.signReg?.parcel;
+    const missing = !!(d && parcel && !parcelKey(d.signed.canonical).includes(parcelKey(parcel)));
+    $('tr-parcel-warn').hidden = !missing;
+    if (missing) {
+      $('tr-parcel-warn').textContent =
+        `For third parties only: not for recording. The signed text does not name the registered parcel, ${parcel}, so the Recorder's check will not accept it. ` +
+        'A tenant, buyer, bank or anyone else you give it to can still check that the owners of record signed it.';
+    }
+  }
   const d = state.draft;
   if (!d) return;
   const list = $('tr-signers');
@@ -1294,14 +1305,9 @@ action(
       if (needsDescription(src) && canonicalText(description).length < 20) {
         throw new UserError('Describe or transcribe what the file shows (at least a sentence). That description is what gets signed and checked.');
       }
+      // A file that does not name the parcel can still be signed: it is then for third
+      // parties only (a tenant, buyer, bank), and the result says so.
       const full = fileSignedText(src, description);
-      if (state.signReg?.parcel && !parcelKey(full).includes(parcelKey(state.signReg.parcel))) {
-        throw new UserError(
-          needsDescription(src)
-            ? `Include the registered parcel number, ${state.signReg.parcel}, in your description, or the Recorder's check will fail.`
-            : `The file's text does not name the registered parcel, ${state.signReg.parcel}, so the Recorder's check would fail.`,
-        );
-      }
       const signed = await signText(state.signer, full);
       setDraft({
         signed,
@@ -1318,8 +1324,11 @@ action(
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
       if (placeholder) throw new UserError(`Fill in ${placeholder[0]} before signing.`);
-      if (state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
-        throw new UserError(`The text must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail.`);
+      // A recordable document (a deed) must name the parcel; anything else may be signed for third parties.
+      if (currentTemplate().recordable && state.signReg?.parcel && !parcelKey(fullText(title, text)).includes(parcelKey(state.signReg.parcel))) {
+        throw new UserError(
+          `A document for recording must name the registered parcel number, ${state.signReg.parcel}, or the Recorder's check will fail. (Documents for a tenant, buyer or bank can use a non-recorded template.)`,
+        );
       }
       const signed = await signText(state.signer, fullText(title, text));
       setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: currentTemplate().recordable });
@@ -1370,8 +1379,10 @@ async function downloadInstrument() {
   // A text document without a registration keeps any signature lines typed by hand.
   const typed = !state.signReg && !d.source && textarea('doc-signers').value.trim() && signersTyped;
   const signerBlocks = typed ? undefined : currentSignerBlocks();
+  const notForRecording = !!state.signReg?.parcel && !parcelKey(d.signed.canonical).includes(parcelKey(state.signReg.parcel));
   const required = state.signReg
     ? {
+        notForRecording,
         parcel: state.signReg.parcel,
         keys: state.signReg.keys.map((k) => ({ fingerprint: k.getFingerprint().toUpperCase(), userID: k.getUserIDs()[0] ?? '', label: keyLabel(state.signReg, k.getFingerprint()) })),
       }
@@ -1403,6 +1414,7 @@ async function downloadInstrument() {
     codes: d.signed.codes,
     required: state.signReg
       ? {
+          notForRecording,
           parcel: state.signReg.parcel,
           keys: state.signReg.keys.map((k) => ({
             fingerprint: k.getFingerprint().toUpperCase(),
@@ -1768,13 +1780,21 @@ action(
   'Preparing PDF...',
 );
 
-function showResult(r: { verdict: Verdict; checks: { label: string; state: string; detail: string }[]; documentId?: string; signedAt?: Date }) {
+function showResult(r: {
+  verdict: Verdict;
+  checks: { label: string; state: string; detail: string }[];
+  documentId?: string;
+  signedAt?: Date;
+  notForRecording?: boolean;
+}) {
   const b = $('vr-banner');
-  b.className = `verdict ${r.verdict}`;
+  const thirdParty = r.verdict === 'good' && r.notForRecording;
+  b.className = `verdict ${thirdParty ? 'incomplete' : r.verdict}`;
   b.innerHTML = '';
+  const v = thirdParty ? NOT_FOR_RECORDING : VERDICT[r.verdict];
   b.append(
-    Object.assign(document.createElement('strong'), { textContent: VERDICT[r.verdict].title }),
-    Object.assign(document.createElement('span'), { textContent: VERDICT[r.verdict].action }),
+    Object.assign(document.createElement('strong'), { textContent: v.title }),
+    Object.assign(document.createElement('span'), { textContent: v.action }),
   );
   const list = $('vr-checks');
   list.innerHTML = '';
@@ -1791,13 +1811,13 @@ function showResult(r: { verdict: Verdict; checks: { label: string; state: strin
   }
   $('vr-id').textContent = r.documentId ?? '-';
   $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
-  lastVerdict = { verdict: r.verdict, documentId: r.documentId };
+  lastVerdict = { verdict: r.verdict, documentId: r.documentId, notForRecording: thirdParty };
   $('copy-wrap').hidden = r.verdict === 'incomplete' || !checkedFiles.length;
   $('verify-result').hidden = false;
   $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-let lastVerdict: { verdict: Verdict; documentId?: string } | null = null;
+let lastVerdict: { verdict: Verdict; documentId?: string; notForRecording?: boolean } | null = null;
 
 action(
   'copy-btn',
@@ -1817,7 +1837,7 @@ action(
     const pdf = await checkedCopyPdf({
       files,
       result: v,
-      summary: v === 'good' ? 'every key signed' : 'do not rely on it',
+      summary: v !== 'good' ? 'do not rely on it' : lastVerdict.notForRecording ? 'every key signed; third parties only, not for recording' : 'every key signed',
       documentId: lastVerdict.documentId,
       checkedAt: new Date(),
     });
@@ -1825,6 +1845,12 @@ action(
   },
   'Preparing PDF...',
 );
+
+const NOT_FOR_RECORDING = {
+  title: 'SIGNED BY THE OWNERS. FOR THIRD PARTIES ONLY: NOT FOR RECORDING.',
+  action:
+    'Every registered key signed this text, but it does not name the registered parcel. A tenant, buyer or bank can rely on who signed it; read the text to see what it covers. Recorder staff: do not record it against the parcel.',
+};
 
 const VERDICT: Record<Verdict, { title: string; action: string }> = {
   good: {

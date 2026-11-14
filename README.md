@@ -80,8 +80,9 @@ layer on equal footing with them.
   a handheld scanner. Several copies can be checked together; all must carry the same
   text.
 - The check requires **every registered key** to have signed **the same text**, **no
-  unregistered key**, the **registered parcel** named in the text, and a **fully
-  proven registration**. The signed text is shown to compare with the paper.
+  unregistered key**, and a **fully
+  proven registration**. If the text doesn't name the registered parcel, the result says
+  it was signed by the owners but is **for third parties only, not for recording**. The signed text is shown to compare with the paper.
 - A printable **verification certificate** for the checker to sign and append to the
   filing.
 - A **checked copy**: the checked file (PDF pages or images), every page stamped with
