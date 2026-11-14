@@ -6,6 +6,10 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Hosted test site: https://pimastopinitiative.jasonajensen.workers.dev/ (linked from
+  the README, and printed on every page and PDF as the program's web address).
+
 ## [0.1.0] - 2026-11-12
 
 First working version of the Pima County S.T.O.P. Initiative site (proposed program).

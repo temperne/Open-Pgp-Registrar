@@ -27,10 +27,10 @@ export const BRAND = {
   state: 'Arizona',
   /**
    * Program web address, printed on every PDF and linked from the site.
-   * PLACEHOLDER: replace '[PROJECT URL]' with the real address, e.g.
+   * The test site for now; replace it with the official address once there is one, e.g.
    * 'https://www.example.gov/stop'.
    */
-  projectUrl: '[PROJECT URL]',
+  projectUrl: 'https://pimastopinitiative.jasonajensen.workers.dev/',
   /**
    * Office that confirms a business, trust or other entity signer: that the
    * entity exists and the person holds the title they sign with. It signs the

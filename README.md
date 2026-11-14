@@ -9,6 +9,8 @@ This repository is the **website that makes it work**: owners create keys, regis
 them and sign documents, and Recorder staff check filings. It is a single HTML file
 that runs entirely in the browser, works offline, and **stores and sends nothing**.
 
+**Try it: https://pimastopinitiative.jasonajensen.workers.dev/**
+
 > **Status: proposed.** The program has not been adopted by Pima County. Every page
 > and PDF says so until the county adopts it (see [Rebranding](#rebranding-for-another-jurisdiction)).
 
@@ -160,7 +162,7 @@ and run `gpg --verify document.txt.sig document.txt`.
 Everything specific to Pima County and Arizona is in a few places:
 
 1. **`src/brand.ts`**: program name and acronym, county, **state**, project web
-   address (`[PROJECT URL]` placeholder), the office that verifies entity positions
+   address (`projectUrl`, printed on every PDF), the office that verifies entity positions
    (`entityAuthority`), and the **proposed/adopted status**. While `status` is
    `'proposed'`, every page and PDF says the program has not been adopted. Change it
    to `'adopted'` only once the jurisdiction has adopted the program and approved use
