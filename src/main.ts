@@ -24,6 +24,7 @@ import {
   mergeRegistrations,
   parcelKey,
   keyLabel,
+  transferClause,
   describeKey,
   keyIdentity,
   signRegistration,
@@ -34,6 +35,7 @@ import {
   toBase64,
   fromBase64,
   type Registration,
+  type RegistrationRole,
   type DocSignature,
   type SignedText,
   formatFingerprint,
@@ -118,10 +120,14 @@ interface State {
     keys: openpgp.PublicKey[];
     parcels: string[];
     proofs: Record<string, SignedText>;
+    role?: RegistrationRole;
+    interest?: string;
   } | null;
 }
 /** Signature lines typed by hand (documents without a registration), instead of from the keys. */
 let signersTyped = false;
+/** Sale deeds: the buyers' keys, named in the deed so protection passes to them when it is recorded. */
+let buyerKeys: openpgp.PublicKey[] = [];
 
 const state: State = { key: null, signer: null, privateArmored: null, unsaved: false, draft: null, source: null, signReg: null, coOwners: [], coLabels: new Map(), regDraft: null, holders: new Map() };
 
@@ -616,8 +622,22 @@ function regKeysFromForm(): openpgp.PublicKey[] {
   return [mine, ...others];
 }
 
+function regRole(): RegistrationRole {
+  return input('reg-role').value === 'lienholder' ? 'lienholder' : 'owner';
+}
+
+/** Lien holders name the lien; the labels follow the role. */
+function syncRegRole() {
+  const lien = regRole() === 'lienholder';
+  $('reg-interest-wrap').hidden = !lien;
+  $('reg-owner-label').textContent = lien ? 'Lien holder' : 'Owner(s) of record';
+}
+input('reg-role').addEventListener('change', syncRegRole);
+
 function lockRegistration() {
   const d = state.regDraft;
+  input('reg-role').disabled = !!d;
+  input('reg-interest').disabled = !!d;
   textarea('reg-parcels').disabled = !!d;
   input('co-file').disabled = !!d;
   $('co-list').querySelectorAll('button').forEach((b) => ((b as HTMLButtonElement).disabled = !!d));
@@ -680,17 +700,19 @@ action(
     if (!state.signer) {
       throw new UserError('Unlock your private key in step 1 first. Signing the registration proves you hold the key and its passphrase.');
     }
-    need(input('reg-owner').value, 'Enter the owner(s) of record.');
+    const role = regRole();
+    need(input('reg-owner').value, role === 'lienholder' ? 'Enter the lien holder.' : 'Enter the owner(s) of record.');
     if (!state.regDraft) {
       const parcels = splitParcels(need(textarea('reg-parcels').value, 'Enter the parcel number.'));
-      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {} };
+      const interest = role === 'lienholder' ? need(input('reg-interest').value, 'Describe the lien (its type and recording number).').trim() : undefined;
+      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest };
     }
     const d = state.regDraft;
     if (!d.keys.some((k) => k.getFingerprint().toUpperCase() === state.signer!.getFingerprint().toUpperCase())) {
       throw new UserError('Your key is not on this registration. Load one of its listed keys, or choose "Start over" above to begin a new registration.');
     }
     for (const parcel of d.parcels) {
-      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel] });
+      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel], role: d.role, interest: d.interest });
     }
     lockRegistration();
     renderRegDraft();
@@ -719,6 +741,8 @@ action(
       previousFingerprint: input('reg-prev').value.trim(),
       keys: d.keys.map((k) => k.armor()),
       proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
+      role: d.role,
+      interest: d.interest,
     };
     const pdf = await registrationPdf({
       ownerName: draft.ownerName,
@@ -726,6 +750,8 @@ action(
       coOwnerKeys: d.keys.slice(1),
       proofs: d.proofs,
       draft,
+      role: d.role,
+      interest: d.interest,
       propertyAddress: draft.propertyAddress,
       mailingAddress: draft.mailingAddress,
       county: draft.county,
@@ -770,11 +796,15 @@ input('reg-continue-file').addEventListener('change', async () => {
     const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
     const parcels = splitParcels(draft.parcels);
     const proofs: Record<string, SignedText> = {};
+    const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
     for (const p of parcels) {
-      const proof = await proofFromSigs({ parcel: p, keys }, draft.proofs[p] ?? []);
+      const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest }, draft.proofs[p] ?? []);
       if (proof) proofs[p] = proof;
     }
-    state.regDraft = { keys, parcels, proofs };
+    state.regDraft = { keys, parcels, proofs, role, interest: draft.interest };
+    input('reg-role').value = role ?? 'owner';
+    input('reg-interest').value = draft.interest ?? '';
+    syncRegRole();
     input('reg-owner').value = draft.ownerName;
     textarea('reg-parcels').value = draft.parcels;
     input('reg-property').value = draft.propertyAddress;
@@ -828,6 +858,8 @@ async function registrationsFromFile(file: File, onProgress?: (msg: string) => v
           const proof = await signedFromCodes(g.join('\n'));
           const reg = regs.find((r) => canonicalText(registrationStatement(r)) === proof.canonical);
           if (reg) reg.proof = proof;
+          // A registration by sale: the deed's own codes are its proof.
+          for (const r of regs) if (r.transfer && r.transfer.documentId === proof.documentId) r.transfer.deed = proof;
         } catch {
           /* incomplete proof codes: reported as not proven */
         }
@@ -842,6 +874,8 @@ async function registrationsFromFile(file: File, onProgress?: (msg: string) => v
 function describeRegistration(r: Registration) {
   const frag = document.createDocumentFragment();
   frag.append(r.parcel ? `Parcel ${r.parcel}: ` : 'Key(s) without a parcel number: ', `${r.keys.length} key${r.keys.length === 1 ? '' : 's'}, all must sign.`);
+  if (r.role === 'lienholder') frag.append(` Lien holder registration${r.interest ? ` (${r.interest})` : ''}: for releases, satisfactions and assignments of that lien.`);
+  if (r.transfer) frag.append(` Registered by sale: the deed with document ID ${r.transfer.documentId} names these keys as the new owners' keys.`);
   const ul = Object.assign(document.createElement('ul'), { className: 'keylist' });
   for (const k of r.keys) ul.append(keyItem(k, undefined, keyLabel(r, k.getFingerprint())));
   frag.append(ul);
@@ -868,8 +902,53 @@ const currentTemplate = () => TEMPLATES.find((t) => t.id === tplSelect.value) ??
 function fields(): TemplateFields {
   const f = {} as TemplateFields;
   for (const id of FIELD_IDS) f[id] = fieldEl(id).value;
+  f.buyerKeys = currentTemplate().buyerKeys ? transferClause(buyerKeys) : '';
   return f;
 }
+
+/** The buyers' keys card: shown for sale deeds before anyone has signed. */
+function renderBuyerKeys() {
+  const show = !!currentTemplate().buyerKeys && !state.draft && !state.source;
+  $('buyer-keys').hidden = !show && !(state.draft && buyerKeys.length);
+  const list = $('buyer-list');
+  list.innerHTML = '';
+  for (const k of buyerKeys) {
+    const remove = Object.assign(document.createElement('button'), { type: 'button', className: 'linklike', textContent: 'Remove' });
+    remove.disabled = !!state.draft;
+    remove.addEventListener('click', () => {
+      buyerKeys = buyerKeys.filter((x) => x !== k);
+      renderBuyerKeys();
+      syncTemplate();
+    });
+    list.append(keyItem(k, state.draft ? undefined : remove));
+  }
+  input('buyer-file').disabled = !!state.draft || !state.signReg;
+  $('buyer-status').className = 'hint';
+  if (!state.signReg && !state.draft) $('buyer-status').textContent = 'Load the parcel registration (above) first: the sellers’ registered keys hand the protection over.';
+  else if ($('buyer-status').textContent?.startsWith('Load the parcel')) $('buyer-status').textContent = '';
+}
+
+input('buyer-file').addEventListener('change', async () => {
+  const f = input('buyer-file').files?.[0];
+  if (!f) return;
+  const status = $('buyer-status');
+  status.className = 'hint';
+  try {
+    const key = (await keyFromFile(f, (m) => (status.textContent = m))).toPublic();
+    const fpr = key.getFingerprint().toUpperCase();
+    if (buyerKeys.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already listed.');
+    if (state.signReg?.keys.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already registered for this parcel (a seller’s key).');
+    buyerKeys.push(key);
+    renderBuyerKeys();
+    syncTemplate();
+    status.textContent = `Added ${describeKey(key)}. Check the fingerprint with the buyer.`;
+  } catch (err) {
+    status.className = 'hint error';
+    status.textContent = (err as Error).message;
+  } finally {
+    input('buyer-file').value = '';
+  }
+});
 
 /** The signed content is the title and the text together. */
 function fullText(title: string, text: string) {
@@ -900,6 +979,7 @@ let countToken = 0;
 
 /** Rebuilds the document text from the template, unless the user has edited it. */
 function syncTemplate(force = false) {
+  renderBuyerKeys();
   if (state.draft || state.source) return; // locked once anyone has signed; a file supplies its own text
   const t = currentTemplate();
   $('tpl-note').textContent = t.note;
@@ -966,6 +1046,7 @@ input('parcel-ready').addEventListener('change', () => updateCount());
 
 function lockDraft() {
   showParcelReady();
+  renderBuyerKeys();
   const locked = !!state.draft;
   $('draft-fields').querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((el) => {
     // Lines and the return address are printed but not signed; they stay editable.
@@ -1013,6 +1094,7 @@ function missingSigners() {
 
 function renderDraft() {
   showAutoSigners();
+  renderBuyerKeys();
   {
     const d = state.draft;
     const parcel = state.signReg?.parcel;
@@ -1092,6 +1174,7 @@ function setDraft(d: State['draft']) {
 /** With a registration loaded, signature lines come from its keys. */
 function showAutoSigners() {
   showParcelReady();
+  renderBuyerKeys();
   const auto = !!state.signReg || !!state.source || (!signersTyped && signingKeyIDs().length > 0);
   $('doc-signers-wrap').hidden = auto;
   $('doc-signers-auto').hidden = !auto;
@@ -1293,6 +1376,7 @@ input('continue-file').addEventListener('change', async () => {
         const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
         useSignRegistration([{ parcel: embedded.registration.parcel, keys, labels: embedded.registration.labels }]);
       }
+      buyerKeys = await Promise.all((embedded.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
       setDraft({
         signed,
         title: embedded.title,
@@ -1362,7 +1446,13 @@ action(
       });
     } else {
       const statement = parcelStatement();
-      const text = statement ? `${statement}\n\n${textarea('doc-text').value}` : textarea('doc-text').value;
+      let body = textarea('doc-text').value;
+      // Sale deeds: the buyers' keys must be in the signed text, even if the text was edited by hand.
+      if (buyerKeys.length && currentTemplate().buyerKeys) {
+        const flat = canonicalText(body).replace(/\s+/g, '');
+        if (!buyerKeys.every((k) => flat.includes(k.getFingerprint().toUpperCase()))) body = `${body.trimEnd()}\n\n${transferClause(buyerKeys)}`;
+      }
+      const text = statement ? `${statement}\n\n${body}` : body;
       const title = input('doc-title').value.trim();
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
@@ -1396,6 +1486,7 @@ function draftForPdf(): DocumentDraft | undefined {
     registration: state.signReg
       ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()), labels: state.signReg.labels }
       : undefined,
+    buyerKeys: buyerKeys.length ? buyerKeys.map((k) => k.armor()) : undefined,
   };
 }
 
@@ -1446,7 +1537,14 @@ async function downloadInstrument() {
     download(pkg, `${fileSlug(baseName(d.source.name))}-${done ? 'signed' : 'partly-signed'}-${d.signed.documentId.slice(0, 8)}.pdf`, 'application/pdf');
     return;
   }
+  // Sale deed naming the buyers' keys: the PDF also carries them as the next registration.
+  const named = canonicalText(d.text).replace(/\s+/g, '');
+  const transfer =
+    state.signReg?.parcel && buyerKeys.length && buyerKeys.every((k) => named.includes(k.getFingerprint().toUpperCase()))
+      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys }
+      : undefined;
   const pdf = await instrumentPdf({
+    transfer,
     signerBlocks,
     title: d.title,
     text: d.text,
@@ -1568,7 +1666,11 @@ function showVerifyRegs(error?: string) {
       void checkRegistrationProof(merged).then((ps) => {
         line.className = ps.complete ? 'hint ok' : 'hint error';
         line.textContent = ps.complete
-          ? `Proof of key possession: every key signed this registration.`
+          ? ps.byTransfer
+            ? `Proof of key possession: by sale. Every previous registered key signed the deed naming these keys (${merged.transfer!.from
+                .map((k) => k.getFingerprint().toUpperCase().slice(-16))
+                .join(', ')}). Confirm with the Recorder's index that this deed was recorded and is the latest for the parcel.`
+            : `Proof of key possession: every key signed this registration.`
           : `Proof of key possession NOT COMPLETE${ps.problems.length ? ` (${ps.problems.join(' ')})` : ''}: ` +
             `${ps.missing.length} of ${merged.keys.length} keys have not signed. Do not activate these keys or rely on this registration.`;
       });
@@ -1992,12 +2094,23 @@ action(
       } else if (r.verdict !== 'incomplete') {
         const ps = await checkRegistrationProof(registration);
         r.checks.push({
-          label: 'Registration proven by every key',
+          label: ps.byTransfer ? 'Registration by sale proven' : 'Registration proven by every key',
           state: ps.complete ? 'pass' : 'fail',
           detail: ps.complete
-            ? 'Every registered key signed the registration itself, proving its holder had the key and passphrase.'
-            : `The registration is not fully proven: ${ps.missing.length} key${ps.missing.length === 1 ? ' has' : 's have'} not signed it. Do not rely on it.`,
+            ? ps.byTransfer
+              ? `These keys were named in a sale deed (document ID ${registration.transfer!.documentId}) signed by every previous registered key. Confirm with the Recorder's index that it was recorded and is the latest for the parcel.`
+              : 'Every registered key signed the registration itself, proving its holder had the key and passphrase.'
+            : ps.byTransfer
+              ? `The sale that made this registration could not be confirmed: ${ps.problems.join(' ')} Do not rely on it.`
+              : `The registration is not fully proven: ${ps.missing.length} key${ps.missing.length === 1 ? ' has' : 's have'} not signed it. Do not rely on it.`,
         });
+        if (registration.role === 'lienholder') {
+          r.checks.push({
+            label: 'Checked against a lien holder',
+            state: 'skipped',
+            detail: `These are the keys of the holder of a lien${registration.interest ? ` (${registration.interest})` : ''}. Use this for a release, satisfaction or assignment of that lien; a deed is checked against the owner's registration.`,
+          });
+        }
         if (!ps.complete) r.verdict = 'bad';
       }
       if (r.verdict !== 'incomplete' && r.documentId && r.signedText) {

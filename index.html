@@ -383,7 +383,18 @@
           </fieldset>
           <div class="grid2 tight">
             <div>
-              <label for="reg-owner">Owner(s) of record</label>
+              <label for="reg-role">Registering as</label>
+              <select id="reg-role">
+                <option value="owner">Owner of record</option>
+                <option value="lienholder">Lien holder (protects a lien against forged releases)</option>
+              </select>
+            </div>
+            <div id="reg-interest-wrap" hidden>
+              <label for="reg-interest">The lien <span class="opt">(type and recording number, or "recorded with this registration")</span></label>
+              <input id="reg-interest" placeholder="e.g. Mechanic's lien, recording no. 2026-0123456" />
+            </div>
+            <div>
+              <label for="reg-owner" id="reg-owner-label">Owner(s) of record</label>
               <input id="reg-owner" required />
             </div>
             <div>
@@ -513,6 +524,18 @@
               <div data-field="date"><label for="f-date">Date</label><input id="f-date" /></div>
               <div data-field="terms" class="span2"><label for="f-terms">Terms</label><textarea id="f-terms" rows="3" class="prose"></textarea></div>
               <div data-field="legal" class="span2"><label for="f-legal">Legal description <span class="opt">(copy it exactly from the current deed)</span></label><textarea id="f-legal" rows="3" class="prose"></textarea></div>
+            </div>
+            <div id="buyer-keys" class="subcard" hidden>
+              <label for="buyer-file">Buyers' signing keys <span class="opt">(optional)</span></label>
+              <p class="hint">
+                Add each buyer's key (their public key card, registration form, a photo of either, or a .asc file), as many
+                as there are buyers. The keys' fingerprints become part of the signed deed. When the deed is recorded, these
+                keys become the parcel's registered keys, with no separate registration. Leave it empty and the sale simply
+                ends the parcel's protection.
+              </p>
+              <ul id="buyer-list" class="keylist"></ul>
+              <input id="buyer-file" type="file" accept=".pdf,.asc,.key,.gpg,.pgp,.txt,application/pdf,application/pgp-keys,image/*" />
+              <p id="buyer-status" class="hint" role="status"></p>
             </div>
 
             <label for="doc-text">Document text <span class="opt">(this is what gets signed)</span></label>

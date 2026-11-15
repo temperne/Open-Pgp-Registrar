@@ -16,6 +16,8 @@ export interface TemplateFields {
   date: string;
   /** Free terms: lease terms, offer conditions, purpose, what is authorized. */
   terms: string;
+  /** Sale deeds: the clause naming the buyers' signing keys (built from the keys loaded), or empty. */
+  buyerKeys?: string;
 }
 
 export interface Template {
@@ -30,6 +32,8 @@ export interface Template {
   labels?: Partial<Record<keyof TemplateFields, string>>;
   /** Recorded with the County Recorder (deeds): printed with the 2-inch recording margin. */
   recordable: boolean;
+  /** A sale: the buyers' signing keys can be named, so protection passes to them when it is recorded. */
+  buyerKeys?: boolean;
   body(f: TemplateFields): string;
 }
 
@@ -48,6 +52,7 @@ function property(f: TemplateFields) {
 }
 
 const dated = (f: TemplateFields) => `Dated: ${blank(f.date, 'DATE')}`;
+const transfer = (f: TemplateFields) => (f.buyerKeys?.trim() ? ['', f.buyerKeys.trim()] : []);
 
 export const TEMPLATES: Template[] = [
   {
@@ -57,11 +62,13 @@ export const TEMPLATES: Template[] = [
     note: 'Conveys the property and warrants the title. Based on the short form in A.R.S. 33-402.',
     uses: ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date'],
     recordable: true,
+    buyerKeys: true,
     body: (f) =>
       [
         `For the consideration of ${blank(f.consideration, 'CONSIDERATION')}, ${blank(f.grantor, 'GRANTOR')}, Grantor, hereby conveys to ${blank(f.grantee, 'GRANTEE')}, Grantee, ${property(f)}`,
         '',
         'And the Grantor warrants the title against all persons whomsoever.',
+        ...transfer(f),
         '',
         dated(f),
       ].join('\n'),
@@ -73,9 +80,11 @@ export const TEMPLATES: Template[] = [
     note: 'Gives up whatever interest the grantor has, with no warranty. Based on the short form in A.R.S. 33-402.',
     uses: ['grantor', 'grantee', 'county', 'parcels', 'propertyAddress', 'legal', 'consideration', 'date'],
     recordable: true,
+    buyerKeys: true,
     body: (f) =>
       [
         `For the consideration of ${blank(f.consideration, 'CONSIDERATION')}, ${blank(f.grantor, 'GRANTOR')}, Grantor, hereby quit claims to ${blank(f.grantee, 'GRANTEE')}, Grantee, all of the Grantor's interest in ${property(f)}`,
+        ...transfer(f),
         '',
         dated(f),
       ].join('\n'),
@@ -170,6 +179,40 @@ export const TEMPLATES: Template[] = [
         blank(f.terms, 'WHAT IS AUTHORIZED, AND UNTIL WHEN'),
         '',
         'Signed with the signing key registered for this parcel with the County Recorder. This authorization does not convey any interest in the property.',
+        '',
+        dated(f),
+      ].join('\n'),
+  },
+  {
+    id: 'release',
+    label: 'Release of lien',
+    title: 'RELEASE OF LIEN',
+    note: 'Signed by the lien holder. If the lien holder registered keys for the lien, it is checked against that lien holder registration, so a forged release is held. Recorded.',
+    uses: ['grantor', 'county', 'parcels', 'propertyAddress', 'terms', 'date'],
+    labels: { grantor: 'Lien holder', terms: 'The lien (type, recording number and date)' },
+    recordable: true,
+    body: (f) =>
+      [
+        `${blank(f.grantor, 'LIEN HOLDER')}, holder of the lien described as ${blank(f.terms, 'LIEN AND RECORDING NUMBER')}, against the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, hereby releases that lien in full.`,
+        '',
+        'Signed with the signing keys registered for this lien with the County Recorder.',
+        '',
+        dated(f),
+      ].join('\n'),
+  },
+  {
+    id: 'deregister',
+    label: 'Deregistration (leave the program)',
+    title: 'S.T.O.P. DEREGISTRATION',
+    note: 'Takes the parcel out of the program. Signed with every registered key and notarized, like a deed, so nobody can remove the protection without the keys. Once it is recorded, documents for the parcel no longer need to be signed with them.',
+    uses: ['grantor', 'county', 'parcels', 'propertyAddress', 'date'],
+    labels: { grantor: 'Owner(s) of record' },
+    recordable: true,
+    body: (f) =>
+      [
+        `${blank(f.grantor, 'OWNER')}, owner of record of the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, withdraws this parcel from the ${BRAND.name} (${BRAND.expansion}).`,
+        '',
+        'When this document is recorded, the signing keys registered for this parcel are retired, and instruments affecting the parcel no longer need to be signed with them. This document is signed with every one of those keys.',
         '',
         dated(f),
       ].join('\n'),

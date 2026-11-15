@@ -707,15 +707,48 @@ export interface Registration {
    * private key and its passphrase can make it.
    */
   proof?: SignedText;
+  /** Whose keys these are: the owner of record (default) or a lien holder. */
+  role?: RegistrationRole;
+  /** For a lien holder: the lien these keys protect (e.g. its recording number). */
+  interest?: string;
+  /**
+   * A registration made by a recorded sale: the deed, signed by the previous
+   * registered keys, names these keys as the new ones. No separate registration
+   * (or identity check) is needed; the Recorder's index says which is current.
+   */
+  transfer?: Transfer;
 }
+
+export type RegistrationRole = 'owner' | 'lienholder';
+
+export interface Transfer {
+  /** Document ID of the deed that names the new keys. */
+  documentId: string;
+  /** The keys registered before the sale, which signed the deed. */
+  from: openpgp.PublicKey[];
+  /** The deed's signed text and signatures, when loaded with it. */
+  deed?: SignedText;
+}
+
+export const roleName = (r?: RegistrationRole) => (r === 'lienholder' ? 'lien holder' : 'owner of record');
 
 /**
  * The statement every key holder signs when registering, proving they hold the
  * key and passphrase. Keys are listed in fingerprint order so every holder,
  * on any computer, signs exactly the same text.
  */
-export function registrationStatement(reg: { parcel: string; keys: AnyKey[] }) {
+export function registrationStatement(reg: { parcel: string; keys: AnyKey[]; role?: RegistrationRole; interest?: string }) {
   const keys = [...reg.keys].sort((x, y) => x.getFingerprint().localeCompare(y.getFingerprint()));
+  if (reg.role === 'lienholder') {
+    return [
+      'S.T.O.P. LIEN HOLDER KEY REGISTRATION.',
+      `PARCEL NUMBER: ${reg.parcel.trim()}.`,
+      `INTEREST: ${(reg.interest ?? '').trim() || 'NOT GIVEN'}.`,
+      'EVERY KEY LISTED BELOW MUST SIGN ANY RELEASE, SATISFACTION OR ASSIGNMENT OF THIS INTEREST.',
+      'BY SIGNING THIS STATEMENT, EACH KEY HOLDER CONFIRMS THEY HOLD THE KEY AND ITS PASSPHRASE.',
+      ...keys.map((k, i) => `KEY ${i + 1}: ${k.getFingerprint().toUpperCase()} ${describeKey(k)}.`),
+    ].join('\n');
+  }
   return [
     'S.T.O.P. PARCEL KEY REGISTRATION.',
     `PARCEL NUMBER: ${reg.parcel.trim()}.`,
@@ -737,6 +770,8 @@ export async function signRegistration(key: openpgp.PrivateKey, reg: Registratio
 export interface ProofStatus {
   /** Every listed key made a valid signature over this registration's statement. */
   complete: boolean;
+  /** Proven by a recorded sale (the previous keys signed a deed naming these keys). */
+  byTransfer?: boolean;
   signed: string[];
   missing: string[];
   problems: string[];
@@ -745,6 +780,7 @@ export interface ProofStatus {
 /** Checks the proof of key possession against the registration's own keys and statement. */
 export async function checkRegistrationProof(reg: Registration): Promise<ProofStatus> {
   const all = reg.keys.map((k) => k.getFingerprint().toUpperCase());
+  if (reg.transfer) return checkTransfer(reg, reg.transfer, all);
   if (!reg.proof) return { complete: false, signed: [], missing: all, problems: [] };
   const problems: string[] = [];
   if (reg.proof.canonical !== canonicalText(registrationStatement(reg))) {
@@ -756,6 +792,34 @@ export async function checkRegistrationProof(reg: Registration): Promise<ProofSt
   for (const x of r.signers ?? []) if (x.registered && x.state === 'fail' && !/No signature/.test(x.detail)) problems.push(x.detail);
   const missing = all.filter((f) => !signed.includes(f));
   return { complete: !problems.length && !missing.length, signed, missing, problems };
+}
+
+/**
+ * A registration by sale is proven by the deed: every previous key signed it,
+ * and its text names the parcel and every new key.
+ */
+async function checkTransfer(reg: Registration, t: Transfer, all: string[]): Promise<ProofStatus> {
+  if (!t.deed) {
+    return { complete: false, byTransfer: true, signed: [], missing: all, problems: ['The deed that made this registration was not loaded with it. Load the whole recorded deed.'] };
+  }
+  const problems: string[] = [];
+  if (t.deed.documentId !== t.documentId) problems.push('The deed loaded is not the one this registration names.');
+  const text = t.deed.canonical.replace(/\s+/g, '');
+  for (const f of all) if (!text.includes(f)) problems.push(`The deed does not name key ${f.slice(-16)}.`);
+  if (reg.parcel && !parcelKey(t.deed.canonical).includes(parcelKey(reg.parcel))) problems.push('The deed does not name this parcel.');
+  const r = await verifyScannedText({ scanned: t.deed.codes.join('\n'), registration: { parcel: '', keys: t.from } });
+  if (r.verdict !== 'good') problems.push('The deed is not signed by every previous registered key.');
+  const ok = !problems.length;
+  return { complete: ok, byTransfer: true, signed: ok ? all : [], missing: ok ? [] : all, problems };
+}
+
+/** Text a sale deed carries to hand protection to the buyers' keys (part of what the sellers sign). */
+export function transferClause(keys: AnyKey[]) {
+  if (!keys.length) return '';
+  return [
+    'SIGNING KEYS OF THE GRANTEE. When this deed is recorded, the keys below become the keys registered for this parcel under the S.T.O.P. program, in place of the keys that signed this deed. Every one of them must sign any later instrument affecting the parcel.',
+    ...keys.map((k, i) => `Key ${i + 1}: ${k.getFingerprint().toUpperCase()} (${describeKey(k)}).`),
+  ].join('\n');
 }
 
 /** Description of a registered key, if the registration gives one. */
@@ -772,7 +836,18 @@ export function parcelKey(parcel: string) {
 export async function encodeRegistrationCodes(reg: Registration): Promise<string[]> {
   const keys = concatBytes(reg.keys.map((k) => k.toPublic().write()));
   const fields = [REG_PREFIX, toBase64(new TextEncoder().encode(reg.parcel.trim())), 'ALL', toBase64(keys)];
-  if (reg.labels?.some((l) => l.trim())) fields.push(toBase64(new TextEncoder().encode(JSON.stringify(reg.labels.map((l) => l.trim())))));
+  const labels = reg.labels?.some((l) => l.trim()) ? reg.labels.map((l) => l.trim()) : undefined;
+  const extra = reg.role === 'lienholder' || reg.transfer;
+  if (extra) {
+    // Newer form of the fifth field: an object (older readers expected a label list).
+    const obj = {
+      labels,
+      role: reg.role === 'lienholder' ? 'lienholder' : undefined,
+      interest: reg.interest?.trim() || undefined,
+      transfer: reg.transfer ? { documentId: reg.transfer.documentId, from: toBase64(concatBytes(reg.transfer.from.map((k) => k.toPublic().write()))) } : undefined,
+    };
+    fields.push(toBase64(new TextEncoder().encode(JSON.stringify(obj))));
+  } else if (labels) fields.push(toBase64(new TextEncoder().encode(JSON.stringify(labels))));
   const message = fields.join('|');
   const group = (await sha256Hex(new TextEncoder().encode(message))).slice(0, 12).toUpperCase();
   const n = Math.ceil(message.length / PART_SIZE);
@@ -792,15 +867,27 @@ export async function decodeRegistrationCodes(scanned: string): Promise<Registra
   if ((f.length !== 4 && f.length !== 5) || f[0] !== REG_PREFIX) throw new Error('The registration codes are damaged. Try another photo or scan.');
   const parcel = new TextDecoder().decode(fromBase64(f[1]));
   const keys = await openpgp.readKeys({ binaryKeys: fromBase64(f[3]) });
-  let labels: string[] | undefined;
+  const reg: Registration = { parcel, keys: keys.map((k) => k.toPublic()) };
   if (f[4]) {
+    let extra: unknown;
     try {
-      labels = (JSON.parse(new TextDecoder().decode(fromBase64(f[4]))) as unknown[]).map((x) => String(x ?? ''));
+      extra = JSON.parse(new TextDecoder().decode(fromBase64(f[4])));
     } catch {
-      labels = undefined;
+      extra = undefined;
+    }
+    if (Array.isArray(extra)) reg.labels = extra.map((x) => String(x ?? ''));
+    else if (extra && typeof extra === 'object') {
+      const o = extra as { labels?: unknown[]; role?: string; interest?: string; transfer?: { documentId?: string; from?: string } };
+      if (Array.isArray(o.labels)) reg.labels = o.labels.map((x) => String(x ?? ''));
+      if (o.role === 'lienholder') reg.role = 'lienholder';
+      if (o.interest) reg.interest = String(o.interest);
+      if (o.transfer?.documentId && o.transfer.from) {
+        const from = await openpgp.readKeys({ binaryKeys: fromBase64(o.transfer.from) });
+        reg.transfer = { documentId: String(o.transfer.documentId), from: from.map((k) => k.toPublic()) };
+      }
     }
   }
-  return { parcel, keys: keys.map((k) => k.toPublic()), labels };
+  return reg;
 }
 
 /** Merges registrations (e.g. each co-owner's form). They must agree on the parcel and key list. */
@@ -828,11 +915,18 @@ export function mergeRegistrations(regs: Registration[]): Registration {
     .map((r) => r.proof)
     .filter((x): x is SignedText => !!x)
     .sort((x, y) => y.signatures.length - x.signatures.length)[0];
+  const roles = new Set(regs.filter((r) => r.parcel).map((r) => r.role ?? 'owner'));
+  if (roles.size > 1) throw new Error('These registrations are for different roles (an owner and a lien holder). Load the one that applies to this document.');
+  const first = regs.find((r) => r.role || r.interest || r.transfer);
+  const transfer = regs.map((r) => r.transfer).find((t) => t?.deed) ?? first?.transfer;
   return {
     parcel: withParcel[0]?.parcel ?? '',
     keys: list.map(([, k]) => k),
     labels: labels.size ? list.map(([f]) => labels.get(f) ?? '') : undefined,
     proof,
+    role: first?.role,
+    interest: first?.interest,
+    transfer,
   };
 }
 

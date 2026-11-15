@@ -14,6 +14,10 @@ import {
   decodeRegistrationCodes,
   registrationScanProgress,
   mergeRegistrations,
+  registrationStatement,
+  signRegistration,
+  checkRegistrationProof,
+  transferClause,
   type Registration,
 } from '../src/crypto';
 
@@ -544,5 +548,41 @@ describe('document templates', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('roles and registration by sale', () => {
+  it('a lien holder registration keeps its role and lien through the codes, and its statement differs', async () => {
+    const lien: Registration = { parcel: '123-45-6789', keys: [c.toPublic()], role: 'lienholder', interest: 'Mechanic lien 2026-0123456' };
+    expect(registrationStatement(lien)).toMatch(/LIEN HOLDER KEY REGISTRATION[\s\S]*MECHANIC LIEN 2026-0123456|Mechanic lien 2026-0123456/);
+    expect(registrationStatement(lien)).not.toBe(registrationStatement({ ...lien, role: 'owner' }));
+    const back = await decodeRegistrationCodes((await encodeRegistrationCodes(lien)).join('\n'));
+    expect(back.role).toBe('lienholder');
+    expect(back.interest).toBe('Mechanic lien 2026-0123456');
+    lien.proof = await signRegistration(c, lien);
+    expect((await checkRegistrationProof({ ...back, proof: lien.proof })).complete).toBe(true);
+    expect(() => mergeRegistrations([reg, { ...back }])).toThrow(/different/);
+  });
+
+  it('a sale deed naming the buyers\' keys proves the new registration; a doctored deed does not', async () => {
+    const buyer = await makeKey('Example Buyer');
+    const deedText = `${text}\n\n${transferClause([buyer.toPublic()])}`;
+    const deed = await signText(b, deedText, await signText(a, deedText));
+    const next: Registration = { parcel: '123-45-6789', keys: [buyer.toPublic()], transfer: { documentId: deed.documentId, from: reg.keys } };
+    const back = await decodeRegistrationCodes((await encodeRegistrationCodes(next)).join('\n'));
+    expect(back.transfer?.documentId).toBe(deed.documentId);
+    expect(back.transfer?.from.length).toBe(2);
+    back.transfer!.deed = deed;
+    const ps = await checkRegistrationProof(back);
+    expect(ps.complete).toBe(true);
+    expect(ps.byTransfer).toBe(true);
+    // Without the deed, or signed by only one of the previous owners: not proven.
+    expect((await checkRegistrationProof({ ...back, transfer: { ...back.transfer!, deed: undefined } })).complete).toBe(false);
+    const half = await signText(a, deedText);
+    expect((await checkRegistrationProof({ ...back, transfer: { ...back.transfer!, documentId: half.documentId, deed: half } })).complete).toBe(false);
+    // A deed that does not name the new key (an impostor's key swapped in): not proven.
+    const other = await makeKey('Impostor');
+    const swapped: Registration = { ...back, keys: [other.toPublic()] };
+    expect((await checkRegistrationProof(swapped)).complete).toBe(false);
   });
 });

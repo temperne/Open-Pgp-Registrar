@@ -34,6 +34,7 @@ import {
   fromBase64,
   holderUpdateStatement,
   type Registration,
+  type RegistrationRole,
   type SignedText,
   type HolderUpdate,
 } from './crypto';
@@ -332,6 +333,9 @@ export interface RegistrationInfo {
   proofs?: Record<string, SignedText>;
   /** Embedded so the next key holder can load this PDF and add their signature. */
   draft?: RegistrationDraft;
+  /** Owner of record (default) or lien holder; a lien holder names the lien. */
+  role?: RegistrationRole;
+  interest?: string;
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -369,13 +373,15 @@ export interface RegistrationDraft {
   keys: string[];
   /** Per parcel: each key holder's signature over the registration statement. */
   proofs: Record<string, { fingerprint: string; userID: string; signedAt: string; sig: string }[]>;
+  role?: RegistrationRole;
+  interest?: string;
 }
 
 const proofSigs = (p?: SignedText) =>
   (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
 
 /** Rebuilds a proof from stored signatures for the given registration. */
-export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[] }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
+export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[]; role?: RegistrationRole; interest?: string }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
   if (!sigs?.length) return undefined;
   return assembleSigned(
     canonicalText(registrationStatement(reg)),
@@ -420,6 +426,8 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       keys: keys.map((k) => k.armor()),
       labels,
       proof: proofSigs(proof),
+      role: info.role === 'lienholder' ? 'lienholder' : undefined,
+      interest: info.role === 'lienholder' ? info.interest?.trim() || undefined : undefined,
     };
     await doc.attach(new TextEncoder().encode(JSON.stringify(json, null, 1)), `${REGISTRATION_ATTACHMENT}-${n + 1}.json`, {
       mimeType: 'application/json',
@@ -601,7 +609,7 @@ async function drawRegistration(
     p,
     fonts,
     'No fee  |  Voluntary',
-    'Owner Public Key Registration',
+    info.role === 'lienholder' ? 'Lien Holder Public Key Registration' : 'Owner Public Key Registration',
     info.county?.trim() ? `For filing with the Recorder, ${info.county.trim()}` : 'For filing with the County Recorder',
   );
 
@@ -615,9 +623,10 @@ async function drawRegistration(
   const tableW = CONTENT_W - qrSize - 18;
   const rows: Row[] = [
     { label: 'Registration fee', value: '$0.00 (no charge)' },
-    { label: 'Owner(s) of record', value: info.ownerName },
+    { label: info.role === 'lienholder' ? 'Lien holder' : 'Owner(s) of record', value: info.ownerName },
     { label: 'Parcel number', value: parcel },
   ];
+  if (info.role === 'lienholder') rows.push({ label: 'Lien', value: info.interest?.trim() || '(not given)' });
   // Addresses only when given, to leave room for every key.
   if (info.propertyAddress?.trim()) rows.push({ label: 'Property address', value: info.propertyAddress.trim() });
   if (info.mailingAddress?.trim()) rows.push({ label: 'Mailing address', value: info.mailingAddress.trim() });
@@ -653,11 +662,17 @@ async function drawRegistration(
     width: qrSize,
   });
 
-  y = text(p, fonts, 'Owner request', y - 12, { size: 10, font: fonts.bold });
+  const lien = info.role === 'lienholder';
+  y = text(p, fonts, lien ? 'Lien holder request' : 'Owner request', y - 12, { size: 10, font: fonts.bold });
   y = text(
     p,
     fonts,
-    (signatoriesOf(info, keys).length > 1
+    lien
+      ? `${signatoriesOf(info, keys).length > 1 ? 'We hold' : 'I hold'} the lien described above against the parcel above, or sign for its holder in the capacity shown. ` +
+          `${signatoriesOf(info, keys).length > 1 ? 'We ask' : 'I ask'} the Recorder to file the ${keys.length > 1 ? `${keys.length} public keys listed above` : 'public key listed above'} ` +
+          'against this lien, and to hold for investigation, rather than record in the ordinary course, any release, satisfaction or ' +
+          'assignment of it that does not carry a valid signature from every key listed.'
+      : (signatoriesOf(info, keys).length > 1
       ? `We, the undersigned holders of the keys for this parcel, are owners of record of the parcel above or sign for one in the capacity shown. We ask the Recorder to file the ${keys.length > 1 ? `${keys.length} public keys listed above` : 'public key listed above'} `
       : `I am an owner of record of the parcel above, or sign for one in the capacity shown. I ask the Recorder to file the ${keys.length > 1 ? `${keys.length} public keys listed above` : 'public key listed above'} `) +
       `against this parcel, and to hold for investigation, rather than record in the ` +
@@ -676,7 +691,13 @@ async function drawRegistration(
       'Recording no.',
     ]);
   } else {
-    y = text(p, fonts, `Each of the ${signers.length} signers signs on their own page, which follows.`, y - 10, { size: 9.5, font: fonts.bold });
+    y = text(
+      p,
+      fonts,
+      signers.length === 1 ? 'The signer signs on the next page.' : `Each of the ${signers.length} signers signs on their own page, which follows.`,
+      y - 10,
+      { size: 9.5, font: fonts.bold },
+    );
     y -= 12;
     const recH = 52;
     box(p, M, y, CONTENT_W, recH, INK);
@@ -752,7 +773,7 @@ async function drawRegistration(
       y = header(page, fonts, 'Attachment to registration (continued)', 'Keys Registered for This Parcel');
     }
   };
-  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels });
+  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels, role: info.role, interest: info.interest });
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
@@ -1120,7 +1141,18 @@ export async function keyTextFromPdf(bytes: Uint8Array): Promise<string> {
 // the owner's signature.
 // ---------------------------------------------------------------------------
 
+/** A sale deed that names the buyers' keys: they become the parcel's registered keys when it is recorded. */
+export interface SaleTransfer {
+  parcel: string;
+  /** The buyers' keys, named in the signed deed text. */
+  keys: openpgp.PublicKey[];
+  /** The keys registered before the sale (the sellers'), which sign the deed. */
+  from: openpgp.PublicKey[];
+}
+
 export interface InstrumentInfo {
+  /** Sale deeds naming the buyers' keys: adds a "registration by sale" page and embeds it. */
+  transfer?: SaleTransfer;
   title: string;
   /** The document text exactly as entered (line breaks kept for printing). */
   text: string;
@@ -1190,6 +1222,8 @@ export interface DocumentDraft {
   signatures: { fingerprint: string; userID: string; signedAt: string; sig: string }[];
   /** The parcel's registration, when one was loaded. */
   registration?: { parcel: string; keys: string[]; labels?: string[] };
+  /** Sale deeds: the buyers' public keys named in the text (armored). */
+  buyerKeys?: string[];
 }
 
 export const DOCUMENT_ATTACHMENT = 'stop-document.json';
@@ -1429,6 +1463,9 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
     { size: 8, color: MUTED },
   );
 
+  const transferStart = doc.getPageCount();
+  if (info.transfer?.keys.length) await drawSaleRegistration(doc, fonts, info.transfer, info.documentId);
+
   const total = doc.getPageCount();
   const firstSig = contentPages.length + 1;
   doc.getPages().forEach((pg, i) =>
@@ -1437,12 +1474,82 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       fonts,
       i < contentPages.length
         ? `Document ID ${info.documentId}  |  Owner's digital signature for this text: page ${firstSig}`
-        : `Document ID ${info.documentId}  |  ${n} signature code${n === 1 ? '' : 's'}`,
+        : i >= transferStart
+          ? `Document ID ${info.documentId}  |  Registration by sale: the buyers' keys`
+          : `Document ID ${info.documentId}  |  ${n} signature code${n === 1 ? '' : 's'}`,
       i + 1,
       total,
     ),
   );
   return finish(doc);
+}
+
+/**
+ * The buyers' keys as a registration, printed with the sale deed and embedded in
+ * it. Loaded later as "the registration", it is proven by the deed itself: the
+ * previous registered keys signed a deed naming these keys.
+ */
+async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTransfer, documentId: string) {
+  await doc.attach(
+    new TextEncoder().encode(
+      JSON.stringify(
+        {
+          format: 'stop-registration-1',
+          parcel: t.parcel,
+          required: 'all',
+          keys: t.keys.map((k) => k.armor()),
+          labels: t.keys.map((k) => describeKey(k)),
+          transfer: { documentId, from: t.from.map((k) => k.armor()) },
+        },
+        null,
+        1,
+      ),
+    ),
+    `${REGISTRATION_ATTACHMENT}-1.json`,
+    { mimeType: 'application/json', description: `Keys registered for parcel ${t.parcel} by this sale` },
+  );
+  let page = doc.addPage([PAGE_W, PAGE_H]);
+  let y = header(page, fonts, 'Registration by sale', 'Buyers’ Signing Keys', `Parcel ${t.parcel}`);
+  y = text(
+    page,
+    fonts,
+    'This deed names the buyers’ signing keys. When it is recorded, these keys become the keys registered for the parcel, in place of ' +
+      'the keys that signed the deed, with no separate registration: the sellers’ registered keys signed the deed that names them. ' +
+      'From then on, every key below must sign any instrument affecting the parcel. To check a later document, load this deed in place of ' +
+      'a registration form; the tool confirms that the previous keys signed it. Confirm with the Recorder that this deed was recorded and is ' +
+      'the latest for the parcel.',
+    y,
+    { size: 9.5 },
+  );
+  y = table(
+    page,
+    fonts,
+    [
+      ...t.keys.map((k, i) => ({ label: `Buyer key ${i + 1}`, value: `${describeKey(k)}\n${formatFingerprint(k.getFingerprint().toUpperCase())}` })),
+      ...t.from.map((k, i) => ({ label: `Previous key ${i + 1}`, value: `${describeKey(k)}\n${formatFingerprint(k.getFingerprint().toUpperCase())}` })),
+    ],
+    y - 8,
+    CONTENT_W,
+    150,
+  );
+  const codes = await encodeRegistrationCodes({ parcel: t.parcel, keys: t.keys, transfer: { documentId, from: t.from } });
+  const size = 120;
+  const perRow = 3;
+  const gap = (CONTENT_W - perRow * size) / (perRow - 1);
+  y = text(page, fonts, 'The buyers’ keys as codes (scan them in any order with the deed’s signature codes):', y - 12, { size: 9, font: fonts.bold });
+  y -= 8;
+  codes.forEach((c, i) => {
+    const col = i % perRow;
+    if (col === 0 && y - size - 30 < 64) {
+      page = doc.addPage([PAGE_W, PAGE_H]);
+      y = header(page, fonts, 'Registration by sale (continued)', 'Buyers’ Signing Keys');
+    }
+    const x = M + col * (size + gap);
+    drawQr(page, bestQr(c)!, x, y, size);
+    const label = `Key code ${i + 1} of ${codes.length}`;
+    page.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
+    if (col === perRow - 1 || i === codes.length - 1) y -= size + 40;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,8 +1800,23 @@ export async function registrationsFromPdf(bytes: Uint8Array): Promise<Registrat
       const keys = await Promise.all((j.keys as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
       const labels = Array.isArray(j.labels) ? (j.labels as unknown[]).map((x) => String(x ?? '')) : undefined;
       const parcel = String(j.parcel ?? '');
-      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys }, j.proof) : undefined;
-      out.push({ parcel, keys, labels, proof });
+      const role: RegistrationRole | undefined = j.role === 'lienholder' ? 'lienholder' : undefined;
+      const interest = role ? String(j.interest ?? '') : undefined;
+      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys, role, interest }, j.proof) : undefined;
+      const reg: Registration = { parcel, keys, labels, proof, role, interest };
+      if (j.transfer?.documentId && Array.isArray(j.transfer.from)) {
+        const from = await Promise.all((j.transfer.from as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
+        reg.transfer = { documentId: String(j.transfer.documentId), from };
+        // The deed itself (text and signatures) is embedded in the same PDF.
+        const draft = await draftFromPdf(bytes);
+        if (draft?.signatures?.length) {
+          reg.transfer.deed = await assembleSigned(
+            canonicalText(draft.title ? `${draft.title}\n\n${draft.text}` : draft.text),
+            draft.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: new Date(x.signedAt), bytes: fromBase64(x.sig) })),
+          );
+        }
+      }
+      out.push(reg);
     } catch {
       /* skip damaged entries */
     }

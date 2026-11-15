@@ -100,6 +100,15 @@ describe('PDF generation', () => {
     expect((await PDFDocument.load(pdf)).getPageCount()).toBe(2);
   });
 
+  it('builds a lien holder registration, also as a replacement', async () => {
+    for (const replacement of [false, true]) {
+      const pdf = await registrationPdf({ ...regInfo(replacement), role: 'lienholder', interest: 'Mechanic lien, recording no. 2026-0123456' });
+      // The extra lien row may move the signer section to its own page; page 1 itself never overflows.
+      expect((await PDFDocument.load(pdf)).getPageCount()).toBeLessThanOrEqual(3);
+      if (replacement) writeFileSync('/tmp/opr-lien-replacement.pdf', pdf);
+    }
+  });
+
   it('builds a signature page and a combined print copy', async () => {
     const page = await signaturePagePdf(sigInfo());
     expect((await PDFDocument.load(page)).getPageCount()).toBe(1);
