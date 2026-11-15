@@ -5,7 +5,7 @@
 // that serves it, relays its signing rooms and counts its use. Each copy can make
 // the next county's copy.
 import { zipSync, strToU8 } from 'fflate';
-import { BRAND } from './brand';
+import { BRAND, MASTER_URL } from './brand';
 import { safeText } from './text';
 
 export interface CountyConfig {
@@ -74,7 +74,12 @@ export function countyHtml(pristine: string, cfg: CountyConfig, seal: { type: st
   }
   // 3. The security policy: connections to the county's own address only (or none).
   const host = cfg.relayUrl ? new URL(cfg.relayUrl).host : '';
-  html = html.replace(/connect-src [^;"]*/, `connect-src 'self'${host ? ` https://${host} wss://${host}` : ''} https://cloudflareinsights.com`);
+  // Its own relay (if any), the master site (update check), and the analytics endpoint.
+  const master = new URL(MASTER_URL).host;
+  html = html.replace(
+    /connect-src [^;"]*/,
+    `connect-src 'self'${host ? ` https://${host} wss://${host}` : ''}${host !== master ? ` https://${master}` : ''} https://cloudflareinsights.com`,
+  );
   // 4. The page title.
   html = html.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(cfg.name)}</title>`);
   return html;

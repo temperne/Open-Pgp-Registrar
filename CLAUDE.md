@@ -28,8 +28,15 @@ gives counter staff a way to check a filing.
   read once at start-up (`INVITED_ROOM`): tab changes rewrite the "#". Messages are AES-GCM encrypted in the tab with a 32-byte key that
   is only in the link after `#`; the relay sees ciphertext and a hashed room name, and
   stores nothing. Participants prove their keys by signing a challenge.
-- The production build's Content-Security-Policy allows `connect-src` to `'self'` and
-  the relay host in `BRAND.relayUrl` **only**. Do not loosen it further.
+- The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
+  relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check) and
+  the analytics endpoint **only**. Do not loosen it further.
+- **Update check** (`checkForUpdate`): never on load. Only after the person turns on Sign
+  together or allows analytics, and only when the page isn't on `MASTER_URL`: it reads
+  the first few KB of `MASTER_URL/?check=1` for the comment the build puts near the top
+  of `index.html` (`<!-- S.T.O.P. stop-version=v... built=... -->`), and if it is newer,
+  offers `settingsLinkFor(MASTER_URL)` (the same settings as link parameters). The Worker
+  answers `?check` with CORS and counts it as `update-check`.
 - **Analytics:** (1) server-side in the Worker (Workers Analytics Engine): page loads,
   downloads and rooms by country; (2) Cloudflare Web Analytics in the page **only if the
   visitor allows it** (`#analytics-ask`, asked on every visit on https, never in a saved
@@ -353,6 +360,10 @@ Every build that is released, or pushed for a pull request, must be proven:
    - a signed release: the statement names the publisher and carries the file's and the
      zip's SHA-256; `gpg --verify` passes; the program's check with the file and the
      statement is GOOD, and a changed file DOES NOT VERIFY
+   - four signers in one room (two signing at the same moment; gpg verifies all four), a
+     registration signed together in a room, and a file signed together in a room
+   - the update check: nothing until Sign together is turned on, then one request to the
+     master site; a newer version is offered with the same settings, an older one isn't
    - two owners signing together in a signing room through a test relay, with the app
      served at the program's exact address (and a saved copy refused): off until a
      key is unlocked and it is turned on, the link asks first, peers proven by their

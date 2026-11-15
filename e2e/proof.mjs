@@ -13,7 +13,8 @@
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -639,6 +640,221 @@ try {
       localBlocked && link.startsWith(`${OFFICIAL}#room=`) && offFirst && agreedNotOn && invited && !leaked && /GOOD/.test(c.verdict),
       `unavailable in a saved copy; on ${OFFICIAL} off until the terms of service and waiver are accepted and it is turned on, and only with an unlocked key; the link asks before joining; peers proven by their keys; ${seen.length} relay messages, all encrypted; the result checks ${c.verdict}`,
       [roomDoc],
+    );
+  }
+
+  // ---- Signing rooms with more people, registrations and files (12b-12d), through a test relay ----
+  const OFFICIAL_URL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+  const roomSeen = [];
+  const roomSockets = new Map();
+  const distHtml = readFileSync(DIST);
+  async function roomTab() {
+    const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('dialog', (d) => d.accept());
+    await page.route(`${OFFICIAL_URL}**`, (r) => r.fulfill({ body: distHtml, contentType: 'text/html' }));
+    await page.routeWebSocket(/\/relay\//, (ws) => {
+      const id = new URL(ws.url()).pathname.split('/').pop();
+      const set = roomSockets.get(id) ?? new Set();
+      roomSockets.set(id, set);
+      for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+      set.add(ws);
+      ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+      ws.onMessage((m) => {
+        roomSeen.push(String(m));
+        for (const other of set) if (other !== ws) other.send(m);
+      });
+      ws.onClose(() => set.delete(ws));
+    });
+    return page;
+  }
+  /** Opens one tab per key, all in one room, each seeing the others proven by their keys. */
+  async function openRoom(ids, prepare) {
+    const tabs = [];
+    let link = '';
+    for (const [i, id] of ids.entries()) {
+      const p = await roomTab();
+      await p.goto(i ? link : OFFICIAL_URL);
+      await loadKey(p, keys[id].priv);
+      if (prepare) await prepare(p, i);
+      await p.click('#tab-sign');
+      await p.check('#room-agree');
+      await p.check('#room-enable');
+      if (i === 0) {
+        await p.click('#room-start');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+        link = await p.inputValue('#room-link');
+      } else {
+        await p.click('#room-join');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+      }
+      tabs.push(p);
+    }
+    for (const p of tabs) {
+      await p.waitForFunction((n) => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length >= n, ids.length - 1, { timeout: 30000 });
+    }
+    const peerCounts = await Promise.all(tabs.map((p) => p.evaluate(() => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length)));
+    return { tabs, peerCounts };
+  }
+  const status = (p, id, re) => p.waitForFunction(([id, re]) => new RegExp(re).test(document.getElementById(id).textContent), [id, re], { timeout: 60000 });
+
+  // ---- 12b. Four signers, each in their own tab; two sign at the same moment ----
+  {
+    const ids = ['ann', 'bob-carol', 'dan-eve', 'acme'];
+    const { tabs, peerCounts } = await openRoom(ids);
+    const [a, b, c, d] = tabs;
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones, Carol Jones, Dan Lee, Eve Lee and Acme Holdings LLC');
+    await a.fill('#f-terms', 'A four-key agreement for the bank.');
+    await a.fill('#f-parcels', '333-44-5555');
+    await a.click('#text-sign-btn');
+    for (const p of [b, c, d]) await status(p, 'tr-status', '^1 signed');
+    await b.click('#text-sign-btn');
+    for (const p of [c, d]) await status(p, 'tr-status', '^2 signed');
+    // The third and fourth sign at the same moment: every tab must still end with all four.
+    await Promise.all([c.click('#text-sign-btn'), d.click('#text-sign-btn')]);
+    for (const p of tabs) await status(p, 'tr-status', '^4 signed');
+    await a.click('summary:has-text("For GnuPG users: signed text")');
+    const txt = await save(a, '#dl-text-txt', '12b-four-signers.txt');
+    const sig = await save(a, '#dl-text-sig', '12b-four-signers.txt.sig');
+    const roomDoc = await save(b, '#dl-instrument', '12b-four-signers-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    // Stock GnuPG: each of the four signatures verifies.
+    // A short home directory: gpg's agent socket path has a length limit.
+    const home = mkdtempSync(join(tmpdir(), 'stop-gpg-'));
+    for (const id of ids) {
+      const out = join(WORK, `card-${id}`);
+      mkdirSync(out);
+      execFileSync('pdfdetach', ['-saveall', '-o', out, keys[id].card]);
+      for (const f of readdirSync(out)) if (f.endsWith('.asc')) execFileSync('gpg', ['--homedir', home, '--batch', '--import', join(out, f)], { stdio: 'ignore' });
+    }
+    let out = '';
+    try {
+      out = execFileSync('gpg', ['--homedir', home, '--batch', '--status-fd', '1', '--verify', sig, txt], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+    } catch (e) {
+      out = String(e.stdout ?? '');
+    }
+    const good = (out.match(/^\[GNUPG:\] GOODSIG/gm) ?? []).length;
+    check(
+      '12b. Sign together with four signers',
+      peerCounts.every((n) => n === 3) && good === 4,
+      `four tabs (an individual, two groups, a company position) in one room, each seeing the other three proven by their keys; two signed at the same moment and every tab still ended with all 4 signatures; gpg --verify: ${good} good signatures`,
+      [roomDoc, txt, sig],
+    );
+  }
+
+  // ---- 12c. A registration signed together in a room ----
+  {
+    const { tabs } = await openRoom(['ann', 'bob-carol']);
+    const [a, b] = tabs;
+    await a.click('#tab-register');
+    await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#reg-parcels', '444-55-6666');
+    await a.setInputFiles('#co-file', keys['bob-carol'].card);
+    await a.waitForFunction(() => /Added/.test(document.getElementById('co-status').textContent), null, { timeout: 60000 });
+    await a.click('#reg-btn');
+    await status(b, 'reg-status', 'Not complete: 1 of 2');
+    await b.click('#tab-register');
+    const owner = await b.inputValue('#reg-owner');
+    const cardMoved = await b.evaluate(() => !!document.querySelector('[data-room-slot="register"] #room-card'));
+    await b.click('#reg-btn');
+    for (const p of tabs) await status(p, 'reg-status', 'Complete');
+    const reg = await save(a, '#dl-reg', '12c-registration-signed-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    const r = await newPage();
+    await r.click('#tab-verify');
+    await r.setInputFiles('#v-reg-file', reg);
+    await r.waitForFunction(() => /Proof of key possession|error|not a registration/i.test(document.getElementById('v-reg-info').textContent), null, { timeout: 240000 });
+    const info = flat(await r.textContent('#v-reg-info'));
+    await r.close();
+    check(
+      '12c. A registration signed together in a room',
+      owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
+      `the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
+      [reg],
+    );
+  }
+
+  // ---- 12d. A file signed together in a room ----
+  {
+    const file = join(WORK, 'lease-addendum.txt');
+    writeFileSync(file, 'Lease addendum. The tenant may keep one small dog. Signed by the owners of record.\n');
+    const { tabs } = await openRoom(['ann', 'bob-carol'], async (p, i) => {
+      if (i === 0) await loadSignRegistration(p, R0);
+    });
+    const [a, b] = tabs;
+    await a.click('#tab-sign');
+    await a.setInputFiles('#src-file', file);
+    await a.waitForSelector('#src-clear:not([hidden])', { timeout: 60000 });
+    await a.check('#parcel-ready');
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', 'Not complete: 1 of 2');
+    const gotFile = flat(await b.textContent('#src-info'));
+    await b.click('#text-sign-btn');
+    for (const p of tabs) await status(p, 'tr-status', 'Complete');
+    const pkgPdf = await save(b, '#dl-instrument', '12d-file-signed-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    const c = await checkDocument(R0, pkgPdf, null);
+    check(
+      '12d. A file signed together in a room',
+      /lease-addendum/.test(gotFile) && /GOOD/.test(c.verdict),
+      `the second owner's tab received the file itself ("${gotFile.slice(0, 60)}") and the first signature, added theirs, and the package checks ${c.verdict}`,
+      [pkgPdf],
+    );
+    const leaked = roomSeen.some((m) => /LEASE ADDENDUM|small dog|OWNERSHIP|444-55-6666|BEGIN PGP/i.test(m));
+    check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
+  }
+
+  // ---- 15. Update check: only once the person connects; offers the newest version with the same settings ----
+  {
+    const COPY = 'https://harris-county-stop.example.workers.dev/';
+    const MASTER = 'https://pimastopinitiative.jasonajensen.workers.dev';
+    const dist = readFileSync(DIST, 'utf8');
+    const end = dist.lastIndexOf('</head>');
+    const cfg = { name: 'Harris County S.T.O.P. Initiative', county: 'Harris County', state: 'Texas', recorderOffice: 'Harris County Clerk', projectUrl: COPY, relayUrl: COPY.slice(0, -1) };
+    const copyHtml = `${dist.slice(0, end)}<script type="application/json" id="stop-config">${JSON.stringify(cfg)}</script>${dist.slice(end)}`;
+    const visit = async (built) => {
+      const pg = await browser.newPage({ acceptDownloads: true });
+      pg.on('pageerror', (e) => errors.push(e.message));
+      const toMaster = [];
+      pg.on('request', (r) => {
+        if (r.url().startsWith(MASTER)) toMaster.push(r.url());
+      });
+      await pg.route(`${COPY}**`, (r) => r.fulfill({ body: copyHtml, contentType: 'text/html' }));
+      await pg.route(
+        (u) => u.href.startsWith(`${MASTER}/?check`),
+        (r) => r.fulfill({ body: `<!doctype html>\n<html lang="en">\n<head>\n    <!-- S.T.O.P. stop-version=v0.1.99999999 built=${built} -->\n`, contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' } }),
+      );
+      await pg.goto(COPY);
+      await loadKey(pg, keys.ivy.priv);
+      await pg.click('#tab-sign');
+      const masterLink = (await pg.getAttribute('#room-master-link', 'href')) ?? '';
+      const before = toMaster.length;
+      await pg.check('#room-agree');
+      await pg.check('#room-enable');
+      await pg.waitForTimeout(1500);
+      const offered = await pg.isVisible('#update-offer');
+      const link = offered ? ((await pg.getAttribute('#update-link', 'href')) ?? '') : '';
+      await pg.close();
+      return { before, after: toMaster.length, offered, link, masterLink };
+    };
+    const newer = await visit('2099-01-01T00:00:00Z');
+    const older = await visit('2000-01-01T00:00:00Z');
+    const versionLine = dist.split('\n').findIndex((l) => /stop-version=v/.test(l)) + 1;
+    check(
+      '15. Update check',
+      versionLine > 0 &&
+        versionLine <= 5 &&
+        newer.before === 0 &&
+        newer.after === 1 &&
+        newer.offered &&
+        newer.link.startsWith(`${MASTER}/?`) &&
+        /county=Harris\+County/.test(newer.link) &&
+        /recorder=Harris\+County\+Clerk/.test(newer.link) &&
+        !older.offered &&
+        newer.masterLink.startsWith(`${MASTER}/?`) &&
+        /county=Harris\+County/.test(newer.masterLink),
+      `the version is on line ${versionLine} of index.html; a county copy asks nothing until Sign together is turned on, then makes one request to the master site; a newer version is offered with the same settings (${newer.link.slice(0, 90)}...); an older one is not; the copy always offers signing together on the master site with its settings`,
     );
   }
 

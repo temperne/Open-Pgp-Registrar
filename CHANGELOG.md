@@ -92,6 +92,21 @@ last part is the date the version was tagged.
   web address is its program address; a checkbox runs Sign together there with its own
   Worker. Otherwise, or if its relay can't be reached, Sign together falls back to the
   master site (https://pimastopinitiative.jasonajensen.workers.dev), same room.
+- **Sign together for registrations and files.** A signing room now carries a
+  registration in progress (every key holder signs it from their own tab; the room card
+  follows them to the Register tab) and a signed file, the original included (up to
+  2.8 MB; larger files go by PDF). Tested with four signers in four tabs.
+- **Fixed: two people signing at the same moment.** A third tab could keep only one of the
+  two new signatures. Room messages are now handled one at a time, and a tab that holds
+  signatures the sender lacked shares them back, so every tab ends with all of them.
+- **Sign together on the original site, always.** A county copy with its own rooms always
+  offers signing together on the master site instead, with the copy's settings (and the
+  same room). A saved copy's "open the program's site" link carries its settings too.
+- **Update check, only when connecting.** `index.html` carries its version in a comment near
+  the top. When someone turns on Sign together (or allows analytics) on a page not loaded
+  from the master site, it reads the first few KB of the master site's `index.html`; if
+  that is newer, it offers a link to the newest version with the same settings. Nothing is
+  checked otherwise.
 - **Signed release statement for a county copy (optional).** The builder can name who is
   making the copy (person or office, title or authority, where the statement will be
   posted) and sign the program file with the maker's key. It then offers a **release

@@ -20,7 +20,7 @@ interface Env {
   STATS?: AnalyticsEngineDataset;
 }
 
-type Event = 'page' | 'download' | 'room-open' | 'room-join';
+type Event = 'page' | 'download' | 'room-open' | 'room-join' | 'update-check';
 
 function count(env: Env, event: Event, request: Request) {
   try {
@@ -45,6 +45,15 @@ export default {
       // The room reports whether this tab opened it or joined it.
       count(env, res.headers.get('X-Room') === 'open' ? 'room-open' : 'room-join', request);
       return res;
+    }
+    if (request.method === 'GET' && url.searchParams.has('check')) {
+      // Another copy (a saved file or a county's site) reading the version comment at the top.
+      count(env, 'update-check', request);
+      const res = await env.ASSETS.fetch(request);
+      const out = new Response(res.body, res);
+      out.headers.set('Access-Control-Allow-Origin', '*');
+      out.headers.set('Cache-Control', 'no-store');
+      return out;
     }
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname.endsWith('.html'))) {
       count(env, url.searchParams.has('dl') ? 'download' : 'page', request);

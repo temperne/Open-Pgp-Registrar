@@ -179,9 +179,10 @@ computer), unlock their key, and choose **Prove my buyer key**.
 
 ![A sale deed naming the buyers' keys](docs/images/10-sale-buyer-keys.png)
 
-**Signing together, live.** Owners (and buyers) can sign the same document at the same
-time, each on their own computer, on the program's own site (a saved copy can't): unlock
-your key, turn on **Sign together** on the Sign tab, start a room and send the link. Everyone appears with the key they proved they
+**Signing together, live.** Owners (and buyers) can sign the same registration, document
+or file at the same time, each on their own computer, on the program's own site (a saved
+copy can't): unlock your key, turn on **Sign together** on the Register or Sign tab, start
+a room and send the link. Any number of people can join (up to 16 tabs; tested with four). Everyone appears with the key they proved they
 hold, and every signature shows up in every tab. The document is encrypted in each tab
 with a key that is only in the link, so the program's relay can't read it, and nothing is
 stored. It's off until you turn it on. The relay is the site's own Cloudflare Worker
@@ -189,6 +190,12 @@ stored. It's off until you turn it on. The relay is the site's own Cloudflare Wo
 country. On the web the page also asks each visitor whether it may count the visit with
 Cloudflare Web Analytics (no cookies); it loads only if they allow it. Set your token in
 `MASTER_ANALYTICS_TOKEN` (`src/brand.ts`).
+
+**Updates.** `index.html` carries its version in a comment near the top. A copy that isn't
+on the master site (a saved file, or a county's own site) checks the master site's
+`index.html` only when someone turns on Sign together or allows analytics, reading just
+the first few KB. If the master is newer, it offers a link to the newest version with the
+same settings. Nothing to upload: deploying the new `dist/index.html` is the update.
 
 **Lien holders** register the same way, choosing **Registering as: Lien holder** and
 naming the lien. A release of that lien (the **Release of lien** template) is then

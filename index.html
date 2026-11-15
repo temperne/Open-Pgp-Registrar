@@ -43,6 +43,13 @@
       </div>
       <div class="wrap">
         <p id="proposed-note" class="callout warn" data-brand="proposedNotice" hidden></p>
+        <div id="update-offer" class="callout" role="status" hidden>
+          <span id="update-text"></span>
+          <div class="actions">
+            <a id="update-link" class="button primary" rel="noopener">Open the newest version with these settings</a>
+            <button type="button" id="update-dismiss">Not now</button>
+          </div>
+        </div>
         <div id="analytics-ask" class="callout" role="dialog" aria-label="Usage analytics" hidden>
           May this site count your visit with <strong>Cloudflare Web Analytics</strong>? It uses no cookies and doesn't
           follow you across sites; it never sees your keys or documents. Nothing is loaded unless you allow it, and this
@@ -628,6 +635,7 @@
               <!-- Sign together is off until the person turns it on: nothing connects before that. -->
               <div id="room-consent" class="callout">
                 <p id="room-where"></p>
+                <p id="room-master" class="hint" hidden></p>
                 <p id="room-need-key" class="hint">First load and unlock your private key (step 1, Your key): everyone in a room is shown with the key they proved they hold.</p>
                 <details id="room-terms">
                   <summary>Terms of service and waiver of liability for Sign together</summary>

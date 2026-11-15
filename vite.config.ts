@@ -6,6 +6,9 @@ import { createHash } from 'node:crypto';
 
 // Version, build date and changelog are built into the page (About this software).
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+const builtAt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+// Near the top of index.html, so another copy can read the version from the first few KB.
+const versionComment = `<!-- S.T.O.P. stop-version=v${pkg.version} built=${builtAt} -->`;
 const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8');
 // The Worker's source, built in so the page can package it for another county.
 const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.url), 'utf8');
@@ -37,7 +40,7 @@ function offlineCsp(): Plugin {
     name: 'offline-csp',
     apply: 'build',
     transformIndexHtml(html) {
-      return html.replace('<head>', `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`);
+      return html.replace('<head>', `<head>\n    ${versionComment}\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`);
     },
   };
 }
@@ -63,7 +66,8 @@ export default defineConfig({
   plugins: [offlineCsp(), viteSingleFile(), fileHash()],
   define: {
     __APP_VERSION__: JSON.stringify(`v${pkg.version}`),
-    __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __BUILD_DATE__: JSON.stringify(builtAt.slice(0, 10)),
+    __BUILD_TIME__: JSON.stringify(builtAt),
     __CHANGELOG__: JSON.stringify(changelog),
     __WORKER_SOURCE__: JSON.stringify(workerSource),
   },

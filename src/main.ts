@@ -226,6 +226,10 @@ function need(value: string, message: string) {
 const TABS = ['about', 'key', 'register', 'sign', 'verify'] as const;
 type Tab = (typeof TABS)[number];
 
+function currentTab(): Tab {
+  return TABS.find((t) => !$(`panel-${t}`).hidden) ?? 'about';
+}
+
 function showTab(name: Tab, focus = false) {
   for (const t of TABS) {
     const on = t === name;
@@ -1725,7 +1729,7 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
   if (status === 'closed' && detail && room && officialOrigin() !== MASTER_URL) {
     el.append(
       ' Continue this room on the main site: ',
-      Object.assign(document.createElement('a'), { href: `${MASTER_URL}/#room=${room.secret}`, textContent: `${MASTER_URL.replace(/^https:\/\//, '')} (same room)`, target: '_blank', rel: 'noopener' }),
+      Object.assign(document.createElement('a'), { href: settingsLinkFor(MASTER_URL, `#room=${room.secret}`), textContent: `${MASTER_URL.replace(/^https:\/\//, '')} (same room)`, target: '_blank', rel: 'noopener' }),
       '. Send that link to the others too.',
     );
   }
@@ -1734,6 +1738,7 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
   $('room-share').hidden = !room || status === 'closed';
   if (status === 'closed') peers.clear();
   renderPeers();
+  showRoomConsent();
 }
 
 /** Sends who we are (proven by our key) and the document so far. */
@@ -1881,13 +1886,30 @@ function showRoomConsent() {
   }
   const msg = $('room-where');
   msg.innerHTML = '';
+  // A county copy with its own rooms: the original program's site can always coordinate instead.
+  const masterNote = $('room-master');
+  masterNote.innerHTML = '';
+  masterNote.hidden = official === MASTER_URL;
+  if (official !== MASTER_URL) {
+    masterNote.append(
+      'Or sign together on the original program\u2019s site, with this page\u2019s settings: ',
+      Object.assign(document.createElement('a'), {
+        id: 'room-master-link',
+        href: settingsLinkFor(MASTER_URL, room ? `#room=${room.secret}` : '#sign'),
+        textContent: MASTER_URL.replace(/^https:\/\//, ''),
+        target: '_blank',
+        rel: 'noopener',
+      }),
+      room ? ' (the same room: send the others that link too).' : '.',
+    );
+  }
   if (here) {
     msg.textContent = `This page was loaded from ${official}, the program\u2019s own address. Sign together connects this tab to that same address, and only while you are in a room.`;
   } else {
     // Only the program's own address can sign together: a copy elsewhere can't be trusted to.
     msg.append(
       `Sign together works only on the program\u2019s own address. This page was loaded from ${where}. To sign together, open `,
-      Object.assign(document.createElement('a'), { href: `${official}/${/^#room=/.test(location.hash) ? location.hash : '#sign'}`, textContent: official, rel: 'noopener' }),
+      Object.assign(document.createElement('a'), { href: settingsLinkFor(official, INVITED_ROOM ? `#room=${INVITED_ROOM}` : '#sign'), textContent: official, rel: 'noopener' }),
       ' and use it there.',
     );
   }
@@ -1913,6 +1935,8 @@ input('room-agree').addEventListener('change', () => {
 input('room-enable').addEventListener('change', () => {
   // Turning it off leaves any room.
   if (!input('room-enable').checked && room) $('room-leave').click();
+  // The person chose to connect: a good moment to see if the program's site has a newer version.
+  if (input('room-enable').checked) void checkForUpdate();
   showRoomConsent();
 });
 
@@ -3107,6 +3131,55 @@ action('analytics-yes', () => {
   s.src = 'https://static.cloudflareinsights.com/beacon.min.js';
   s.setAttribute('data-cf-beacon', JSON.stringify({ token: BRAND.analyticsToken, spa: false }));
   document.head.append(s);
+  void checkForUpdate();
+});
+
+// ---- Update check: only after the person turns on something that connects (Sign together, analytics) ----
+/** A link to the program at `base` carrying this page's settings (county, office, names, logo). */
+function settingsLinkFor(base: string, hash = '') {
+  const q = new URLSearchParams();
+  const b = BRAND as unknown as Record<string, string>;
+  for (const [param, key] of LINK_KEYS) {
+    const v = String(b[key] ?? '').trim();
+    if (v && !(key === 'projectUrl' && v.replace(/\/$/, '') === MASTER_URL)) q.set(param, v);
+  }
+  const seal = $('brand-seal').getAttribute('src') ?? '';
+  const st = sealForState();
+  // The state seals are built in everywhere; any other logo travels in the link (if it isn't huge).
+  if (/^data:image\/(png|jpe?g);base64,/.test(seal) && seal.length < 200_000 && !(st && seal === `data:image/png;base64,${st.png}`)) q.set('seal', seal);
+  return `${base.replace(/\/$/, '')}/?${q.toString()}${hash}`;
+}
+
+const VERSION_RE = /stop-version=(v[\w.-]+) built=(\d{4}-\d\d-\d\dT[\d:]+Z)/;
+let updateChecked = false;
+/** Reads the version comment at the top of the master site's index.html (the first few KB only). */
+async function checkForUpdate() {
+  if (updateChecked) return;
+  updateChecked = true;
+  try {
+    if (location.origin === new URL(MASTER_URL).origin) return; // this is the newest
+    const res = await fetch(`${MASTER_URL}/?check=1`, { cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', headers: { Range: 'bytes=0-8191' } });
+    if (!res.ok || !res.body) return;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let head = '';
+    while (head.length < 65536 && !VERSION_RE.test(head)) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      head += dec.decode(value, { stream: true });
+    }
+    void reader.cancel().catch(() => undefined);
+    const m = VERSION_RE.exec(head);
+    if (!m || !(Date.parse(m[2]) > Date.parse(__BUILD_TIME__))) return;
+    $('update-text').textContent = `A newer version of the program (${m[1]}, built ${m[2].slice(0, 10)}) is on ${MASTER_URL.replace(/^https:\/\//, '')}. This copy is ${__APP_VERSION__}, built ${__BUILD_DATE__}.`;
+    ($('update-link') as HTMLAnchorElement).href = settingsLinkFor(MASTER_URL, `#${currentTab()}`);
+    $('update-offer').hidden = false;
+  } catch {
+    /* an update check never gets in the way */
+  }
+}
+action('update-dismiss', () => {
+  $('update-offer').hidden = true;
 });
 action('analytics-no', () => {
   $('analytics-ask').hidden = true;
