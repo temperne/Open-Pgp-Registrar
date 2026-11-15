@@ -478,13 +478,14 @@ try {
       '13. Download this county\u2019s program',
       files.length === 5 &&
         csp.includes('harris-county-stop.example.workers.dev') &&
-        !csp.includes('pimastopinitiative') &&
+        csp.includes('wss://harris-county-stop.example.workers.dev') &&
+        !csp.includes('wss://pimastopinitiative') &&
         copyHeading === 'Harris County S.T.O.P. Initiative' &&
         copyOffice === 'Harris County Clerk' &&
         copySeal === sealNow &&
         /not yet adopted by Harris County/.test(cardText) &&
         /harris-county-stop\.example\.workers\.dev/.test(cardText),
-      `zip: ${files.join(', ')}; the copy opens as "${copyHeading}", office "${copyOffice}", Texas seal; its policy connects only to its own address; its PDFs name Harris County and its address`,
+      `zip: ${files.join(', ')}; the copy opens as "${copyHeading}", office "${copyOffice}", Texas seal; its rooms connect only to its own address (the master site only over https, for the update check); its PDFs name Harris County and its address`,
       [zip, card],
     );
   }
