@@ -19,6 +19,15 @@ All notable changes to this project are recorded here. The format follows
 - The map carries the document ID; a file whose map names a different document
   than its codes fails the check.
 
+### Changed (length)
+- **No length limit on signing.** The 30,000-character limit is gone. Above 30,000
+  characters the Sign tab shows a warning with the number of QR codes and printed
+  pages the signature will need (worked out from the compressed text), and signing
+  needs "Sign it anyway" ticked. A 49,000-character, 133-code document checks in
+  about 6 seconds.
+- Reading codes keeps a safety ceiling (50 million characters, checked while
+  unpacking) so crafted codes can't freeze the browser.
+
 ### Added
 - **Sign a file**: PDF (with text), Word (.docx), OpenDocument (.odt), plain text,
   images (several at once, one page each) and scanned PDFs. The file is recreated as

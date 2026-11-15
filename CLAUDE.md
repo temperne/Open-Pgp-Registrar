@@ -111,7 +111,9 @@ gives counter staff a way to check a filing.
    signature page). The text locks after the first signature. Signatures are standard
    detached OpenPGP signatures, concatenated; codes carry
    `PGPDOC2|FPR1,FPR2|sigs|z|text` (one signer: `PGPDOC1`), split into `PGPQ1` codes of
-   at most 320 characters. The printed instrument has a 2-inch recording margin, the
+   at most 320 characters. There is no length limit: above `LONG_TEXT` (30,000
+   characters) the Sign tab warns with the code and page count (`estimateCodes`) and
+   needs "Sign it anyway"; reading stops at `MAX_DECODED_BYTES` while unpacking. The printed instrument has a 2-inch recording margin, the
    title and text, **one complete signature block per signer (signature line with
    that signer's notary acknowledgment directly below; still required)**, then a signature page with every signer, a COMPLETE / NOT COMPLETE
    banner against the registration, the document ID barcode and the codes. The `.txt`
