@@ -1678,12 +1678,17 @@ input('v-codes-file').addEventListener('change', async () => {
     const { readCodesFromFile } = await import('./qrscan');
     const results: { name: string; signed?: SignedText; legacy?: string[]; problem?: string }[] = [];
     for (const [i, f] of files.entries()) {
+      // Document IDs printed in the pages' code maps: must match the text the codes carry.
+      const mapIds = new Set<string>();
       const codes = await readCodesFromFile(
         f,
         (m) => (el.textContent = files.length > 1 ? `File ${i + 1} of ${files.length}: ${m}` : m),
         (c) => {
           const p = scanProgress(c.join('\n'));
           return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
+        },
+        (map) => {
+          if (map.documentId) mapIds.add(map.documentId);
         },
       );
       const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
@@ -1696,7 +1701,13 @@ input('v-codes-file').addEventListener('change', async () => {
         continue;
       }
       try {
-        results.push({ name: f.name, signed: await signedFromCodes(sigCodes.join('\n')) });
+        const signed = await signedFromCodes(sigCodes.join('\n'));
+        const other = [...mapIds].filter((id) => id !== signed.documentId);
+        if (other.length) {
+          results.push({ name: f.name, problem: `it holds a page from a different document (document ID ${other[0]} in a code map, but the codes carry document ${signed.documentId})` });
+          continue;
+        }
+        results.push({ name: f.name, signed });
       } catch (err) {
         results.push({ name: f.name, problem: (err as Error).message });
       }
@@ -1711,9 +1722,10 @@ input('v-codes-file').addEventListener('change', async () => {
     const readable = results.filter((r) => r.signed);
     if (!readable.length) {
       el.className = 'hint error';
+      const unreadable = results.some((r) => !r.problem || /no (signature|QR) codes|missing/i.test(r.problem));
       el.textContent =
-        results.map((r) => `${r.name}: ${r.problem ?? 'unreadable'}`).join('; ') +
-        '. Make sure the signature page is included, sharp and well lit.';
+        results.map((r) => `${r.name}: ${(r.problem ?? 'unreadable').replace(/\.+$/, '')}`).join('; ') +
+        (unreadable ? '. Make sure the signature page is included, sharp and well lit.' : '.');
       return;
     }
     // The reference text: the one most files carry.

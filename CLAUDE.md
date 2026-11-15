@@ -175,9 +175,29 @@ gives counter staff a way to check a filing.
   only once the county has adopted the program and approved use of its seal.
 - The 2-inch recording margin on deed page 1 stays free of branding.
 
+## Code maps (PDF417)
+
+Every page the tool prints with QR codes also carries a **code map**: a PDF417
+symbol (a different symbology, so the reader can look for it alone) in the left
+margin, running up the page from just above the footer (`finish()` in `pdf.ts`
+draws it before every save, from the positions `drawQr` recorded). Its text,
+`PGPMAP1|<columns>|<document ID or ->|<QR size>|u,v[,size];...` (`codes.ts`),
+lists each QR code's corner relative to the map, in map modules, so the reader
+works out the scan's scale, position and tilt from the map and cuts each code out
+directly. The document ID is the one in the page's body barcode (continuation code
+pages inherit it); the check fails a file whose maps name a different document
+than its codes. Footer stamps (Code 128) don't count: the tool never reads them.
+A page with no map, or a map whose codes don't all decode, still gets the full
+search. Keep the map in the left margin, clear of the content (x >= 54).
+
 ## Reading codes from files
 
-`src/qrscan.ts` reads QR codes from the signed PDF (pdf.js, run in-page by
+`src/qrscan.ts` first looks for each page's code map (ZXing, `@zxing/library`):
+the left margin strip turned upright (or the right one, for an upside-down scan),
+then decodes each listed code from its predicted box (ZXing, then jsQR, trying a
+few framings). PDFs are read in two passes: the quick map pass on every page
+(last page first, stopping once complete), then the full search only on pages that
+need it. The full search: `src/qrscan.ts` reads QR codes from the signed PDF (pdf.js, run in-page by
 importing its worker module, so the CSP is unchanged), a scanned PDF, or a photo.
 jsQR reads one code at a time, so the reader paints out each code it finds,
 searches size-matched tiles, skips white areas, ignores empty or bogus detections
@@ -190,7 +210,7 @@ at fractional pixel sizes, which real scans and photos produce.
 - `src/crypto.ts`: openpgp.js wrappers: generate, read, unlock, sign, payload, verify
 - `src/pdf.ts`: pdf-lib layouts for the form, verification page, print copy and backup
 - `src/codes.ts`: QR (`qrcode`) and Code 128 (`jsbarcode` encoder) as module data,
-  drawn as vector shapes
+  drawn as vector shapes; the PDF417 code map (`bwip-js`) and its text format
 - `src/text.ts`: printable-text mapping and the canonical form that gets signed
 - `src/templates.ts`: document templates
 - `src/extract.ts`: reading files to sign (PDF, Word, OpenDocument, text, images)

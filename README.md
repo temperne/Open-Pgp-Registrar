@@ -85,6 +85,9 @@ layer on equal footing with them.
   it was signed by the owners but is **for third parties only, not for recording**.
   To file one, tick **Ready this document for parcel filing** before signing: a signed
   statement ties it to the parcel. The signed text is shown to compare with the paper.
+- **Fast to check, even for long documents**: each page of codes carries a small
+  PDF417 "code map" saying where every QR code is, so the reader cuts them out
+  directly instead of searching the page (a 25-code scan checks in about 1.5 s).
 - A printable **verification certificate** for the checker to sign and append to the
   filing.
 - A **checked copy**: the checked file (PDF pages or images), every page stamped with

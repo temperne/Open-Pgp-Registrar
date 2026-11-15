@@ -6,6 +6,19 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Performance
+- **Code maps: checking a document is many times faster.** Every page with QR codes
+  now also carries a small PDF417 barcode in the left margin listing where each QR
+  code is, measured from the map itself, so scaling, shifting and tilt in a scan
+  don't matter. The reader finds the map, cuts out each code and decodes it
+  directly instead of searching the whole page; pages without a map still get the
+  full search, so older documents keep working. On the same 7-page, 25-code
+  documents in the browser: a typed document's PDF 6.3 s to 1.5 s, its scan 7.1 s
+  to 0.9 s, and a signed file package's scan 28.6 s to 1.4 s. Decoding alone for a
+  10-page, 40-code document: 10.3 s to 0.54 s (scan: 11.3 s to 0.71 s).
+- The map carries the document ID; a file whose map names a different document
+  than its codes fails the check.
+
 ### Added
 - **Sign a file**: PDF (with text), Word (.docx), OpenDocument (.odt), plain text,
   images (several at once, one page each) and scanned PDFs. The file is recreated as
