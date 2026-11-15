@@ -1461,7 +1461,9 @@ export interface CertificateInfo {
   /** One entry per registered owner (and any unregistered signer). */
   owners: { userID: string; fingerprint: string; result: string; signedAt?: Date }[];
   /** Each scanned copy of the filing, and whether it carries the same signed text. */
-  files?: { name: string; documentId: string; signatures: number; same: boolean }[];
+  files?: { name: string; documentId: string; signatures: number; same: boolean; sha256?: string }[];
+  /** In a combined filing: what each page range of the file is (this certificate included). */
+  contents?: { label: string; first: number; last: number }[];
   documentId: string;
   checkedAt: Date;
   /** The exact text the owner signed (canonical form). */
@@ -1522,8 +1524,19 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
     { label: 'Document ID', value: info.documentId, mono: true },
     ...(info.files ?? []).map((f, i) => ({
       label: `Scanned copy ${i + 1}`,
-      value: `${f.name}\n${f.documentId ? `Document ID ${f.documentId}, ` : ''}${f.signatures} signature${f.signatures === 1 ? '' : 's'}: ${f.same ? 'same text' : 'DIFFERENT TEXT'}`,
+      value:
+        `${f.name}\n${f.documentId ? `Document ID ${f.documentId}, ` : ''}${f.signatures} signature${f.signatures === 1 ? '' : 's'}: ${f.same ? 'same text' : 'DIFFERENT TEXT'}` +
+        (f.sha256 ? `\nSHA-256:\n${(f.sha256.match(/.{1,16}/g) ?? []).join('\n')}` : ''),
+      mono: false,
     })),
+    ...(info.contents?.length
+      ? [
+          {
+            label: 'Contents of this filing',
+            value: info.contents.map((c) => `Pages ${c.first === c.last ? c.first : `${c.first}-${c.last}`}: ${c.label}`).join('\n'),
+          },
+        ]
+      : []),
   ];
   rows.push({ label: 'Checked at', value: isoDateTime(info.checkedAt) });
   y = table(page, fonts, rows, tableTop, CONTENT_W - 190, 120);
@@ -2086,6 +2099,8 @@ export async function checkedCopyPdf(info: {
   summary: string;
   documentId?: string;
   checkedAt: Date;
+  /** false: no result stamp (used for an original that can't be reproduced). */
+  stamp?: boolean;
 }): Promise<Uint8Array> {
   const { doc, fonts } = await newDoc('Checked copy');
   const pages: PDFPage[] = [];
@@ -2121,8 +2136,91 @@ export async function checkedCopyPdf(info: {
   const color = info.result === 'good' ? rgb(0.08, 0.42, 0.18) : WARN;
   const date = info.checkedAt.toISOString().slice(0, 10);
   const id = info.documentId || 'NONE';
-  pages.forEach((pg, i) =>
+  if (info.stamp !== false) pages.forEach((pg, i) =>
     stampWith(pg, fonts, `CHECKED ${date}: ${word} (${info.summary})  |  Document ID ${id}  |  Page ${i + 1} of ${pages.length}  |  ${BRAND.name}`, id, color),
   );
   return finish(doc);
+}
+
+// ---------------------------------------------------------------------------
+// Combined filing: each checked document as it was loaded, its checked copy
+// (every page stamped with the result), then the verification certificate, in
+// one PDF. The certificate lists the page ranges and each original's SHA-256,
+// so the parts can't be swapped or dropped without the list no longer matching.
+// ---------------------------------------------------------------------------
+
+/** A checked file exactly as loaded: PDF pages copied untouched, images one page each. */
+async function originalPdf(f: CheckedFile): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  if (f.pdf) {
+    try {
+      const src = await PDFDocument.load(f.pdf, { ignoreEncryption: true });
+      for (const pg of await doc.copyPages(src, src.getPageIndices())) doc.addPage(pg);
+      return doc.save();
+    } catch {
+      /* listed instead, below */
+    }
+  }
+  if (f.image) {
+    const img = f.image.format === 'png' ? await doc.embedPng(f.image.bytes) : await doc.embedJpg(f.image.bytes);
+    const pg = doc.addPage([PAGE_W, PAGE_H]);
+    const scale = Math.min(CONTENT_W / img.width, (PAGE_H - 2 * M) / img.height);
+    pg.drawImage(img, { x: (PAGE_W - img.width * scale) / 2, y: PAGE_H - M - img.height * scale, width: img.width * scale, height: img.height * scale });
+    return doc.save();
+  }
+  // Neither a PDF nor an image: the checked copy's note page stands in for it.
+  return checkedCopyPdf({ files: [f], result: 'incomplete', summary: 'original not reproducible', checkedAt: new Date(), stamp: false });
+}
+
+async function pageCount(bytes: Uint8Array) {
+  return (await PDFDocument.load(bytes, { ignoreEncryption: true })).getPageCount();
+}
+
+export async function combinedFilingPdf(info: {
+  files: CheckedFile[];
+  includeOriginal: boolean;
+  includeChecked: boolean;
+  result: 'good' | 'bad' | 'incomplete';
+  summary: string;
+  documentId?: string;
+  checkedAt: Date;
+  certificate: CertificateInfo;
+}): Promise<Uint8Array> {
+  const parts: { label: string; bytes: Uint8Array }[] = [];
+  for (const f of info.files) {
+    if (info.includeOriginal) parts.push({ label: `original, as filed: ${f.name}`, bytes: await originalPdf(f) });
+    if (info.includeChecked) {
+      parts.push({
+        label: `checked copy (every page stamped with the result): ${f.name}`,
+        bytes: await checkedCopyPdf({ files: [f], result: info.result, summary: info.summary, documentId: info.documentId, checkedAt: info.checkedAt }),
+      });
+    }
+  }
+  const contents: NonNullable<CertificateInfo['contents']> = [];
+  let next = 1;
+  for (const p of parts) {
+    const n = await pageCount(p.bytes);
+    contents.push({ label: p.label, first: next, last: next + n - 1 });
+    next += n;
+  }
+  // The certificate lists itself too; make it twice if listing changes its length.
+  let certPages = 1;
+  let cert: Uint8Array = new Uint8Array();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    cert = await certificatePdf({
+      ...info.certificate,
+      contents: [...contents, { label: 'this verification certificate', first: next, last: next + certPages - 1 }],
+    });
+    const n = await pageCount(cert);
+    if (n === certPages) break;
+    certPages = n;
+  }
+  const out = await PDFDocument.create();
+  out.setTitle(`Filing with verification - ${info.documentId ?? ''}`);
+  out.setProducer(BRAND.name);
+  for (const bytes of [...parts.map((p) => p.bytes), cert]) {
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    for (const pg of await out.copyPages(src, src.getPageIndices())) out.addPage(pg);
+  }
+  return out.save();
 }

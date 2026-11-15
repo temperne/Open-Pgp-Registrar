@@ -664,6 +664,13 @@
               <div><label for="c-agency">Agency</label><input id="c-agency" /></div>
               <div><label for="c-parcels">Parcel number(s)</label><input id="c-parcels" /></div>
             </div>
+            <div id="combine-wrap">
+              <div class="checkline"><label><input type="checkbox" id="c-with-original" /> Include the original document, exactly as loaded</label></div>
+              <div class="checkline"><label><input type="checkbox" id="c-with-checked" /> Include the checked copy, every page stamped with the result</label></div>
+              <p class="hint">With either box ticked you get one PDF, in this order: the original, the checked copy, then this
+                certificate, which lists the page ranges and each original's SHA-256 fingerprint. File it as one document.</p>
+            </div>
+            <p id="combine-none" class="hint" hidden>To include the document itself, load it as a file (above) instead of scanning its codes by hand.</p>
             <button type="button" id="cert-btn" class="primary">Download verification certificate (PDF)</button>
             <p class="error" data-error role="alert"></p>
           </div>

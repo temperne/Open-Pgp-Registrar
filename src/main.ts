@@ -67,6 +67,7 @@ import {
   type DocumentDraft,
   type SignaturePageInfo,
   checkedCopyPdf,
+  combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
 import { BRAND } from './brand';
@@ -1816,7 +1817,7 @@ action(
   async () => {
     const c = lastCheck;
     if (!c) throw new UserError('Check a document first.');
-    const pdf = await certificatePdf({
+    const certificate = {
       result: c.result,
       checks: c.checks,
       verifierName: input('c-name').value,
@@ -1829,8 +1830,28 @@ action(
       checkedAt: new Date(),
       signedText: c.signedText,
       codes: c.codes,
+    };
+    const withOriginal = input('c-with-original').checked && checkedFiles.length > 0;
+    const withChecked = input('c-with-checked').checked && checkedFiles.length > 0;
+    if (!withOriginal && !withChecked) {
+      download(await certificatePdf(certificate), `verification-certificate-${c.documentId.slice(0, 12)}.pdf`, 'application/pdf');
+      return;
+    }
+    const files = await checkedFileEntries();
+    // The certificate's list of scanned copies carries each one's fingerprint.
+    certificate.files = certificate.files.map((f, i) => ({ ...f, sha256: files[i]?.sha256 }));
+    const v = verdictForStamp(lastVerdict ?? { verdict: c.result });
+    const pdf = await combinedFilingPdf({
+      files,
+      includeOriginal: withOriginal,
+      includeChecked: withChecked,
+      result: v.result,
+      summary: v.summary,
+      documentId: c.documentId,
+      checkedAt: certificate.checkedAt,
+      certificate,
     });
-    download(pdf, `verification-certificate-${c.documentId.slice(0, 12)}.pdf`, 'application/pdf');
+    download(pdf, `filing-with-verification-${c.documentId.slice(0, 12)}.pdf`, 'application/pdf');
   },
   'Preparing PDF...',
 );
@@ -1868,34 +1889,44 @@ function showResult(r: {
   $('vr-when').textContent = r.signedAt ? r.signedAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC') : '-';
   lastVerdict = { verdict: r.verdict, documentId: r.documentId, notForRecording: thirdParty };
   $('copy-wrap').hidden = r.verdict === 'incomplete' || !checkedFiles.length;
+  $('combine-wrap').hidden = !checkedFiles.length;
+  $('combine-none').hidden = !!checkedFiles.length;
   $('verify-result').hidden = false;
   $('verify-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 let lastVerdict: { verdict: Verdict; documentId?: string; notForRecording?: boolean } | null = null;
 
+/** The files that were checked, ready to reprint: PDFs as they are, images as pages, with each one's SHA-256. */
+async function checkedFileEntries(): Promise<CheckedFile[]> {
+  const files: CheckedFile[] = [];
+  for (const f of checkedFiles) {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
+    const sha256 = [...d].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const entry: CheckedFile = { name: f.name, sha256 };
+    if (isPdfBytes(bytes)) entry.pdf = bytes;
+    else if (isImage(f)) entry.image = await toPrintableImage(f, bytes).catch(() => undefined);
+    files.push(entry);
+  }
+  return files;
+}
+
+function verdictForStamp(v: NonNullable<typeof lastVerdict>): { result: 'good' | 'bad'; summary: string } {
+  const result = v.verdict === 'good' ? 'good' : 'bad';
+  return {
+    result,
+    summary: result !== 'good' ? 'do not rely on it' : v.notForRecording ? 'every key signed; third parties only, not for recording' : 'every key signed',
+  };
+}
+
 action(
   'copy-btn',
   async () => {
     if (!lastVerdict || !checkedFiles.length) throw new UserError('Check a document first.');
-    const files: CheckedFile[] = [];
-    for (const f of checkedFiles) {
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource));
-      const sha256 = [...d].map((x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
-      const entry: CheckedFile = { name: f.name, sha256 };
-      if (isPdfBytes(bytes)) entry.pdf = bytes;
-      else if (isImage(f)) entry.image = await toPrintableImage(f, bytes).catch(() => undefined);
-      files.push(entry);
-    }
-    const v = lastVerdict.verdict === 'incomplete' ? 'bad' : lastVerdict.verdict;
-    const pdf = await checkedCopyPdf({
-      files,
-      result: v,
-      summary: v !== 'good' ? 'do not rely on it' : lastVerdict.notForRecording ? 'every key signed; third parties only, not for recording' : 'every key signed',
-      documentId: lastVerdict.documentId,
-      checkedAt: new Date(),
-    });
+    const files = await checkedFileEntries();
+    const v = verdictForStamp(lastVerdict);
+    const pdf = await checkedCopyPdf({ files, result: v.result, summary: v.summary, documentId: lastVerdict.documentId, checkedAt: new Date() });
     download(pdf, `checked-copy-${(lastVerdict.documentId ?? 'document').slice(0, 12)}.pdf`, 'application/pdf');
   },
   'Preparing PDF...',
