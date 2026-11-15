@@ -6,7 +6,7 @@ import { zipSync, strToU8 } from 'fflate';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
-import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom } from '../src/crypto';
+import { generateKeyPair, readAnyKey, unlockKey, signText, verifyScannedText, signDocument, verifyBinaryFile, binarySignatureFrom, decodeCodes } from '../src/crypto';
 import { extractFile, fileSignedText, docxText, parcelFilingStatement } from '../src/extract';
 import { filePackagePdf, sourceFromPdf, checkedCopyPdf, signerBlocksForUserID } from '../src/pdf';
 
@@ -203,5 +203,26 @@ describe('ready for parcel filing', () => {
     expect(r2.verdict).toBe('good');
     expect(r2.notForRecording).toBe(false);
     expect(r2.signedText).toContain("SIGN IT EXPLICITLY FOR USE WITH ASSESSOR'S PARCEL NUMBER 123-45-6789");
+  });
+});
+
+describe('long documents: a warning, not a limit', () => {
+  it('signs and reads back a text well over the old 30,000-character limit', async () => {
+    let seed = 5;
+    const rand = () => (seed = (seed * 48271) % 2147483647).toString(36);
+    const text = 'LONG AGREEMENT FOR PARCEL 123-45-6789. ' + Array.from({ length: 9000 }, rand).join(' ');
+    expect(text.length).toBeGreaterThan(60000);
+    const s = await signText(key, text);
+    const r = await verifyScannedText({ scanned: s.codes.join('\n'), registration: { parcel: '123-45-6789', keys: [key.toPublic()] } });
+    expect(r.verdict).toBe('good');
+  });
+
+  it('refuses codes that would unpack to an absurd size (decompression bomb)', async () => {
+    const { deflateRawSync } = await import('node:zlib');
+    const bomb = deflateRawSync(Buffer.alloc(60_000_000), { level: 9 });
+    const message = ['PGPDOC1', 'A'.repeat(40), Buffer.from('sig').toString('base64'), 'z', bomb.toString('base64')].join('|');
+    const n = Math.ceil(message.length / 320);
+    const codes = Array.from({ length: n }, (_, i) => `PGPQ1|ABCDEF012345|${i + 1}/${n}|${message.slice(i * 320, (i + 1) * 320)}`);
+    await expect(decodeCodes(codes.join('\n'))).rejects.toThrow(/unreasonable size/);
   });
 });

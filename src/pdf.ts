@@ -7,6 +7,7 @@ import {
   PDFPage,
   StandardFonts,
   rgb,
+  degrees,
   PDFName,
   PDFDict,
   PDFArray,
@@ -17,7 +18,7 @@ import {
   decodePDFRawStream,
   type RGB,
 } from 'pdf-lib';
-import { bestQr, code128Bits, type QrMatrix } from './codes';
+import { bestQr, code128Bits, codeMapText, pdf417Path, type CodeMapEntry, type QrMatrix } from './codes';
 import {
   formatFingerprint,
   toBase64,
@@ -162,7 +163,55 @@ function checkbox(page: PDFPage, x: number, yBase: number, checked: boolean) {
 }
 
 /** Draws a QR code with its top-left at (x, yTop), `size` points square. */
+// Code map placement: in the left margin, running up the page from just above
+// the footer, clear of the content (which starts at x = M) and of printers'
+// unprintable edge.
+const MAP_X = 20;
+const MAP_Y = 60;
+/** Size of one map module, in points (about 2.5 pixels at 200 dpi). */
+const MAP_MODULE = 0.9;
+const MAP_MAX_THICKNESS = 22;
+
+/**
+ * Draws a code map on every page that has QR codes, then saves. The map lists
+ * each QR code's position relative to the map itself, in map modules.
+ */
+async function finish(doc: PDFDocument): Promise<Uint8Array> {
+  // Code pages that continue a document (more codes than fit on one page) carry
+  // the document ID of the page they follow.
+  let lastId = '';
+  for (const page of doc.getPages()) {
+    const qrs = QR_ON_PAGE.get(page);
+    const id = DOC_ID_ON_PAGE.get(page);
+    if (id) lastId = id;
+    else if (qrs?.length && lastId) DOC_ID_ON_PAGE.set(page, lastId);
+    if (!qrs?.length) continue;
+    // Map frame: u runs up the page from MAP_Y, v runs right from MAP_X.
+    const entries: CodeMapEntry[] = qrs.map((q) => ({
+      u: Math.round((q.yTop - q.size - MAP_Y) / MAP_MODULE),
+      v: Math.round((q.x - MAP_X) / MAP_MODULE),
+      size: Math.round(q.size / MAP_MODULE),
+    }));
+    let columns = 14;
+    let sym = pdf417Path(codeMapText({ columns, documentId: DOC_ID_ON_PAGE.get(page) ?? '', entries }), columns);
+    // Longer and thinner until it fits the margin.
+    while ((sym.height / 2) * MAP_MODULE > MAP_MAX_THICKNESS && columns < 30) {
+      columns += 4;
+      sym = pdf417Path(codeMapText({ columns, documentId: DOC_ID_ON_PAGE.get(page) ?? '', entries }), columns);
+    }
+    // SVG units are half a module. Rotated a quarter turn: the symbol's width runs up the page.
+    page.drawSvgPath(sym.path, { x: MAP_X, y: MAP_Y, scale: MAP_MODULE / 2, rotate: degrees(90), color: rgb(0, 0, 0), borderWidth: 0 });
+  }
+  return doc.save();
+}
+
+/** Every QR code drawn, by page, for the page's code map. */
+const QR_ON_PAGE = new WeakMap<PDFPage, { x: number; yTop: number; size: number }[]>();
+/** The document ID shown in a page's body (not its footer stamp), for the code map. */
+const DOC_ID_ON_PAGE = new WeakMap<PDFPage, string>();
+
 function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: number) {
+  QR_ON_PAGE.set(page, [...(QR_ON_PAGE.get(page) ?? []), { x, yTop, size }]);
   const cell = size / m.size;
   for (let r = 0; r < m.size; r++) {
     let c = 0;
@@ -181,6 +230,8 @@ function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: numbe
 
 /** Draws a Code 128 barcode; returns its drawn width. */
 function drawCode128(page: PDFPage, value: string, x: number, yBottom: number, moduleW: number, height: number) {
+  // A full-size document ID barcode in the body (footer stamps are small).
+  if (height >= 30) DOC_ID_ON_PAGE.set(page, value);
   const bits = code128Bits(value);
   let i = 0;
   while (i < bits.length) {
@@ -384,7 +435,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
   }
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, footers[i] ?? '', i + 1, total));
-  return doc.save();
+  return finish(doc);
 }
 
 /** " (whoever holds the position)" or " (all members sign)" for keys that need it. */
@@ -881,7 +932,7 @@ export async function signaturePagePdf(info: SignaturePageInfo): Promise<Uint8Ar
   const { doc, fonts } = await newDoc(`Signature verification page - ${info.documentId}`);
   const p = await drawSignaturePage(doc, fonts, info);
   footer(p, fonts, `Signature verification page  |  Document ID ${info.documentId}`, 1, 1);
-  return doc.save();
+  return finish(doc);
 }
 
 /**
@@ -905,7 +956,7 @@ export async function printCopyPdf(original: Uint8Array, info: SignaturePageInfo
   pages.forEach((pg) => doc.addPage(pg));
   const sp = await drawSignaturePage(doc, fonts, info);
   footer(sp, fonts, `Signature verification page  |  Document ID ${info.documentId}`, doc.getPageCount(), doc.getPageCount());
-  return doc.save();
+  return finish(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -998,7 +1049,7 @@ export async function privateKeyPdf(info: PrivateKeyInfo): Promise<Uint8Array> {
   }
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, `PRIVATE KEY - KEEP SECRET  |  ${formatFingerprint(info.fingerprint)}`, i + 1, total));
-  return doc.save();
+  return finish(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,7 +1442,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       total,
     ),
   );
-  return doc.save();
+  return finish(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1560,7 +1611,7 @@ export async function certificatePdf(info: CertificateInfo): Promise<Uint8Array>
 
   const total = doc.getPageCount();
   doc.getPages().forEach((pg, i) => footer(pg, fonts, `Verification certificate  |  Document ID ${info.documentId}`, i + 1, total));
-  return doc.save();
+  return finish(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,7 +1662,7 @@ export async function publicKeyCardPdf(info: { fingerprint: string; userID: stri
     y -= 10;
   }
   footer(p, fonts, `Public key card  |  ${formatFingerprint(info.fingerprint)}`, 1, 1);
-  return doc.save();
+  return finish(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1752,7 +1803,7 @@ export async function holderUpdatePdf(key: openpgp.PublicKey | openpgp.PrivateKe
     if (qr) drawQr(p, qr, x, y, size);
   });
   footer(p, fonts, `Position holder update  |  ${formatFingerprint(update.fingerprint)}`, 1, 1);
-  return doc.save();
+  return finish(doc);
 }
 
 /** Reads a holder update (and the key it names) from a PDF made by this tool. */
@@ -2002,7 +2053,7 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
   doc.getPages().forEach((pg, i) => {
     if (coverPages.includes(pg) || finalPages.includes(pg)) footer(pg, fonts, `Signed file  |  Document ID ${info.documentId}`, i + 1, total);
   });
-  return doc.save();
+  return finish(doc);
 }
 
 /** The original file(s) embedded in a signed file package, to sign it again exactly. */
@@ -2073,5 +2124,5 @@ export async function checkedCopyPdf(info: {
   pages.forEach((pg, i) =>
     stampWith(pg, fonts, `CHECKED ${date}: ${word} (${info.summary})  |  Document ID ${id}  |  Page ${i + 1} of ${pages.length}  |  ${BRAND.name}`, id, color),
   );
-  return doc.save();
+  return finish(doc);
 }

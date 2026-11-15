@@ -1,6 +1,8 @@
 import './style.css';
 import type * as openpgp from 'openpgp';
 import {
+  LONG_TEXT,
+  estimateCodes,
   generateKeyPair,
   readAnyKey,
   unlockKey,
@@ -876,7 +878,24 @@ function fullText(title: string, text: string) {
 function updateCount() {
   const n = canonicalText(fullText(input('doc-title').value, textarea('doc-text').value)).length;
   $('doc-count').textContent = n ? `${n.toLocaleString()} characters signed.` : '';
+  // Long documents: a warning, not a limit. Once someone has signed, the text is settled.
+  const long = n > LONG_TEXT && !state.draft;
+  $('long-warn').hidden = !long;
+  if (!long) input('long-ok').checked = false;
+  else {
+    const lead = `This is a long document: ${n.toLocaleString()} characters. Its signature carries the whole text`;
+    const tail = 'on every copy that is filed or checked. That works, but consider whether all of it needs to be signed this way.';
+    if ($('long-warn-text').dataset.chars !== String(n)) $('long-warn-text').textContent = `${lead}, so it will need many QR codes ${tail}`;
+    const token = ++countToken;
+    const canonical = canonicalText(fullText(input('doc-title').value, textarea('doc-text').value));
+    void estimateCodes(canonical, Math.max(1, state.signReg?.keys.length ?? 1)).then((codes) => {
+      if (token !== countToken) return;
+      $('long-warn-text').dataset.chars = String(n);
+      $('long-warn-text').textContent = `${lead}, so it will need about ${codes} QR codes (about ${Math.ceil(codes / 9)} extra printed pages) ${tail}`;
+    });
+  }
 }
+let countToken = 0;
 
 /** Rebuilds the document text from the template, unless the user has edited it. */
 function syncTemplate(force = false) {
@@ -1313,6 +1332,9 @@ action(
         `Your key is not registered for ${state.signReg.parcel ? `parcel ${state.signReg.parcel}` : 'this parcel'}. Load one of the keys listed on the registration.`,
       );
     }
+    if (!state.draft && !$('long-warn').hidden && !input('long-ok').checked) {
+      throw new UserError('This document is long and will need many pages of codes. Tick "Sign it anyway" to go ahead.');
+    }
     if (state.draft) {
       const d = state.draft;
       const signed = await signText(state.signer, fullText(d.title, d.text), d.signed);
@@ -1678,12 +1700,17 @@ input('v-codes-file').addEventListener('change', async () => {
     const { readCodesFromFile } = await import('./qrscan');
     const results: { name: string; signed?: SignedText; legacy?: string[]; problem?: string }[] = [];
     for (const [i, f] of files.entries()) {
+      // Document IDs printed in the pages' code maps: must match the text the codes carry.
+      const mapIds = new Set<string>();
       const codes = await readCodesFromFile(
         f,
         (m) => (el.textContent = files.length > 1 ? `File ${i + 1} of ${files.length}: ${m}` : m),
         (c) => {
           const p = scanProgress(c.join('\n'));
           return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
+        },
+        (map) => {
+          if (map.documentId) mapIds.add(map.documentId);
         },
       );
       const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
@@ -1696,7 +1723,13 @@ input('v-codes-file').addEventListener('change', async () => {
         continue;
       }
       try {
-        results.push({ name: f.name, signed: await signedFromCodes(sigCodes.join('\n')) });
+        const signed = await signedFromCodes(sigCodes.join('\n'));
+        const other = [...mapIds].filter((id) => id !== signed.documentId);
+        if (other.length) {
+          results.push({ name: f.name, problem: `it holds a page from a different document (document ID ${other[0]} in a code map, but the codes carry document ${signed.documentId})` });
+          continue;
+        }
+        results.push({ name: f.name, signed });
       } catch (err) {
         results.push({ name: f.name, problem: (err as Error).message });
       }
@@ -1711,9 +1744,10 @@ input('v-codes-file').addEventListener('change', async () => {
     const readable = results.filter((r) => r.signed);
     if (!readable.length) {
       el.className = 'hint error';
+      const unreadable = results.some((r) => !r.problem || /no (signature|QR) codes|missing/i.test(r.problem));
       el.textContent =
-        results.map((r) => `${r.name}: ${r.problem ?? 'unreadable'}`).join('; ') +
-        '. Make sure the signature page is included, sharp and well lit.';
+        results.map((r) => `${r.name}: ${(r.problem ?? 'unreadable').replace(/\.+$/, '')}`).join('; ') +
+        (unreadable ? '. Make sure the signature page is included, sharp and well lit.' : '.');
       return;
     }
     // The reference text: the one most files carry.

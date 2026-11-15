@@ -429,8 +429,26 @@ export const MULTI_DOC_PREFIX = 'PGPDOC2';
 export const PART_PREFIX = 'PGPQ1';
 /** Characters of the message per QR code. Small codes (about version 14) read reliably from scans and photos at any resolution; big dense ones do not. */
 export const PART_SIZE = 320;
-/** Longest canonical text accepted, to keep the number of codes reasonable. */
-export const MAX_TEXT = 30000;
+/**
+ * Above this many characters the Sign tab warns that the codes will take many
+ * printed pages; the signer can go ahead anyway. There is no limit on signing.
+ */
+export const LONG_TEXT = 30000;
+/**
+ * Safety ceiling when reading codes back: refuses codes whose text would unpack
+ * to more than this (a crafted "decompression bomb" could otherwise freeze the
+ * browser). Far beyond any real document: about 50 million characters.
+ */
+export const MAX_DECODED_BYTES = 50_000_000;
+
+/** Number of signature codes a text will need: compressed exactly as signing does. */
+export async function estimateCodes(canonical: string, signers = 1) {
+  const raw = new TextEncoder().encode(canonical);
+  const z = typeof CompressionStream !== 'undefined' ? await pipeBytes(raw, new CompressionStream('deflate-raw')) : raw;
+  // Base64 body, about 100 base64 characters per Ed25519 signature, 41 per fingerprint, and the header.
+  const message = Math.ceil(Math.min(z.length, raw.length) / 3) * 4 + signers * (100 + 41) + 20;
+  return Math.ceil(message / PART_SIZE);
+}
 
 export interface DocSignature {
   fingerprint: string;
@@ -456,9 +474,22 @@ export interface SignedText {
   codes: string[];
 }
 
-async function pipeBytes(bytes: Uint8Array, stream: CompressionStream | DecompressionStream) {
-  const out = new Blob([bytes as BlobPart]).stream().pipeThrough(stream);
-  return new Uint8Array(await new Response(out).arrayBuffer());
+async function pipeBytes(bytes: Uint8Array, stream: CompressionStream | DecompressionStream, maxOut = Infinity) {
+  const reader = new Blob([bytes as BlobPart]).stream().pipeThrough(stream).getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    // Stop as soon as the output passes the ceiling, before it fills memory.
+    if (total > maxOut) {
+      await reader.cancel();
+      throw new Error('too long');
+    }
+    parts.push(value);
+  }
+  return concatBytes(parts);
 }
 
 function concatBytes(parts: Uint8Array[]) {
@@ -499,7 +530,6 @@ export async function signText(key: openpgp.PrivateKey, text: string, existing?:
     throw new Error('The text is different from the text the other owners signed. Everyone must sign exactly the same text.');
   }
   if (!canonical) throw new Error('There is no document text to sign.');
-  if (canonical.length > MAX_TEXT) throw new Error(`The document is too long (${canonical.length} characters; the limit is ${MAX_TEXT}).`);
   const fingerprint = key.getFingerprint().toUpperCase();
   if (existing?.signatures.some((s) => s.fingerprint === fingerprint)) throw new Error('This key has already signed this document.');
   const bytes = (await openpgp.sign({
@@ -612,11 +642,12 @@ export async function decodeCodes(scanned: string): Promise<DecodedText> {
   try {
     signature = fromBase64(f[2]);
     body = fromBase64(f[4]);
-    if (f[3] === 'z') body = await pipeBytes(body, new DecompressionStream('deflate-raw'));
-  } catch {
+    if (f[3] === 'z') body = await pipeBytes(body, new DecompressionStream('deflate-raw'), MAX_DECODED_BYTES);
+  } catch (e) {
+    if ((e as Error).message === 'too long') throw new Error('The text in these codes would unpack to an unreasonable size. They are not from this program.');
     throw new Error('The codes are damaged. Try scanning them again.');
   }
-  if (body.length > MAX_TEXT * 4) throw new Error('The text in the codes is too long.');
+  if (body.length > MAX_DECODED_BYTES) throw new Error('The text in these codes is unreasonably long. They are not from this program.');
   const canonical = new TextDecoder().decode(body);
   const sha256 = await sha256Hex(body);
   if (!sha256.toUpperCase().startsWith(group)) {

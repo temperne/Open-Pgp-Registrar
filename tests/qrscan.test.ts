@@ -6,7 +6,7 @@ import { PNG } from 'pngjs';
 import * as openpgp from 'openpgp';
 import { generateKeyPair, readAnyKey, unlockKey, signText, scanProgress, verifyScannedText, keyFromCodes, type SignedText } from '../src/crypto';
 import { instrumentPdf, privateKeyPdf, setBrandSeal } from '../src/pdf';
-import { decodeAllQr } from '../src/qrscan';
+import { decodeAllQr, decodeMapped } from '../src/qrscan';
 
 function has(cmd: string, arg = '--version') {
   try {
@@ -117,4 +117,46 @@ describe.skipIf(!has('pdftoppm', '-v'))('reading codes back from the page images
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe.skipIf(!has('pdftoppm', '-v'))('code map (PDF417) on pages with QR codes', () => {
+  it('reads a long document\'s codes through the map, from a clean rendering and a tilted JPEG scan', async () => {
+    let seed = 21;
+    const rand = () => (seed = (seed * 48271) % 2147483647).toString(36);
+    const text = 'LONG INSTRUMENT FOR PARCEL 123-45-6789. ' + Array.from({ length: 3200 }, rand).join(' ');
+    const s = await signText(key, text);
+    expect(s.codes.length).toBeGreaterThanOrEqual(30);
+    const doc = await instrumentPdf({ title: 'Long', text, fingerprint: s.fingerprint, userID: s.userID, signedAt: s.signedAt, documentId: s.documentId, codes: s.codes });
+    const dir = mkdtempSync('/tmp/opr-map-');
+    try {
+      writeFileSync(join(dir, 'd.pdf'), doc);
+      execFileSync('pdftoppm', ['-r', '200', '-gray', '-png', join(dir, 'd.pdf'), join(dir, 'p')]);
+      const pngs = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
+      const tilted = has('convert', '-version');
+      for (const variant of tilted ? ['clean', 'scan'] : ['clean']) {
+        const found = new Set<string>();
+        const maps: string[] = [];
+        const t0 = Date.now();
+        for (const f of pngs) {
+          let file = join(dir, f);
+          if (variant === 'scan') {
+            execFileSync('convert', [file, '-rotate', '0.7', '-quality', '70', join(dir, 'scan.jpg')]);
+            execFileSync('convert', [join(dir, 'scan.jpg'), join(dir, 'scan.png')]);
+            file = join(dir, 'scan.png');
+          }
+          const png = PNG.sync.read(readFileSync(file));
+          // The quick pass alone (map + cut-outs): pages without a map are skipped, not searched.
+          for (const c of decodeMapped({ data: new Uint8ClampedArray(png.data), width: png.width, height: png.height }, (m) => maps.push(m.documentId)).codes)
+            found.add(c);
+        }
+        const ms = Date.now() - t0;
+        console.log(`${variant}: ${s.codes.length} codes on ${pngs.length} pages, ${maps.length} maps, ${ms} ms`);
+        expect(s.codes.every((c) => found.has(c))).toBe(true);
+        expect(maps.length).toBeGreaterThan(0);
+        expect(maps.every((id) => id === s.documentId)).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180000);
 });

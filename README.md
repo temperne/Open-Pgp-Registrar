@@ -85,6 +85,9 @@ layer on equal footing with them.
   it was signed by the owners but is **for third parties only, not for recording**.
   To file one, tick **Ready this document for parcel filing** before signing: a signed
   statement ties it to the parcel. The signed text is shown to compare with the paper.
+- **Fast to check, even for long documents**: each page of codes carries a small
+  PDF417 "code map" saying where every QR code is, so the reader cuts them out
+  directly instead of searching the page (a 25-code scan checks in about 1.5 s).
 - A printable **verification certificate** for the checker to sign and append to the
   filing.
 - A **checked copy**: the checked file (PDF pages or images), every page stamped with
@@ -139,6 +142,12 @@ Its text appears, locked, as what will be signed. For an image or a scan, write 
 it shows (include the parcel number). Sign, and print the package: cover page, the
 file's pages (each stamped "page i of n" with the document ID), and the signatures
 page.
+
+**Long documents.** There is no length limit. The signature carries the whole text
+in its QR codes, so above 30,000 characters the Sign tab says how many codes and
+printed pages it will take, and asks you to tick **Sign it anyway**.
+
+![Long document warning](docs/images/09-long-document.png)
 
 **Binary file signature** (advanced, at the bottom of the Sign tab): for a file you
 send to someone directly, not for recording. Download the `.sig` and the verification
