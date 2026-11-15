@@ -16,6 +16,9 @@ last part is the date the version was tagged.
   in place of a registration form (the PDF, a scan or a photo): the tool confirms that
   every previous registered key signed the deed naming the new keys. No separate
   registration or identity check is needed.
+  The **Grantee** field fills itself from the buyers' keys: a person's name, every
+  member of a group key, or the business or trust for a position key. Wording you
+  type yourself is kept.
 - **Lien holder registrations.** "Registering as: Lien holder" names the lien; the role
   is part of the statement every key signs. A new **Release of lien** template is
   checked against the lien holder's registration.

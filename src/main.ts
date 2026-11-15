@@ -906,6 +906,30 @@ function fields(): TemplateFields {
   return f;
 }
 
+/** "A", "A and B", "A, B and C". */
+function joinNames(names: string[]) {
+  const list = names.map((n) => n.trim()).filter(Boolean);
+  return list.length <= 2 ? list.join(' and ') : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+}
+
+/**
+ * The grantee, from the buyers' keys: a person's name, every member of a group,
+ * or the business or trust itself for a position key (the entity takes title,
+ * not its officer). Typed wording is kept: the field only follows the keys while
+ * it still holds what was filled in from them.
+ */
+let granteeFromKeys = '';
+function fillGrantee() {
+  const el = fieldEl('grantee');
+  if (el.value.trim() && el.value !== granteeFromKeys) return;
+  const names = buyerKeys.flatMap((k) => {
+    const id = keyIdentity(k);
+    return id.kind === 'group' && id.members?.length ? id.members : [id.name];
+  });
+  granteeFromKeys = joinNames(names);
+  el.value = granteeFromKeys;
+}
+
 /** Two key lists with the same keys, in any order. */
 function sameKeys(a: openpgp.PublicKey[], b: openpgp.PublicKey[]) {
   const f = (l: openpgp.PublicKey[]) => l.map((k) => k.getFingerprint().toUpperCase()).sort().join(',');
@@ -923,6 +947,7 @@ function renderBuyerKeys() {
     remove.disabled = !!state.draft;
     remove.addEventListener('click', () => {
       buyerKeys = buyerKeys.filter((x) => x !== k);
+      fillGrantee();
       renderBuyerKeys();
       syncTemplate();
     });
@@ -945,6 +970,7 @@ input('buyer-file').addEventListener('change', async () => {
     if (buyerKeys.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already listed.');
     if (state.signReg?.keys.some((k) => k.getFingerprint().toUpperCase() === fpr)) throw new Error('That key is already registered for this parcel (a seller’s key).');
     buyerKeys.push(key);
+    fillGrantee();
     renderBuyerKeys();
     syncTemplate();
     status.textContent = `Added ${describeKey(key)}. Check the fingerprint with the buyer.`;
