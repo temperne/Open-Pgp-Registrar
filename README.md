@@ -143,6 +143,12 @@ it shows (include the parcel number). Sign, and print the package: cover page, t
 file's pages (each stamped "page i of n" with the document ID), and the signatures
 page.
 
+**Long documents.** There is no length limit. The signature carries the whole text
+in its QR codes, so above 30,000 characters the Sign tab says how many codes and
+printed pages it will take, and asks you to tick **Sign it anyway**.
+
+![Long document warning](docs/images/09-long-document.png)
+
 **Binary file signature** (advanced, at the bottom of the Sign tab): for a file you
 send to someone directly, not for recording. Download the `.sig` and the verification
 page and send both with the file.
