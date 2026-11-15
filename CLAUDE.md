@@ -186,11 +186,14 @@ gives counter staff a way to check a filing.
 
 ## Branding
 
-- **Session override** (About tab, "Use this tool for another county or state",
+- **Session override** (the header's "Change county or state" button or the seal,
+  on every tab, opens `#jurisdiction`;
   `applyJurisdiction` in `brand.ts`): program name, county, state, web address,
   business verification office and logo, in memory only, with an optional settings
-  file (`stop-jurisdiction-1`). An override always shows the proposed notice for the
-  chosen county.
+  file (`stop-jurisdiction-1`), or from the link (`settingsFromLink`: `name`,
+  `expansion`, `county`, `state`, `url`, `authority`, `seal` as a `data:` image only;
+  a seal at a web address is refused, never fetched). An override always shows the
+  proposed notice for the chosen county.
 
 - Program name, acronym expansion, county, web address (test site:
   https://pimastopinitiative.jasonajensen.workers.dev/) and the proposed/adopted status live in `src/brand.ts`, with
@@ -281,6 +284,9 @@ Every build that is released, or pushed for a pull request, must be proven:
      document checked against the certificate-only filing
    - checks that must fail: the new owner's document against the original
      registration, and a deed signed by a key that isn't registered
+   - changing the county from the header on another tab, and settings from the link
+     (with an embedded seal; "Copy a link" round-trips; a seal at a web address is
+     refused with no request)
    - no page errors and no network requests
 4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
    each check and its files), goes to `proof/<version>/`. Commit that folder. The

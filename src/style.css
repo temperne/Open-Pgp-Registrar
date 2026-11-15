@@ -791,3 +791,27 @@ a.button {
   margin-right: 0.5rem;
   text-decoration: none;
 }
+
+.jbar {
+  margin: 0.4rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+}
+.jbutton {
+  font-size: 0.85rem;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+#brand-seal {
+  cursor: pointer;
+}
+details.jurisdiction {
+  margin: 0.75rem 0;
+  border: 2px solid var(--accent);
+}

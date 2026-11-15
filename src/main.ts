@@ -2467,14 +2467,98 @@ function applyBrandToPage() {
 applyBrandToPage();
 
 // ---- Use this tool for another county or state ----
+// Prominent: a button in the page header (and the seal itself) opens the panel, on any tab.
+function openJurisdiction() {
+  const d = $('jurisdiction') as HTMLDetailsElement;
+  d.open = true;
+  d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  input('j-county').focus({ preventScroll: true });
+}
+$('j-open').addEventListener('click', openJurisdiction);
+$('brand-seal').addEventListener('click', openJurisdiction);
+$('brand-seal').title = 'Change the county, state or logo';
 function fillJurisdictionForm() {
   input('j-name').value = BRAND.name;
+  input('j-expansion').value = BRAND.expansion;
   input('j-county').value = BRAND.county;
   input('j-state').value = BRAND.state;
   input('j-url').value = BRAND.projectUrl;
   input('j-authority').value = BRAND.entityAuthority;
 }
 fillJurisdictionForm();
+
+// ---- Settings from the link: ?county=...&state=...&seal=data:image/png;base64,... ----
+const LINK_KEYS: [string, keyof Jurisdiction][] = [
+  ['name', 'name'],
+  ['expansion', 'expansion'],
+  ['county', 'county'],
+  ['state', 'state'],
+  ['url', 'projectUrl'],
+  ['authority', 'entityAuthority'],
+];
+
+/** A seal given in the link: only the image itself (a data: address), never a web address to fetch. */
+function sealFromDataUrl(v: string): typeof customLogo {
+  const m = /^data:image\/(png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$/i.exec(v.trim());
+  if (!m) {
+    throw new UserError(
+      'The seal in the link must be the image itself (data:image/png;base64,... or data:image/jpeg;base64,...). This page never loads images from other servers.',
+    );
+  }
+  const bytes = fromBase64Text(m[2].replace(/\s+/g, ''));
+  const png = bytes[0] === 0x89 && bytes[1] === 0x50;
+  const jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  if (!png && !jpg) throw new UserError('The seal in the link is not a PNG or JPG image.');
+  return { bytes, type: png ? 'image/png' : 'image/jpeg' };
+}
+
+function settingsFromLink() {
+  let q: URLSearchParams;
+  try {
+    q = new URLSearchParams(location.search);
+  } catch {
+    return;
+  }
+  const j: Partial<Jurisdiction> = {};
+  for (const [param, key] of LINK_KEYS) {
+    const v = q.get(param);
+    if (v?.trim()) j[key] = v;
+  }
+  const seal = q.get('seal');
+  if (!Object.keys(j).length && !seal) return;
+  try {
+    const logo = seal ? sealFromDataUrl(seal) : null;
+    // Names that still carry the default county follow the county given in the link.
+    if (j.county && !j.name && BRAND.name.includes(BRAND.county)) j.name = BRAND.name.split(BRAND.county).join(j.county.trim());
+    if (j.county && !j.entityAuthority && BRAND.entityAuthority.includes(BRAND.county)) j.entityAuthority = BRAND.entityAuthority.split(BRAND.county).join(j.county.trim());
+    useJurisdiction(j, logo);
+    $('j-status').textContent = `Settings from the link: ${BRAND.name} (${BRAND.county}, ${BRAND.state}).`;
+  } catch (err) {
+    banner(`The settings in this link could not be used: ${(err as Error).message}`);
+  }
+}
+
+action('j-link', async () => {
+  const q = new URLSearchParams();
+  for (const [param, key] of LINK_KEYS) if (BRAND[key] !== BRAND_DEFAULTS[key]) q.set(param, BRAND[key]);
+  if (customLogo) q.set('seal', `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`);
+  const base = location.href.split(/[?#]/)[0];
+  const link = q.toString() ? `${base}?${q.toString()}` : base;
+  const out = $('j-link-out');
+  out.hidden = false;
+  out.textContent = link;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(link);
+    copied = true;
+  } catch {
+    /* clipboard blocked (sandboxed preview): the link is shown to copy by hand */
+  }
+  $('j-status').textContent =
+    (q.toString() ? 'Link with the current settings ' : 'No settings differ from the defaults; this is the plain link ') +
+    (copied ? '(copied to the clipboard).' : '(shown below; copy it by hand).') +
+    (link.length > 60000 ? ' It is long because it carries the logo itself.' : '');
+});
 
 /** Form defaults that still hold the old county follow the new one. */
 function followCounty(oldCounty: string) {
@@ -2493,7 +2577,7 @@ function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLog
   applyBrandToPage();
   fillJurisdictionForm();
   followCounty(oldCounty);
-  const custom = !!logo || (['name', 'county', 'state', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
+  const custom = !!logo || (['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
   $('j-status').textContent = custom
     ? `Using ${BRAND.name} (${BRAND.county}, ${BRAND.state}) until this page is closed.`
     : 'Using the defaults.';
@@ -2507,8 +2591,17 @@ async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>>
 action('j-apply', async () => {
   const f = input('j-logo').files?.[0];
   const logo = f ? await logoFromFile(f) : customLogo;
+  // Names that still carry the old county follow the new one ("Pima County S.T.O.P. Initiative"
+  // becomes "Maricopa County S.T.O.P. Initiative"), unless they were typed differently.
+  const oldCounty = BRAND.county;
+  const newCounty = input('j-county').value.trim();
+  if (newCounty && newCounty !== oldCounty) {
+    for (const [id, current] of [['j-name', BRAND.name], ['j-authority', BRAND.entityAuthority]] as const) {
+      if (input(id).value === current && current.includes(oldCounty)) input(id).value = current.split(oldCounty).join(newCounty);
+    }
+  }
   useJurisdiction(
-    { name: input('j-name').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
+    { name: input('j-name').value, expansion: input('j-expansion').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
     logo,
   );
   input('j-logo').value = '';
@@ -2521,6 +2614,7 @@ action('j-save', () => {
   const file = {
     format: 'stop-jurisdiction-1',
     name: BRAND.name,
+    expansion: BRAND.expansion,
     county: BRAND.county,
     state: BRAND.state,
     projectUrl: BRAND.projectUrl,
@@ -2582,3 +2676,5 @@ syncTemplate();
 const initial = location.hash.slice(1) as Tab;
 showTab(TABS.includes(initial) ? initial : 'about');
 $('boot').hidden = true;
+// After start-up, so a problem with the link's settings stays visible.
+settingsFromLink();

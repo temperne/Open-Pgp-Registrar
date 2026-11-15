@@ -32,10 +32,17 @@ last part is the date the version was tagged.
 - **Combined filing PDF.** On the check page, two checkboxes add the original document
   (exactly as loaded) and the checked copy to the certificate download: one PDF in that
   order. The certificate lists the page ranges and each original's SHA-256.
-- **Use the tool for another county or state.** A panel on the About tab changes the
+- **Use the tool for another county or state.** The page header shows the county and
+  state with a **Change county or state** button (on every tab; clicking the seal works
+  too). It changes the
   program name, county, state, web address, business verification office and logo on
   the page, the templates, the notary wording and every PDF, for the session only
-  (nothing stored). Settings can be saved to a file and loaded again. The "proposed
+  (nothing stored). The program name and business office follow the new county unless
+  typed differently. Settings can be saved to a file and loaded again, or **given in the
+  link**: `?name=`, `expansion=`, `county=`, `state=`, `url=`, `authority=` and `seal=`
+  (the image itself as a `data:image/png;base64,...` address; a seal at a web address is
+  refused, because the page never contacts other servers). **Copy a link with these
+  settings** builds such a link. The "proposed
   program" notice follows the chosen county.
 - **About this software**: the version, build date and full changelog are built into
   the page, with a **Download this tool** link (the page saves itself; hidden when

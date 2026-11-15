@@ -237,10 +237,22 @@ and run `gpg --verify document.txt.sig document.txt`.
 
 ## Rebranding for another jurisdiction
 
-**Without changing any code**: on the About tab, open **Use this tool for another
-county or state**. Enter the program name, county, state, web address, business
-verification office and a logo; every page and PDF uses them until the page is
-closed. **Save settings file** keeps them for next time. The "proposed program"
+**Without changing any code**: click **Change county or state** in the page header
+(or the seal), on any tab. Enter the county, state and a logo; the program name and
+business verification office follow the county unless you type your own. Every page
+and PDF uses them until the page is closed.
+
+The settings can also be **given in the link**, so a county can hand out one address:
+
+```
+https://pimastopinitiative.jasonajensen.workers.dev/?county=Maricopa%20County&state=Arizona
+```
+
+Link settings: `name`, `expansion`, `county`, `state`, `url`, `authority`, and `seal`.
+The seal must be the image itself as a `data:image/png;base64,...` (or `image/jpeg`)
+address: the page never loads anything from another server, so a seal at a web
+address is refused. **Copy a link with these settings** in the panel builds the link,
+logo included. **Save settings file** keeps them for next time. The "proposed program"
 notice stays on.
 
 ![Use this tool for another county or state](docs/images/12-another-county.png)
@@ -307,7 +319,7 @@ the version was released.
 
 | Version | SHA-256 of the HTML file |
 |---|---|
-| v0.1.11152026 | `b93a72d276c9fc8d3d1b31eeab99076cf9a0bd39936d8a2e382c876f549d71f1` |
+| v0.1.11152026 | `2745cc48e62e850f0ba8b011c85711ae146e3989c5ca30d1b5e0046d7c175289` |
 
 ## License
 

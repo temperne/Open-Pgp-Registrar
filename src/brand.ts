@@ -56,6 +56,8 @@ export const BRAND_DEFAULTS = { ...BRAND };
 /** What can be changed on the page to use the tool for another county or state. */
 export interface Jurisdiction {
   name: string;
+  /** What the acronym stands for. */
+  expansion: string;
   county: string;
   state: string;
   projectUrl: string;
@@ -70,7 +72,7 @@ export interface Jurisdiction {
 export function applyJurisdiction(j: Partial<Jurisdiction> | null) {
   Object.assign(BRAND, BRAND_DEFAULTS);
   if (!j) return;
-  for (const k of ['name', 'county', 'state', 'projectUrl', 'entityAuthority'] as const) {
+  for (const k of ['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const) {
     const v = j[k]?.trim();
     if (v) BRAND[k] = v;
   }

@@ -35,10 +35,50 @@
           <p class="kicker" data-brand="expansion">Stop Theft of Property</p>
           <h1 data-brand="name">Pima County S.T.O.P. Initiative</h1>
           <p class="lede">A free, voluntary safeguard that stops forged deeds before they are recorded.</p>
+          <p class="jbar">
+            Working for <strong><span data-brand="county">Pima County</span>, <span data-brand="state">Arizona</span></strong>
+            <button type="button" id="j-open" class="jbutton">Change county or state</button>
+          </p>
         </div>
       </div>
       <div class="wrap">
         <p id="proposed-note" class="callout warn" data-brand="proposedNotice" hidden></p>
+        <details class="card jurisdiction" id="jurisdiction">
+          <summary><strong>Change the county or state</strong></summary>
+          <p class="hint">
+            Changes the program name, county, state, web address, business verification office and logo everywhere:
+            on this page, in the deed templates and notary wording, and on every PDF made from now on. Nothing is
+            saved: closing or reloading the page goes back to the defaults. Save a settings file to load them again
+            later. Every page and PDF keeps saying the program is proposed and not an official county form.
+            The deed templates follow Arizona statutes; have them checked for your state.
+          </p>
+          <div class="grid2 tight">
+            <div><label for="j-name">Program name</label><input id="j-name" /></div>
+            <div><label for="j-expansion">What the acronym stands for</label><input id="j-expansion" /></div>
+            <div><label for="j-county">County</label><input id="j-county" placeholder="e.g. Maricopa County" /></div>
+            <div><label for="j-state">State</label><input id="j-state" placeholder="e.g. Arizona" /></div>
+            <div><label for="j-url">Program web address</label><input id="j-url" /></div>
+            <div class="span2"><label for="j-authority">Office that confirms business and trust signers</label><input id="j-authority" /></div>
+            <div class="span2"><label for="j-logo">Logo or seal <span class="opt">(PNG or JPG; used on the page and every PDF)</span></label><input id="j-logo" type="file" accept="image/*" /></div>
+          </div>
+          <p id="j-status" class="hint" role="status"></p>
+          <div class="actions">
+            <button type="button" id="j-apply" class="primary">Use these settings</button>
+            <button type="button" id="j-reset">Back to the defaults</button>
+            <button type="button" id="j-save">Save settings file</button>
+            <button type="button" id="j-link">Copy a link with these settings</button>
+          </div>
+          <p class="hint">
+            Settings can also come from the link itself, for example
+            <code>?county=Maricopa%20County&amp;state=Arizona</code>. Link settings: <code>name</code>, <code>expansion</code>,
+            <code>county</code>, <code>state</code>, <code>url</code>, <code>authority</code> and <code>seal</code> (the image itself as a
+            <code>data:image/png;base64,...</code> address: the page never loads images from other servers).
+          </p>
+          <p id="j-link-out" class="hint mono" hidden></p>
+          <label for="j-load">Load a settings file</label>
+          <input id="j-load" type="file" accept=".json,application/json" />
+          <p class="error" data-error role="alert"></p>
+        </details>
         <p class="privacy" role="note">
           <strong>Nothing leaves this page.</strong> Everything runs in this browser tab. Nothing is uploaded or
           saved, and closing the tab forgets your key, so download what you need.
@@ -176,34 +216,6 @@
             <p>OpenPGP, an open standard for digital signatures used for decades to protect software and email.
               Every signature can also be checked with free tools such as GnuPG.</p></details>
         </div>
-
-        <details class="card" id="jurisdiction">
-          <summary><strong>Use this tool for another county or state</strong></summary>
-          <p class="hint">
-            Changes the program name, county, state, web address, business verification office and logo everywhere:
-            on this page, in the deed templates and notary wording, and on every PDF made from now on. Nothing is
-            saved: closing or reloading the page goes back to the defaults. Save a settings file to load them again
-            later. Every page and PDF keeps saying the program is proposed and not an official county form.
-            The deed templates follow Arizona statutes; have them checked for your state.
-          </p>
-          <div class="grid2 tight">
-            <div><label for="j-name">Program name</label><input id="j-name" /></div>
-            <div><label for="j-county">County</label><input id="j-county" placeholder="e.g. Maricopa County" /></div>
-            <div><label for="j-state">State</label><input id="j-state" placeholder="e.g. Arizona" /></div>
-            <div><label for="j-url">Program web address</label><input id="j-url" /></div>
-            <div class="span2"><label for="j-authority">Office that confirms business and trust signers</label><input id="j-authority" /></div>
-            <div class="span2"><label for="j-logo">Logo or seal <span class="opt">(PNG or JPG; used on the page and every PDF)</span></label><input id="j-logo" type="file" accept="image/*" /></div>
-          </div>
-          <p id="j-status" class="hint" role="status"></p>
-          <div class="actions">
-            <button type="button" id="j-apply" class="primary">Use these settings</button>
-            <button type="button" id="j-reset">Back to the defaults</button>
-            <button type="button" id="j-save">Save settings file</button>
-          </div>
-          <label for="j-load">Load a settings file</label>
-          <input id="j-load" type="file" accept=".json,application/json" />
-          <p class="error" data-error role="alert"></p>
-        </details>
 
         <div class="card" id="about-software">
           <h2>About this software</h2>

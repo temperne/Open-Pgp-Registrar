@@ -329,6 +329,70 @@ try {
   c = await checkDocument(F2, forged, null);
   check('9. Forged deed (unregistered key) against Ivy’s filing fails', /DOES NOT VERIFY/.test(c.verdict), c.verdict, [forged]);
 
+  // ---- 10. Another county: the header button, on any tab; the PDFs follow ----
+  p = await newPage();
+  await loadKey(p, keys.ivy.priv);
+  await p.click('#tab-sign');
+  await p.click('#j-open');
+  await p.fill('#j-county', 'Maricopa County');
+  await p.click('#j-apply');
+  await p.waitForTimeout(300);
+  const heading = flat(await p.textContent('h1'));
+  const bar = flat(await p.textContent('.jbar'));
+  await p.click('#tab-key');
+  const card = await save(p, '#dl-card', '10-another-county-key-card-maricopa.pdf');
+  const cardText = flat(execFileSync('pdftotext', [card, '-']).toString());
+  await p.close();
+  check(
+    '10. Change county from the header (Sign tab)',
+    heading === 'Maricopa County S.T.O.P. Initiative' && /Working for Maricopa County, Arizona/.test(bar) && /not yet adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
+    `heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
+    [card],
+  );
+
+  // ---- 11. Settings from the link, including a seal embedded in it ----
+  {
+    const seal = 'data:image/png;base64,' + execFileSync('convert', ['-size', '120x120', 'xc:white', '-fill', '#7a1f1f', '-draw', 'circle 60,60 60,6', 'png:-']).toString('base64');
+    const q = new URLSearchParams({ county: 'Yavapai County', state: 'Arizona', name: 'Yavapai County S.T.O.P. Program', seal });
+    const lp = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    lp.on('pageerror', (e) => errors.push(e.message));
+    lp.on('request', (r) => {
+      if (!/^(file|blob|data):/.test(r.url())) errors.push(`network request: ${r.url()}`);
+    });
+    await lp.goto(`${APP}?${q}#key`);
+    const heading = flat(await lp.textContent('h1'));
+    const sealSrc = (await lp.getAttribute('#brand-seal', 'src')) ?? '';
+    await loadKey(lp, keys.ivy.priv);
+    const card = await save(lp, '#dl-card', '11-link-settings-key-card-yavapai.pdf');
+    const cardText = flat(execFileSync('pdftotext', [card, '-']).toString());
+    // The settings come back from the link the page makes.
+    await lp.click('#j-open');
+    await lp.click('#j-link');
+    await lp.waitForTimeout(300);
+    const made = await lp.textContent('#j-link-out');
+    await lp.close();
+    const again = await browser.newPage();
+    await again.goto(`file://${new URL(made).pathname}${new URL(made).search}`);
+    const heading2 = flat(await again.textContent('h1'));
+    await again.close();
+    check(
+      '11. Settings from the link (with an embedded seal)',
+      heading === 'Yavapai County S.T.O.P. Program' && sealSrc === seal && /not yet adopted by Yavapai County/.test(cardText) && heading2 === heading,
+      `heading "${heading}"; seal from the link; PDF names Yavapai County; "Copy a link" round-trips`,
+      [card],
+    );
+    // A seal at a web address is refused: the page never loads images from other servers.
+    const bad = await browser.newPage();
+    const badRequests = [];
+    bad.on('request', (r) => {
+      if (!/^(file|blob|data):/.test(r.url())) badRequests.push(r.url());
+    });
+    await bad.goto(`${APP}?${new URLSearchParams({ county: 'Pinal County', seal: 'https://example.com/seal.png' })}`);
+    const msg = flat(await bad.textContent('#boot'));
+    await bad.close();
+    check('11. A seal at a web address is refused', /never loads images from other servers/.test(msg) && badRequests.length === 0, `"${msg.slice(0, 90)}"; requests: ${badRequests.length}`);
+  }
+
   check('No page errors or network requests', errors.length === 0, errors.length ? errors.slice(0, 3).join(' | ') : 'none');
 } catch (e) {
   check('Run', false, `stopped: ${String(e.message ?? e).split('\n')[0]}`);
