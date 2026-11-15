@@ -7,6 +7,34 @@ last part is the date the version was tagged.
 
 ## [Unreleased]
 
+## [v0.1.11152026] - 2026-11-15
+
+### Added (this release)
+- **Protection passes with a sale.** Warranty and quitclaim deeds can name any number
+  of buyers' signing keys. Their fingerprints are part of the signed deed, and the
+  deed PDF carries them as a "registration by sale". Once the deed is recorded, load it
+  in place of a registration form (the PDF, a scan or a photo): the tool confirms that
+  every previous registered key signed the deed naming the new keys. No separate
+  registration or identity check is needed.
+- **Lien holder registrations.** "Registering as: Lien holder" names the lien; the role
+  is part of the statement every key signs. A new **Release of lien** template is
+  checked against the lien holder's registration.
+- **Deregistration** template: signed with every registered key, it takes a parcel out
+  of the program once recorded.
+- **Combined filing PDF.** On the check page, two checkboxes add the original document
+  (exactly as loaded) and the checked copy to the certificate download: one PDF in that
+  order. The certificate lists the page ranges and each original's SHA-256.
+- **Use the tool for another county or state.** A panel on the About tab changes the
+  program name, county, state, web address, business verification office and logo on
+  the page, the templates, the notary wording and every PDF, for the session only
+  (nothing stored). Settings can be saved to a file and loaded again. The "proposed
+  program" notice follows the chosen county.
+- **About this software**: the version, build date and full changelog are built into
+  the page, with a **Download this tool** link (the page saves itself; hidden when
+  opened from a saved copy). The README lists each version's SHA-256.
+- **Versions** are now `v<major>.<minor>.<mmddyyyy>`.
+
+
 ### Performance
 - **Code maps: checking a document is many times faster.** Every page with QR codes
   now also carries a small PDF417 barcode in the left margin listing where each QR

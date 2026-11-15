@@ -25,6 +25,7 @@ that runs entirely in the browser, works offline, and **stores and sends nothing
 - [Security model and limits](#security-model-and-limits)
 - [Rebranding for another jurisdiction](#rebranding-for-another-jurisdiction)
 - [Running, hosting and development](#running-hosting-and-development)
+- [Download and verify](#download-and-verify)
 - [Changelog](CHANGELOG.md) and [License](#license)
 
 ## The problem it solves
@@ -74,6 +75,15 @@ layer on equal footing with them.
 - **Several owners, one document**: owners sign the same text on one computer, or
   pass the partly signed PDF along ("Sign exactly as others"). The text locks after
   the first signature.
+- **Protection passes with a sale**: a warranty or quitclaim deed can name the
+  buyers' signing keys (any number). They are part of the signed deed, and the deed
+  PDF carries them as the parcel's next registration: once it is recorded, load the
+  deed in place of a registration form. No new registration or identity check is
+  needed; the sellers' registered keys handed protection to the buyers.
+- **Lien holders**: a registration can be for a lien holder instead of an owner,
+  naming the lien, so a forged **release of lien** is held like a forged deed.
+- **Leaving the program**: a deregistration document, signed with every registered
+  key, takes the parcel out.
 
 **For the Recorder, and anyone given a signed document**
 - **Check a document** from the signed PDF, the Recorder's own scan, a phone photo, or
@@ -94,6 +104,9 @@ layer on equal footing with them.
   the result, the date and the document ID.
 - Tenants, buyers and banks can check a lease, offer or statement against the owner's
   registration or public key card, and check binary-signed files.
+- A **combined filing**: tick two boxes and download one PDF with the original
+  document exactly as loaded, the checked copy, and the certificate, which lists the
+  page ranges and each original's SHA-256 fingerprint.
 
 **Built to be trusted**
 - Runs entirely in the browser; a Content-Security-Policy blocks every network
@@ -101,6 +114,11 @@ layer on equal footing with them.
 - Standard OpenPGP: every signature also verifies with stock GnuPG.
 - One self-contained HTML file that works offline.
 - Free and open source, with an express license grant for governments.
+- **Any county or state**: the About tab can switch the program name, county, state,
+  web address and logo for the session (nothing stored), with a settings file to load
+  them again.
+- **Versioned**: the version, build date and changelog are in the page (About this
+  software), with a link to download the tool itself.
 
 ## How to use it
 
@@ -149,6 +167,19 @@ printed pages it will take, and asks you to tick **Sign it anyway**.
 
 ![Long document warning](docs/images/09-long-document.png)
 
+**Selling the property.** Pick the warranty or quitclaim deed and add each buyer's key
+(their public key card, registration form, a photo, or a `.asc` file) under
+**Buyers' signing keys**. The keys go into the deed text and onto a "registration by
+sale" page in the PDF. Once the deed is recorded, it is the parcel's registration:
+the buyers load it in place of a registration form to sign later documents.
+
+![A sale deed naming the buyers' keys](docs/images/10-sale-buyer-keys.png)
+
+**Lien holders** register the same way, choosing **Registering as: Lien holder** and
+naming the lien. A release of that lien (the **Release of lien** template) is then
+checked against the lien holder's registration. **Leaving the program**: the
+**Deregistration** template, signed with every registered key and recorded.
+
 **Binary file signature** (advanced, at the bottom of the Sign tab): for a file you
 send to someone directly, not for recording. Download the `.sig` and the verification
 page and send both with the file.
@@ -166,6 +197,12 @@ registration. For a binary-signed file, open **Check a binary-signed file** and 
 the file with its `.sig` or verification page.
 
 ![Check a filing](docs/images/08-check.png)
+
+To file the check with the document, tick **Include the original document** and
+**Include the checked copy** before downloading the certificate: one PDF with the
+original, the stamped copy and the certificate, in that order.
+
+![Combined filing options](docs/images/11-combined-filing.png)
 
 Anyone can also check a signature without this site, with GnuPG: save the signed text
 (`.txt`) and signature (`.sig`) from the document, import the registered public keys,
@@ -197,7 +234,16 @@ and run `gpg --verify document.txt.sig document.txt`.
 
 ## Rebranding for another jurisdiction
 
-Everything specific to Pima County and Arizona is in a few places:
+**Without changing any code**: on the About tab, open **Use this tool for another
+county or state**. Enter the program name, county, state, web address, business
+verification office and a logo; every page and PDF uses them until the page is
+closed. **Save settings file** keeps them for next time. The "proposed program"
+notice stays on.
+
+![Use this tool for another county or state](docs/images/12-another-county.png)
+
+**For a county's own build**, everything specific to Pima County and Arizona is in a
+few places:
 
 1. **`src/brand.ts`**: program name and acronym, county, **state**, project web
    address (`projectUrl`, printed on every PDF), the office that verifies entity positions
@@ -240,6 +286,19 @@ ImageMagick `convert`; the interop tests need `gpg`. Each is skipped if missing.
 scans and photos), `src/text.ts` (the canonical text that gets signed),
 `src/templates.ts`, `src/brand.ts`, `src/main.ts` and `index.html` (the site).
 `CLAUDE.md` holds the detailed project brief and the open questions.
+
+## Download and verify
+
+The site's footer and its About tab have **Download this tool**, which saves the
+whole program as one HTML file that works offline. To confirm a copy is the official
+one, compare its SHA-256 fingerprint (`sha256sum file.html` on Linux,
+`shasum -a 256 file.html` on a Mac, `Get-FileHash file.html` in Windows PowerShell)
+with the table below. Versions are `v<major>.<minor>.<mmddyyyy>`; the date is the day
+the version was released.
+
+| Version | SHA-256 of the HTML file |
+|---|---|
+| v0.1.11152026 | `94353c444196dd399085e32274bd4fa538c3f612d88603bf4f36815f6bed0420` |
 
 ## License
 

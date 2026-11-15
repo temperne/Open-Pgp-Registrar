@@ -91,6 +91,19 @@ gives counter staff a way to check a filing.
    shows each registration's proof status, and a deed check fails unless the
    registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
    card** PDF for sharing with co-owners.
+   **Roles**: a registration is for the owner of record (default) or a **lien holder**
+   (`role: 'lienholder'`, `interest` names the lien); the role is in
+   `registrationStatement`, the codes (the fifth field becomes a JSON object
+   `{labels, role, interest, transfer}`; a plain label array is still read) and the
+   embedded JSON. A release of lien is checked against the lien holder's registration.
+   **Registration by sale** (`transfer`): a warranty or quitclaim deed can name buyers'
+   keys (`transferClause`, part of the signed text); the deed PDF embeds them as
+   `stop-registration-1.json` with `transfer: {documentId, from}` and prints them as
+   `PGPR1` codes. Loaded as a registration, it is proven by the deed itself
+   (`checkTransfer`: every previous key signed it, and it names the parcel and every
+   new key). The Recorder's index decides which registration or deed is current.
+   Templates also include **Release of lien** and **Deregistration** (leave the
+   program; signed by every registered key).
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
    body), not a file, so it can be checked from paper. Load the parcel's registration
    first (PDF, scan or photo) so the tool knows every owner who must sign, and refuses
@@ -155,6 +168,9 @@ gives counter staff a way to check a filing.
    agency, ink signature and date lines, the document ID barcode, the signed text and
    the codes reprinted. It is appended to the filing. A public key card can stand in
    for the registration (the result then says it was checked against a key only).
+   **Combined filing** (`combinedFilingPdf`): two checkboxes add the original (pages
+   copied untouched) and the checked copy before the certificate, which lists the page
+   ranges and each original's SHA-256.
    **Check a binary-signed file** (`#bin-check`, `verifyBinaryFile`): the file plus
    its `.sig` or verification page (PDF, scan, photo). After any check, a **checked
    copy** (`checkedCopyPdf`) reprints the checked file(s), PDF pages or images, with
@@ -165,6 +181,12 @@ gives counter staff a way to check a filing.
    solves the problem, and an FAQ.
 
 ## Branding
+
+- **Session override** (About tab, "Use this tool for another county or state",
+  `applyJurisdiction` in `brand.ts`): program name, county, state, web address,
+  business verification office and logo, in memory only, with an optional settings
+  file (`stop-jurisdiction-1`). An override always shows the proposed notice for the
+  chosen county.
 
 - Program name, acronym expansion, county, web address (test site:
   https://pimastopinitiative.jasonajensen.workers.dev/) and the proposed/adopted status live in `src/brand.ts`, with
