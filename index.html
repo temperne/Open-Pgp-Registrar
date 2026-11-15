@@ -176,6 +176,26 @@
             <p>OpenPGP, an open standard for digital signatures used for decades to protect software and email.
               Every signature can also be checked with free tools such as GnuPG.</p></details>
         </div>
+
+        <div class="card" id="about-software">
+          <h2>About this software</h2>
+          <dl class="facts">
+            <dt>Version</dt>
+            <dd class="mono" data-app="version"></dd>
+            <dt>Built</dt>
+            <dd data-app="built"></dd>
+          </dl>
+          <p id="self-download">
+            <a class="button" data-self-download download>Download this tool</a>
+            One HTML file that works offline: save it, then open it in any browser. To confirm your copy is the official
+            one, compare its SHA-256 fingerprint with the one published for this version in the project's README on GitHub.
+          </p>
+          <p id="self-offline" class="hint" hidden>You are using a saved copy of this tool, opened from your own computer.</p>
+          <details id="changelog">
+            <summary>What's new: the full list of changes</summary>
+            <div id="changelog-body" class="changelog"></div>
+          </details>
+        </div>
       </section>
 
       <!-- 1. KEY -->
@@ -670,6 +690,11 @@
     <footer class="wrap foot">
       <p><strong data-brand="name">Pima County S.T.O.P. Initiative</strong> (<span data-brand="expansion">Stop Theft of Property</span>). Program website: <span id="project-url">https://pimastopinitiative.jasonajensen.workers.dev/</span></p>
       <p>
+        Version <span class="mono" data-app="version"></span>, built <span data-app="built"></span>.
+        <button type="button" class="linklike" id="show-about-software">Version and changes</button>
+        <span data-self-download-wrap>| <a data-self-download download>Download this tool</a></span>
+      </p>
+      <p>
         Uses standard OpenPGP (RFC 4880) signatures. Every signature can also be checked with GnuPG:
         <code>gpg --verify document.sig document.txt</code>.
       </p>
@@ -731,7 +756,9 @@ each under its own license, which continues to apply to that library:
   - jsQR: Apache-2.0 (https://github.com/cozmo/jsQR)
   - pdf-lib: MIT (https://github.com/Hopding/pdf-lib)
   - node-qrcode: MIT (https://github.com/soldair/node-qrcode)
-  - JsBarcode: MIT (https://github.com/lindell/JsBarcode)</pre>
+  - JsBarcode: MIT (https://github.com/lindell/JsBarcode)
+  - bwip-js: MIT (https://github.com/metafloor/bwip-js)
+  - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)</pre>
       </details>
     </footer>
     <script type="module" src="/src/main.ts"></script>

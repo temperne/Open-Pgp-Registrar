@@ -222,6 +222,18 @@ at fractional pixel sizes, which real scans and photos produce.
 - `tests/`: vitest. Includes GnuPG interop and a test that rasterizes the PDFs and
   decodes the codes with `zbarimg` (both skipped if the tools are missing)
 
+## Versioning
+
+- Versions are `v<major>.<minor>.<mmddyyyy>` (for example `v0.1.11152026`). **Only the
+  project owner changes major or minor.** The last part is always the date the
+  version is tagged.
+- A release: set `version` in `package.json` (without the `v`), move the CHANGELOG's
+  Unreleased items under a heading for the version, build, put the printed SHA-256 in
+  the README's "Download and verify" table, commit, and tag that commit (annotated
+  tag, with the SHA-256 in its message). Two releases on one day: add `-2`, `-3`.
+- The build bakes the version, build date and CHANGELOG into the page ("About this
+  software" on the About tab, and the footer).
+
 ## Commands
 
 - `npm run dev`: dev server

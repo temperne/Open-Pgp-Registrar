@@ -1,8 +1,9 @@
 # Changelog
 
 All notable changes to this project are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
+`v<major>.<minor>.<mmddyyyy>`: the project owner sets major and minor, and the
+last part is the date the version was tagged.
 
 ## [Unreleased]
 

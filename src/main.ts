@@ -2011,6 +2011,53 @@ action(
   'Checking...',
 );
 
+/**
+ * The changelog (Markdown) as safe DOM: headings, lists, bold and code only.
+ * Built with text nodes, so nothing in it can run as HTML.
+ */
+function renderChangelog(md: string): DocumentFragment {
+  const out = document.createDocumentFragment();
+  const inline = (parent: HTMLElement, text: string) => {
+    // **bold**, `code`, [label](url) -> label
+    for (const part of text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').split(/(\*\*[^*]+\*\*|`[^`]+`)/)) {
+      if (!part) continue;
+      if (part.startsWith('**')) parent.append(Object.assign(document.createElement('strong'), { textContent: part.slice(2, -2) }));
+      else if (part.startsWith('`')) parent.append(Object.assign(document.createElement('code'), { textContent: part.slice(1, -1) }));
+      else parent.append(part);
+    }
+  };
+  let list: HTMLUListElement | null = null;
+  let item: HTMLElement | null = null;
+  let para: HTMLElement | null = null;
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const h = /^(#{1,4})\s+(.*)$/.exec(line);
+    const li = /^\s*-\s+(.*)$/.exec(line);
+    if (h) {
+      list = item = para = null;
+      if (h[1].length === 1) continue; // the file's own title
+      const el = document.createElement(h[1].length === 2 ? 'h3' : 'h4');
+      inline(el, h[2]);
+      out.append(el);
+    } else if (li) {
+      para = null;
+      if (!list) out.append((list = document.createElement('ul')));
+      item = document.createElement('li');
+      inline(item, li[1]);
+      list.append(item);
+    } else if (!line.trim()) {
+      list = item = para = null;
+    } else if (item) {
+      inline(item, ` ${line.trim()}`);
+    } else {
+      if (!para) out.append((para = document.createElement('p')));
+      else para.append(' ');
+      inline(para, line.trim());
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
@@ -2050,6 +2097,29 @@ $('proposed-note').hidden = BRAND.status !== 'proposed';
   } else {
     seal.hidden = true;
   }
+}
+// About this software: version, build date and changelog, built into the file.
+document.querySelectorAll<HTMLElement>('[data-app="version"]').forEach((el) => (el.textContent = __APP_VERSION__));
+document.querySelectorAll<HTMLElement>('[data-app="built"]').forEach((el) => (el.textContent = __BUILD_DATE__));
+$('changelog-body').replaceChildren(renderChangelog(__CHANGELOG__));
+$('show-about-software').addEventListener('click', () => {
+  showTab('about');
+  ($('changelog') as HTMLDetailsElement).open = true;
+  $('about-software').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+// Download this tool: a link to this very file. Opened from a saved copy (file://)
+// there is nothing to download, and some browsers would just reload the page.
+{
+  const local = location.protocol === 'file:';
+  const name = `${BRAND.name.replace(/\./g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()}-${__APP_VERSION__}.html`;
+  const href = location.href.split('#')[0];
+  document.querySelectorAll<HTMLAnchorElement>('[data-self-download]').forEach((a) => {
+    a.href = href;
+    a.download = name;
+  });
+  document.querySelectorAll<HTMLElement>('[data-self-download-wrap]').forEach((el) => (el.hidden = local));
+  $('self-download').hidden = local;
+  $('self-offline').hidden = !local;
 }
 if (!input('reg-county').value) input('reg-county').value = BRAND.county;
 if (!input('f-county').value) input('f-county').value = BRAND.county.replace(/\s+County$/i, '');

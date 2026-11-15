@@ -305,4 +305,6 @@ each under its own license, which continues to apply to that library:
   - pdf-lib: MIT (https://github.com/Hopding/pdf-lib)
   - node-qrcode: MIT (https://github.com/soldair/node-qrcode)
   - JsBarcode: MIT (https://github.com/lindell/JsBarcode)
+  - bwip-js: MIT (https://github.com/metafloor/bwip-js)
+  - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)
 ```
