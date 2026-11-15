@@ -14,10 +14,24 @@ gives counter staff a way to check a filing.
 
 ## Hard rules
 
-- **Nothing is stored or sent.** No server, no accounts, no analytics, no
-  localStorage/IndexedDB/cookies. Keys and documents exist only in memory while
-  the tab is open. The production build sets a Content-Security-Policy with
-  `connect-src 'none'`. Do not loosen it.
+- **Nothing is stored, and nothing is sent except through a signing room the person
+  turns on.** No accounts, no localStorage/IndexedDB/cookies, no analytics in the page.
+  Keys and documents exist only in memory while the tab is open. Private keys never
+  leave the tab.
+- **Signing rooms** (`src/room.ts`, the owner's decision, Nov 2026): the only network
+  use. Works only when the page was loaded from exactly the program's address
+  (`BRAND.relayUrl`'s origin, https; `roomsAvailableHere`): a saved copy, another host
+  or a preview can't open or join rooms and links to the official address instead. Off
+  until the person has an unlocked key, agrees to the terms of service and waiver of
+  liability (`#room-terms`, `#room-agree`), and turns on "Sign together"; a room link
+  shows an invitation at the top of the page and asks before joining. The room key is
+  read once at start-up (`INVITED_ROOM`): tab changes rewrite the "#". Messages are AES-GCM encrypted in the tab with a 32-byte key that
+  is only in the link after `#`; the relay sees ciphertext and a hashed room name, and
+  stores nothing. Participants prove their keys by signing a challenge.
+- The production build's Content-Security-Policy allows `connect-src` to `'self'` and
+  the relay host in `BRAND.relayUrl` **only**. Do not loosen it further.
+- **Analytics are server-side only** (`worker/`, Workers Analytics Engine): page loads,
+  downloads and rooms, by country. No script, cookie, IP address or document data.
 - Keys are never published anywhere (no keyservers, no WKD). The public key only
   goes onto the printed registration form.
 - Use standard OpenPGP only. Every signature must also verify with stock GnuPG
@@ -236,6 +250,39 @@ searches size-matched tiles, skips white areas, ignores empty or bogus detection
 signature codes small (`PART_SIZE` = 320, about version 14): large dense codes fail
 at fractional pixel sizes, which real scans and photos produce.
 
+## Worker (`worker/`)
+
+Cloudflare Worker for the hosted site: serves `dist/index.html` (assets binding), relays
+signing rooms (`/relay/<room>`, one Durable Object per room, WebSocket hibernation, no
+storage, at most 16 tabs and 4 MB per message) and counts usage (`stop_usage` dataset).
+Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`). See
+`worker/README.md`. `npx wrangler dev` runs it locally (the relay and the page together).
+
+## County copies, seals, master site
+
+- **Link API** (GET parameters on the page; documented and built live in the panel's
+  "Link settings (API) and link builder"): `name`, `expansion`, `county`, `state`,
+  `recorder`, `url`, `authority`, `seal` (data: image only), and a `#tab`.
+- **Download this county's program** (`src/deploy.ts`): the page's own HTML captured at
+  start-up (`src/pristine.ts`), with a `<script type="application/json" id="stop-config">`
+  settings block (read at start-up as that copy's defaults; a copy is always
+  "proposed"), the seal swapped in, the CSP's connect-src set to the copy's own address
+  (only if "Sign together runs at this address" is ticked; otherwise `MASTER_URL`), and
+  the Worker source (`__WORKER_SOURCE__`) with a wrangler.toml and README, zipped.
+- **`MASTER_URL`** (`src/brand.ts`, fixed in every copy): the original site. Copies
+  without their own rooms send Sign together there; a copy whose relay can't be reached
+  offers "Continue this room on the main site" (same room key).
+- **State seals** (`src/seals.ts`, generated; credits in SEALS.md and on the page): shown
+  when the county isn't the build's default; an uploaded logo wins. Many are insignia.
+
+## County list
+
+`src/counties.ts` is generated from the Census Bureau's 2020 county list (public
+domain): every county and equivalent by state, plus each state's usual title for the
+office that records deeds (`recordingOffice`, with `OFFICE_EXCEPTIONS`). Titles are
+defaults to confirm; the page lets them be corrected. Don't replace it with a
+commercial database whose license forbids republishing (simplemaps' free license does).
+
 ## Layout
 
 - `src/crypto.ts`: openpgp.js wrappers: generate, read, unlock, sign, payload, verify
@@ -287,6 +334,14 @@ Every build that is released, or pushed for a pull request, must be proven:
    - changing the county from the header on another tab, and settings from the link
      (with an embedded seal; "Copy a link" round-trips; a seal at a web address is
      refused with no request)
+   - the county selector and recording offices in other states (Texas, Louisiana)
+   - the state seal switching with the state, the link builder's link round-tripping,
+     and "Download this county's program": the zip's HTML opens as that county (office,
+     seal), its CSP allows only its own address, and its PDFs name it
+   - two owners signing together in a signing room through a test relay, with the app
+     served at the program's exact address (and a saved copy refused): off until a
+     key is unlocked and it is turned on, the link asks first, peers proven by their
+     keys, every relay message encrypted, and the result checks GOOD
    - no page errors and no network requests
 4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
    each check and its files), goes to `proof/<version>/`. Commit that folder. The

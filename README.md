@@ -114,9 +114,10 @@ layer on equal footing with them.
 - Standard OpenPGP: every signature also verifies with stock GnuPG.
 - One self-contained HTML file that works offline.
 - Free and open source, with an express license grant for governments.
-- **Any county or state**: the About tab can switch the program name, county, state,
-  web address and logo for the session (nothing stored), with a settings file to load
-  them again.
+- **Any county or state**: pick any U.S. county from the list (Census Bureau, public
+  domain); its recording office is filled in (County Recorder, County Clerk, Register of
+  Deeds...). The program name, web address and logo can be changed too, for the session,
+  from a settings file, or from the link.
 - **Versioned**: the version, build date and changelog are in the page (About this
   software), with a link to download the tool itself.
 
@@ -177,6 +178,15 @@ registration form: they load the deed with **Sign exactly as others** (or use th
 computer), unlock their key, and choose **Prove my buyer key**.
 
 ![A sale deed naming the buyers' keys](docs/images/10-sale-buyer-keys.png)
+
+**Signing together, live.** Owners (and buyers) can sign the same document at the same
+time, each on their own computer, on the program's own site (a saved copy can't): unlock
+your key, turn on **Sign together** on the Sign tab, start a room and send the link. Everyone appears with the key they proved they
+hold, and every signature shows up in every tab. The document is encrypted in each tab
+with a key that is only in the link, so the program's relay can't read it, and nothing is
+stored. It's off until you turn it on. The relay is the site's own Cloudflare Worker
+([`worker/`](worker/README.md)), which also counts page loads, downloads and rooms by
+country, with no tracking in the page.
 
 **Lien holders** register the same way, choosing **Registering as: Lien holder** and
 naming the lien. A release of that lien (the **Release of lien** template) is then
@@ -252,7 +262,23 @@ Link settings: `name`, `expansion`, `county`, `state`, `url`, `authority`, and `
 The seal must be the image itself as a `data:image/png;base64,...` (or `image/jpeg`)
 address: the page never loads anything from another server, so a seal at a web
 address is refused. **Copy a link with these settings** in the panel builds the link,
-logo included. **Save settings file** keeps them for next time. The "proposed program"
+logo included. The panel's **Link settings (API) and link builder** section documents every
+parameter and builds the link live.
+
+**Rapid deployment for another county.** In the same section, **Download this county's
+program** makes a zip: the whole program as one HTML file with that county's settings and
+seal built in as its defaults, plus the Cloudflare Worker that serves it, relays its
+signing rooms and counts its use, and a README (`npm install && npx wrangler deploy`).
+Enter the copy's web address (printed on its PDFs). Tick "Sign together runs at this
+address" to run signing rooms on its own Worker; otherwise, or whenever its relay can't
+be reached, Sign together falls back to the master site,
+https://pimastopinitiative.jasonajensen.workers.dev, in the same room. Each copy can
+make the next county's copy.
+
+**State seals.** Choosing a county in another state shows that state's seal on the page
+and the PDFs (Pima County keeps its own; an uploaded logo always wins). The 50 seals come
+from Wikimedia Commons; their credits are in [SEALS.md](SEALS.md). Many states restrict
+the use of their seal by law: get permission before any official use. **Save settings file** keeps them for next time. The "proposed program"
 notice stays on.
 
 ![Use this tool for another county or state](docs/images/12-another-county.png)
@@ -319,7 +345,7 @@ the version was released.
 
 | Version | SHA-256 of the HTML file |
 |---|---|
-| v0.1.11152026 | `0c0a4ba666843fe0899333997d4391617e7cd72f1e84c2f7f525cd9ef3cff73e` |
+| v0.1.11152026 | `671fc55f164ef552cd5c47877d36f8f4bbd738de19306acf9295900778cdbf97` |
 
 ## License
 
@@ -387,4 +413,11 @@ each under its own license, which continues to apply to that library:
   - JsBarcode: MIT (https://github.com/lindell/JsBarcode)
   - bwip-js: MIT (https://github.com/metafloor/bwip-js)
   - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)
+  - County names: U.S. Census Bureau, 2020 FIPS county codes, a U.S. government work
+    in the public domain (https://www2.census.gov/geo/docs/reference/codes2020/)
+  - State seals: Wikimedia Commons, Category: SVG state seals of the United States
+    (https://commons.wikimedia.org/wiki/Category:SVG_state_seals_of_the_United_States).
+    49 are public domain; Maryland's is CC BY-SA 4.0 and stays under that license.
+    Each file's author and license are in SEALS.md and on the page (About this
+    software). Many are insignia whose use is restricted by state law.
 ```

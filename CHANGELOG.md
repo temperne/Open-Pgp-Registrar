@@ -63,6 +63,40 @@ last part is the date the version was tagged.
   registration: the certificate reprints the buyers' keys from a sale deed. Loading a
   signed document as a registration explains what to load instead.
 
+### Sign together, county list, analytics (this release)
+- **Sign together, live (signing rooms).** Co-owners and buyers sign the same document at
+  once, each on their own computer, through the program's relay. It works **only when the
+  page was loaded from the program's own address** (a saved copy or another host can't use
+  it, and says where to go), needs an unlocked private key and agreement to its **terms of
+  service and waiver of liability** (shown in place), and is **off until turned on**; a
+  room link shows an invitation and asks before joining. Everything is encrypted in the tab with a key that
+  is only in the link (after "#", never sent to a server); participants appear proven by
+  their keys. The relay stores nothing. The security policy allows that one host only.
+- **County selector:** every U.S. county and county equivalent (U.S. Census Bureau list,
+  public domain), Pima County by default. Choosing one fills in its **recording office**
+  from the state's usual title (County Recorder, County Clerk, Register of Deeds, Clerk of
+  Court, Town Clerk...) with known county exceptions; it can be corrected, and given in a
+  link (`recorder=`). Registration forms, certificates and templates name that office, and
+  templates write parishes, boroughs and independent cities correctly.
+- **State seals:** choosing a county in another state shows that state's seal on the page
+  and every PDF (an uploaded logo still wins; Pima County keeps its own). The 50 seals
+  come from Wikimedia Commons, credited on the page and in `SEALS.md`. Many are insignia
+  whose use states restrict by law, as the page says.
+- **Link builder and API documentation:** the county panel documents every link setting
+  and builds the link live from the settings as they are, with the tab to open on, the
+  logo optionally included, and Copy and Open buttons.
+- **Download this county's program:** a zip with the whole program as one HTML file,
+  that county's settings (and seal) built in as its defaults, and the Cloudflare Worker
+  that serves it, relays its signing rooms and counts its use, with instructions. The
+  copy can make the next county's copy. Copies always say "proposed program". The copy's
+  web address is its program address; a checkbox runs Sign together there with its own
+  Worker. Otherwise, or if its relay can't be reached, Sign together falls back to the
+  master site (https://pimastopinitiative.jasonajensen.workers.dev), same room.
+- **Analytics on the server side only:** the site's Worker counts page loads, downloads and
+  signing rooms by country (Cloudflare Workers Analytics Engine). No script in the page, no
+  cookies, no IP addresses, nothing about anyone's documents. The Worker (`worker/`) also
+  serves the site and the relay.
+
 ### Build proof (this release)
 - `npm run proof` runs the built app through the full ownership chain (complex
   registration, two sales, every form of the Recorder's filing as the next

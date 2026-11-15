@@ -38,17 +38,30 @@ export interface RoomEvents {
   onJoined(room: SigningRoom): void;
 }
 
-/** The relay to use: this site's own host when served by it (or locally), else the program's relay. */
+/**
+ * Sign together works only when this page was loaded from exactly the program's own
+ * address (BRAND.relayUrl): a saved copy, another host or a preview can't open or join
+ * rooms. Returns the relay's WebSocket address, or '' when signing rooms aren't available.
+ */
 export function relayBase(): string {
+  return roomsAvailableHere() ? `wss://${new URL(BRAND.relayUrl).host}` : '';
+}
+
+/** The program's own address, where Sign together works ('' if rooms are turned off). */
+export function officialOrigin(): string {
   try {
-    const here = new URL(location.href);
-    const relay = BRAND.relayUrl ? new URL(BRAND.relayUrl) : null;
-    if (/^https?:$/.test(here.protocol) && (here.host === relay?.host || /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(here.host))) {
-      return `${here.protocol === 'https:' ? 'wss' : 'ws'}://${here.host}`;
-    }
-    return relay ? `${relay.protocol === 'http:' ? 'ws' : 'wss'}://${relay.host}` : '';
+    return BRAND.relayUrl ? new URL(BRAND.relayUrl).origin : '';
   } catch {
     return '';
+  }
+}
+
+export function roomsAvailableHere(): boolean {
+  try {
+    const official = officialOrigin();
+    return !!official && location.origin === official && location.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 

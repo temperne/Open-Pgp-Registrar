@@ -1,3 +1,12 @@
+import { PRISTINE_HTML } from './pristine';
+/** A signing-room invitation in the link (#room=...), kept before tab changes rewrite the "#". */
+const INVITED_ROOM = (() => {
+  try {
+    return /^#room=([A-Za-z0-9_-]{20,})$/.exec(location.hash)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+})();
 import './style.css';
 import type * as openpgp from 'openpgp';
 import {
@@ -75,8 +84,11 @@ import {
   combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
-import { BRAND, BRAND_DEFAULTS, applyJurisdiction, type Jurisdiction } from './brand';
-import { SigningRoom, relayBase, type Peer, type RoomMessage } from './room';
+import { BRAND, BRAND_DEFAULTS, MASTER_URL, applyJurisdiction, type Jurisdiction } from './brand';
+import { SigningRoom, relayBase, officialOrigin, roomsAvailableHere, type Peer, type RoomMessage } from './room';
+import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
+import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
+import { STATE_SEALS } from './seals';
 import { bestQr } from './codes';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText, safeText } from './text';
@@ -322,6 +334,7 @@ function isReplacement() {
 // ---------------------------------------------------------------------------
 function refresh() {
   showAutoSigners();
+  showRoomConsent();
   if (state.draft) renderDraft();
   if (room?.ws) {
     renderPeers();
@@ -1651,6 +1664,15 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
       : connected
         ? `Connected (encrypted). ${tabs} tab${tabs === 1 ? '' : 's'} in the room, yours included.`
         : (detail ?? (room ? 'Disconnected from the signing room.' : ''));
+  // Can't reach this copy's relay: fall back to the program's master site, same room
+  // (the room's key is in the link, so everyone who follows it meets there).
+  if (status === 'closed' && detail && room && officialOrigin() !== MASTER_URL) {
+    el.append(
+      ' Continue this room on the main site: ',
+      Object.assign(document.createElement('a'), { href: `${MASTER_URL}/#room=${room.secret}`, textContent: `${MASTER_URL.replace(/^https:\/\//, '')} (same room)`, target: '_blank', rel: 'noopener' }),
+      '. Send that link to the others too.',
+    );
+  }
   $('room-leave').hidden = !room || status === 'closed';
   $('room-start').hidden = !!room && status !== 'closed';
   $('room-share').hidden = !room || status === 'closed';
@@ -1751,8 +1773,59 @@ function qrSvg(m: { size: number; dark(r: number, c: number): boolean }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" role="img" aria-label="QR code of the room link"><rect width="${n}" height="${n}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
 }
 
+// ---- Turning Sign together on: the page says where it was loaded from and where it would connect ----
+function showRoomConsent() {
+  const official = officialOrigin();
+  const here = roomsAvailableHere();
+  $('room-host').textContent = official.replace(/^https:\/\//, '');
+  let where = '';
+  try {
+    where = location.protocol === 'file:' ? 'a saved copy on this computer' : location.origin;
+  } catch {
+    where = 'an embedded preview';
+  }
+  const msg = $('room-where');
+  msg.innerHTML = '';
+  if (here) {
+    msg.textContent = `This page was loaded from ${official}, the program\u2019s own address. Sign together connects this tab to that same address, and only while you are in a room.`;
+  } else {
+    // Only the program's own address can sign together: a copy elsewhere can't be trusted to.
+    msg.append(
+      `Sign together works only on the program\u2019s own address. This page was loaded from ${where}. To sign together, open `,
+      Object.assign(document.createElement('a'), { href: `${official}/${/^#room=/.test(location.hash) ? location.hash : '#sign'}`, textContent: official, rel: 'noopener' }),
+      ' and use it there.',
+    );
+  }
+  // A room is for key holders who accepted the terms: unlock your private key first, so the
+  // others see you proven by it, and agree to the terms of service and waiver of liability.
+  input('room-agree').disabled = !here;
+  const ready = here && !!state.signer && input('room-agree').checked;
+  input('room-enable').disabled = !ready;
+  if (!ready && input('room-enable').checked && !room) input('room-enable').checked = false;
+  $('room-need-key').hidden = !here || !!state.signer;
+  const on = input('room-enable').checked && ready;
+  ($('room-start') as HTMLButtonElement).disabled = !on;
+  ($('room-join') as HTMLButtonElement).disabled = !on;
+}
+input('room-agree').addEventListener('change', () => {
+  // Withdrawing agreement turns Sign together off (and leaves any room).
+  if (!input('room-agree').checked && input('room-enable').checked) {
+    input('room-enable').checked = false;
+    if (room) $('room-leave').click();
+  }
+  showRoomConsent();
+});
+input('room-enable').addEventListener('change', () => {
+  // Turning it off leaves any room.
+  if (!input('room-enable').checked && room) $('room-leave').click();
+  showRoomConsent();
+});
+
 action('room-start', async () => {
-  if (!relayBase()) throw new UserError('Signing rooms are turned off for this site.');
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
   await enterRoom(await SigningRoom.create(roomEvents));
   try {
     history.replaceState(null, '', `#room=${room!.secret}`);
@@ -1761,7 +1834,12 @@ action('room-start', async () => {
   }
 });
 action('room-join', async () => {
-  const secret = /room=([A-Za-z0-9_-]+)/.exec(location.hash)?.[1];
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  $('room-invite-top').hidden = true;
+  const secret = INVITED_ROOM || /room=([A-Za-z0-9_-]+)/.exec(location.hash)?.[1];
   if (!secret) throw new UserError('This link has no signing room in it.');
   $('room-invite').hidden = true;
   await enterRoom(await SigningRoom.open(secret, roomEvents));
@@ -2521,7 +2599,7 @@ action(
           signedText: r.signedText,
           codes: orderedCodes(payload),
         };
-        if (!input('c-agency').value) input('c-agency').value = `${BRAND.county} Recorder`;
+        if (!input('c-agency').value) input('c-agency').value = BRAND.recorderOffice;
         const parcel = /PARCEL NUMBERS?:\s*([0-9][0-9A-Z-]*(?:\s*,\s*[0-9][0-9A-Z-]*)*)/.exec(r.signedText);
         input('c-parcels').value = registration.parcel || (parcel ? parcel[1] : '');
         $('cert-wrap').hidden = false;
@@ -2605,6 +2683,26 @@ try {
 }
 $('frame-note').hidden = !framed;
 
+// A county's copy ("Download this county's program") carries its settings: they are its defaults.
+{
+  const cfg = bakedConfig();
+  if (cfg) {
+    const keys = ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority', 'relayUrl'] as const;
+    for (const k of keys) {
+      const v = cfg[k];
+      if (typeof v === 'string' && (v.trim() || k === 'relayUrl')) {
+        BRAND[k] = v.trim();
+        BRAND_DEFAULTS[k] = v.trim();
+      }
+    }
+    // A copy can never claim the county adopted it: that takes the county's own source build.
+    BRAND.status = BRAND_DEFAULTS.status = 'proposed';
+    BRAND.proposedNotice = BRAND_DEFAULTS.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
+    document.querySelectorAll<HTMLElement>('[data-copy-of]').forEach((el) => (el.hidden = false));
+    $('copy-of').textContent = `${BRAND.county}, ${BRAND.state} (a copy made from ${cfg.madeFrom ?? 'the S.T.O.P. tool'})`;
+  }
+}
+
 // Branding (src/brand.ts) and the seal embedded in index.html. Re-run when the
 // jurisdiction is overridden ("Use this tool for another county or state").
 let defaultSeal: { bytes: Uint8Array; src: string } | null = null;
@@ -2622,6 +2720,16 @@ let customLogo: { bytes: Uint8Array; type: string } | null = null;
   }
 }
 
+/**
+ * The seal to show when no logo was uploaded: the build's own seal while the county is
+ * still its default (Pima County, or a county copy's own), otherwise the chosen state's
+ * seal (src/seals.ts), if there is one.
+ */
+function sealForState(state = BRAND.state, county = BRAND.county) {
+  if (county === BRAND_DEFAULTS.county && state === BRAND_DEFAULTS.state && defaultSeal) return null;
+  return STATE_SEALS[state] ?? null;
+}
+
 function applyBrandToPage() {
   document.title = `${BRAND.name} (${BRAND.expansion})`;
   document.querySelectorAll<HTMLElement>('[data-brand]').forEach((el) => {
@@ -2637,10 +2745,16 @@ function applyBrandToPage() {
     holder.textContent = BRAND.projectUrl;
   }
   const seal = $<HTMLImageElement>('brand-seal');
+  const stateSeal = sealForState();
   if (customLogo) {
     seal.src = `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`;
     seal.hidden = false;
     setBrandSeal(customLogo.bytes);
+  } else if (stateSeal) {
+    seal.src = `data:image/png;base64,${stateSeal.png}`;
+    seal.alt = `Seal of ${BRAND.state}`;
+    seal.hidden = false;
+    setBrandSeal(fromBase64Text(stateSeal.png));
   } else if (defaultSeal) {
     seal.src = defaultSeal.src;
     seal.hidden = false;
@@ -2663,11 +2777,62 @@ function openJurisdiction() {
 $('j-open').addEventListener('click', openJurisdiction);
 $('brand-seal').addEventListener('click', openJurisdiction);
 $('brand-seal').title = 'Change the county, state or logo';
+// State and county selectors (src/counties.ts: every U.S. county, from the Census Bureau).
+const stateSelect = $<HTMLSelectElement>('j-state');
+const countySelect = $<HTMLSelectElement>('j-county');
+for (const code of Object.keys(STATES).sort((a, b) => STATES[a].name.localeCompare(STATES[b].name))) {
+  stateSelect.append(new Option(STATES[code].name, STATES[code].name));
+}
+/** Fills the county list for the chosen state (keeping a county from a link even if it isn't listed). */
+function fillCounties(selected: string) {
+  const list = countiesOf(stateCode(stateSelect.value));
+  countySelect.innerHTML = '';
+  for (const c of list) countySelect.append(new Option(c, c));
+  if (selected && !list.includes(selected)) countySelect.append(new Option(selected, selected));
+  countySelect.value = selected && [...countySelect.options].some((o) => o.value === selected) ? selected : (list[0] ?? '');
+}
+/** The county the form's names were last filled from (they follow it until typed differently). */
+let formCounty = BRAND.county;
+/** Picking a county fills in its recording office and the names that carry the county. */
+function countyChosen() {
+  const county = countySelect.value;
+  input('j-recorder').value = recordingOffice(stateCode(stateSelect.value), county);
+  for (const id of ['j-name', 'j-authority']) {
+    const v = input(id).value;
+    if (formCounty && v.includes(formCounty)) input(id).value = v.split(formCounty).join(county);
+  }
+  formCounty = county;
+}
+function sealPreview() {
+  const img = $<HTMLImageElement>('j-seal-preview');
+  const s = customLogo ? null : sealForState(stateSelect.value, countySelect.value);
+  img.src = customLogo
+    ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`
+    : s
+      ? `data:image/png;base64,${s.png}`
+      : (defaultSeal?.src ?? '');
+  img.hidden = !img.src;
+  $('j-seal-note').textContent = customLogo ? 'Your logo.' : s ? `The seal of ${stateSelect.value}${s.insignia ? ' (its use is restricted by state law: get permission before official use)' : ''}.` : 'This build\u2019s own seal.';
+}
+stateSelect.addEventListener('change', () => {
+  fillCounties('');
+  countyChosen();
+  sealPreview();
+});
+countySelect.addEventListener('change', () => {
+  countyChosen();
+  sealPreview();
+});
+
 function fillJurisdictionForm() {
   input('j-name').value = BRAND.name;
   input('j-expansion').value = BRAND.expansion;
-  input('j-county').value = BRAND.county;
-  input('j-state').value = BRAND.state;
+  if (![...stateSelect.options].some((o) => o.value === BRAND.state)) stateSelect.append(new Option(BRAND.state, BRAND.state));
+  stateSelect.value = BRAND.state;
+  fillCounties(BRAND.county);
+  formCounty = BRAND.county;
+  sealPreview();
+  input('j-recorder').value = BRAND.recorderOffice;
   input('j-url').value = BRAND.projectUrl;
   input('j-authority').value = BRAND.entityAuthority;
 }
@@ -2679,6 +2844,7 @@ const LINK_KEYS: [string, keyof Jurisdiction][] = [
   ['expansion', 'expansion'],
   ['county', 'county'],
   ['state', 'state'],
+  ['recorder', 'recorderOffice'],
   ['url', 'projectUrl'],
   ['authority', 'entityAuthority'],
 ];
@@ -2717,12 +2883,100 @@ function settingsFromLink() {
     // Names that still carry the default county follow the county given in the link.
     if (j.county && !j.name && BRAND.name.includes(BRAND.county)) j.name = BRAND.name.split(BRAND.county).join(j.county.trim());
     if (j.county && !j.entityAuthority && BRAND.entityAuthority.includes(BRAND.county)) j.entityAuthority = BRAND.entityAuthority.split(BRAND.county).join(j.county.trim());
+    if (j.county && !j.recorderOffice) j.recorderOffice = recordingOffice(stateCode(j.state ?? BRAND.state), j.county.trim());
     useJurisdiction(j, logo);
     $('j-status').textContent = `Settings from the link: ${BRAND.name} (${BRAND.county}, ${BRAND.state}).`;
   } catch (err) {
     banner(`The settings in this link could not be used: ${(err as Error).message}`);
   }
 }
+
+// ---- Download this county's program: the HTML with its settings built in, and the Worker ----
+action('lb-package', async () => {
+  const host = input('lb-host').value.trim().replace(/\/$/, '');
+  if (host && !/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(host)) {
+    throw new UserError('The address must be an https address with no path, like https://maricopa-county-stop.your-account.workers.dev');
+  }
+  const ownRooms = input('lb-rooms').checked;
+  if (ownRooms && !host) throw new UserError('To run Sign together at the copy\u2019s own address, enter that address.');
+  const cfg = cleanConfig({
+    name: input('j-name').value,
+    expansion: input('j-expansion').value,
+    county: input('j-county').value,
+    state: input('j-state').value,
+    recorderOffice: input('j-recorder').value,
+    // The copy's own address is its program address (printed on its PDFs).
+    projectUrl: host ? `${host}/` : input('j-url').value.trim(),
+    entityAuthority: input('j-authority').value,
+    // Sign together: at the copy's own address (its own Worker), or at the original program's site.
+    relayUrl: ownRooms ? host : MASTER_URL,
+    madeFrom: `${__APP_VERSION__}, ${new Date().toISOString().slice(0, 10)}`,
+  });
+  if (!cfg.county || !cfg.state) throw new UserError('Choose the state and county first.');
+  const f = input('j-logo').files?.[0];
+  const logo = f ? await logoFromFile(f) : customLogo;
+  const st = logo ? null : sealForState(cfg.state, cfg.county);
+  const html = countyHtml(PRISTINE_HTML, cfg, logo ? { type: logo.type, base64: toBase64(logo.bytes) } : st ? { type: 'image/png', base64: st.png } : null);
+  download(countyPackage(html, cfg, __WORKER_SOURCE__), `${slug(cfg.name)}-program.zip`, 'application/zip');
+  $('lb-status').textContent = `Downloaded the program for ${cfg.county}, ${cfg.state}. Unzip it and follow its README.md.`;
+});
+
+document.querySelectorAll<HTMLElement>('[data-official-site]').forEach((el) => (el.textContent = MASTER_URL));
+
+// ---- Link builder: the link for the panel's settings as they are now ----
+{
+  const base = $<HTMLSelectElement>('lb-base');
+  const official = officialOrigin();
+  const here = (() => {
+    try {
+      return location.protocol === 'file:' ? '' : location.href.split(/[?#]/)[0];
+    } catch {
+      return '';
+    }
+  })();
+  if (official) base.append(new Option(`The program's site (${official.replace(/^https:\/\//, '')})`, `${official}/`));
+  if (here && here !== `${official}/`) base.append(new Option(`This page's address (${here})`, here));
+  if (!base.options.length) base.append(new Option('The program\u2019s web address', BRAND.projectUrl));
+}
+
+function buildLink() {
+  const fields: [string, string, string][] = [
+    ['county', input('j-county').value, BRAND_DEFAULTS.county],
+    ['state', input('j-state').value, BRAND_DEFAULTS.state],
+    ['recorder', input('j-recorder').value, BRAND_DEFAULTS.recorderOffice],
+    ['name', input('j-name').value, BRAND_DEFAULTS.name],
+    ['expansion', input('j-expansion').value, BRAND_DEFAULTS.expansion],
+    ['url', input('j-url').value, BRAND_DEFAULTS.projectUrl],
+    ['authority', input('j-authority').value, BRAND_DEFAULTS.entityAuthority],
+  ];
+  const q = new URLSearchParams();
+  for (const [k, v, d] of fields) if (v.trim() && v.trim() !== d) q.set(k, v.trim());
+  if (input('lb-seal').checked && customLogo) q.set('seal', `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`);
+  const tab = $<HTMLSelectElement>('lb-tab').value;
+  const link = `${$<HTMLSelectElement>('lb-base').value}${q.toString() ? `?${q.toString()}` : ''}${tab ? `#${tab}` : ''}`;
+  textarea('lb-out').value = link;
+  ($('lb-open') as HTMLAnchorElement).href = link;
+  ($('lb-seal') as HTMLInputElement).disabled = !customLogo;
+  $('lb-status').textContent =
+    (customLogo ? '' : 'To put a logo in the link, choose it above and press "Use these settings" first. ') +
+    (link.length > 60000 ? 'The link is long because it carries the logo itself; some apps may shorten or break long links.' : '');
+  return link;
+}
+for (const id of ['j-name', 'j-expansion', 'j-recorder', 'j-url', 'j-authority']) input(id).addEventListener('input', buildLink);
+// The county and state change other fields first (their own listeners), so follow them a moment later.
+for (const id of ['j-state', 'j-county']) $(id).addEventListener('change', () => setTimeout(buildLink));
+for (const id of ['lb-base', 'lb-tab', 'lb-seal']) $(id).addEventListener('change', buildLink);
+$('link-api').addEventListener('toggle', buildLink);
+action('lb-copy', async () => {
+  const link = buildLink();
+  try {
+    await navigator.clipboard.writeText(link);
+    $('lb-status').textContent = 'Link copied.';
+  } catch {
+    textarea('lb-out').select();
+    $('lb-status').textContent = 'Select the link above and copy it.';
+  }
+});
 
 action('j-link', async () => {
   const q = new URLSearchParams();
@@ -2747,26 +3001,29 @@ action('j-link', async () => {
 });
 
 /** Form defaults that still hold the old county follow the new one. */
-function followCounty(oldCounty: string) {
+function followCounty(oldCounty: string, oldOffice = '') {
   if (!input('reg-county').value || input('reg-county').value === oldCounty) input('reg-county').value = BRAND.county;
   const short = (c: string) => c.replace(/\s+County$/i, '');
-  if (!input('f-county').value || input('f-county').value === short(oldCounty)) input('f-county').value = short(BRAND.county);
-  if (input('c-agency').value === `${oldCounty} Recorder`) input('c-agency').value = `${BRAND.county} Recorder`;
+  const f = input('f-county').value;
+  if (!f || f === short(oldCounty) || f === oldCounty) input('f-county').value = BRAND.county;
+  if (!input('c-agency').value || input('c-agency').value === `${oldCounty} Recorder` || input('c-agency').value === oldOffice) input('c-agency').value = BRAND.recorderOffice;
   syncTemplate();
 }
 
 function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLogo) {
   const oldCounty = BRAND.county;
+  const oldOffice = BRAND.recorderOffice;
   const clean = j && (Object.fromEntries(Object.entries(j).map(([k, v]) => [k, safeText(String(v ?? '')).trim()])) as Partial<Jurisdiction>);
   applyJurisdiction(clean);
   customLogo = logo;
   applyBrandToPage();
   fillJurisdictionForm();
-  followCounty(oldCounty);
-  const custom = !!logo || (['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
+  followCounty(oldCounty, oldOffice);
+  const custom = !!logo || (['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
   $('j-status').textContent = custom
     ? `Using ${BRAND.name} (${BRAND.county}, ${BRAND.state}) until this page is closed.`
     : 'Using the defaults.';
+  buildLink();
 }
 
 async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>> {
@@ -2777,17 +3034,8 @@ async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>>
 action('j-apply', async () => {
   const f = input('j-logo').files?.[0];
   const logo = f ? await logoFromFile(f) : customLogo;
-  // Names that still carry the old county follow the new one ("Pima County S.T.O.P. Initiative"
-  // becomes "Maricopa County S.T.O.P. Initiative"), unless they were typed differently.
-  const oldCounty = BRAND.county;
-  const newCounty = input('j-county').value.trim();
-  if (newCounty && newCounty !== oldCounty) {
-    for (const [id, current] of [['j-name', BRAND.name], ['j-authority', BRAND.entityAuthority]] as const) {
-      if (input(id).value === current && current.includes(oldCounty)) input(id).value = current.split(oldCounty).join(newCounty);
-    }
-  }
   useJurisdiction(
-    { name: input('j-name').value, expansion: input('j-expansion').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
+    { name: input('j-name').value, expansion: input('j-expansion').value, recorderOffice: input('j-recorder').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
     logo,
   );
   input('j-logo').value = '';
@@ -2802,6 +3050,7 @@ action('j-save', () => {
     name: BRAND.name,
     expansion: BRAND.expansion,
     county: BRAND.county,
+    recorderOffice: BRAND.recorderOffice,
     state: BRAND.state,
     projectUrl: BRAND.projectUrl,
     entityAuthority: BRAND.entityAuthority,
@@ -2836,6 +3085,19 @@ input('j-load').addEventListener('change', async () => {
 document.querySelectorAll<HTMLElement>('[data-app="version"]').forEach((el) => (el.textContent = __APP_VERSION__));
 document.querySelectorAll<HTMLElement>('[data-app="built"]').forEach((el) => (el.textContent = __BUILD_DATE__));
 $('changelog-body').replaceChildren(renderChangelog(__CHANGELOG__));
+{
+  // Credits for the state seals (Wikimedia Commons), as their licenses require.
+  const ul = $('seal-credits');
+  for (const [state, s] of Object.entries(STATE_SEALS)) {
+    const li = document.createElement('li');
+    li.append(
+      `${state}: `,
+      Object.assign(document.createElement('a'), { href: s.source, textContent: s.file, rel: 'noopener' }),
+      ` by ${s.author}, ${s.license}${s.insignia ? ' (insignia: use restricted by law)' : ''}.`,
+    );
+    ul.append(li);
+  }
+}
 $('show-about-software').addEventListener('click', () => {
   showTab('about');
   ($('changelog') as HTMLDetailsElement).open = true;
@@ -2858,15 +3120,19 @@ $('show-about-software').addEventListener('click', () => {
   $('self-offline').hidden = !local;
 }
 if (!input('reg-county').value) input('reg-county').value = BRAND.county;
-if (!input('f-county').value) input('f-county').value = BRAND.county.replace(/\s+County$/i, '');
+if (!input('f-county').value) input('f-county').value = BRAND.county;
 syncTemplate();
 
 const initial = location.hash.slice(1) as Tab;
-const roomLink = /^#room=[A-Za-z0-9_-]{20,}$/.test(location.hash);
+const roomLink = !!INVITED_ROOM;
 showTab(roomLink ? 'sign' : TABS.includes(initial) ? initial : 'about');
 // A room link: offer to join (nothing connects until the person chooses to).
-if (roomLink) $('room-invite').hidden = false;
-if (!relayBase()) $('room-card').hidden = true;
+if (roomLink) {
+  $('room-invite').hidden = false;
+  $('room-invite-top').hidden = false;
+}
+if (!officialOrigin()) $('room-card').hidden = true;
+showRoomConsent();
 $('boot').hidden = true;
 // After start-up, so a problem with the link's settings stays visible.
 settingsFromLink();

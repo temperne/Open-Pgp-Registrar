@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 // Version, build date and changelog are built into the page (About this software).
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8');
+// The Worker's source, built in so the page can package it for another county.
+const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.url), 'utf8');
 
 // The built app is one self-contained HTML file. Owners and Recorder staff can
 // save it and open it offline. The Content-Security-Policy allows network
@@ -62,6 +64,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(`v${pkg.version}`),
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
     __CHANGELOG__: JSON.stringify(changelog),
+    __WORKER_SOURCE__: JSON.stringify(workerSource),
   },
   build: { target: 'es2022' },
   test: { testTimeout: 60000 },

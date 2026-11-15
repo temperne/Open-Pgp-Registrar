@@ -43,6 +43,10 @@
       </div>
       <div class="wrap">
         <p id="proposed-note" class="callout warn" data-brand="proposedNotice" hidden></p>
+        <p id="room-invite-top" class="callout" hidden>
+          <strong>You're invited to sign together.</strong> This link opens a signing room. First unlock your private key
+          (step 1, Your key), then go to step 3, Sign a document, turn on Sign together and join.
+        </p>
         <details class="card jurisdiction" id="jurisdiction">
           <summary><strong>Change the county or state</strong></summary>
           <p class="hint">
@@ -55,8 +59,15 @@
           <div class="grid2 tight">
             <div><label for="j-name">Program name</label><input id="j-name" /></div>
             <div><label for="j-expansion">What the acronym stands for</label><input id="j-expansion" /></div>
-            <div><label for="j-county">County</label><input id="j-county" placeholder="e.g. Maricopa County" /></div>
-            <div><label for="j-state">State</label><input id="j-state" placeholder="e.g. Arizona" /></div>
+            <div>
+              <label for="j-state">State</label><select id="j-state"></select>
+              <div class="seal-preview"><img id="j-seal-preview" alt="Seal preview" width="64" height="64" /><span id="j-seal-note" class="hint"></span></div>
+            </div>
+            <div><label for="j-county">County</label><select id="j-county"></select></div>
+            <div class="span2">
+              <label for="j-recorder">Office that records deeds there <span class="opt">(filled in from the state's usual title: confirm it with the county and correct it if needed)</span></label>
+              <input id="j-recorder" />
+            </div>
             <div><label for="j-url">Program web address</label><input id="j-url" /></div>
             <div class="span2"><label for="j-authority">Office that confirms business and trust signers</label><input id="j-authority" /></div>
             <div class="span2"><label for="j-logo">Logo or seal <span class="opt">(PNG or JPG; used on the page and every PDF)</span></label><input id="j-logo" type="file" accept="image/*" /></div>
@@ -68,13 +79,70 @@
             <button type="button" id="j-save">Save settings file</button>
             <button type="button" id="j-link">Copy a link with these settings</button>
           </div>
-          <p class="hint">
-            Settings can also come from the link itself, for example
-            <code>?county=Maricopa%20County&amp;state=Arizona</code>. Link settings: <code>name</code>, <code>expansion</code>,
-            <code>county</code>, <code>state</code>, <code>url</code>, <code>authority</code> and <code>seal</code> (the image itself as a
-            <code>data:image/png;base64,...</code> address: the page never loads images from other servers).
-          </p>
+          <details class="api" id="link-api">
+            <summary>Link settings (API) and link builder</summary>
+            <p class="hint">
+              Every setting above can be given in the page's address, so a county can hand out one link that opens the
+              tool already set up. Parameters go after <code>?</code>, joined by <code>&amp;</code>, with spaces written as
+              <code>%20</code>. Anything left out keeps its default. A tab can be named after <code>#</code>.
+            </p>
+            <table class="handling">
+              <thead><tr><th>Parameter</th><th>What it sets</th><th>Example</th></tr></thead>
+              <tbody>
+                <tr><td><code>county</code></td><td>The county (as the Census Bureau names it). The program name, business office and recording office follow it unless given too.</td><td><code>county=Maricopa%20County</code></td></tr>
+                <tr><td><code>state</code></td><td>The state, written out.</td><td><code>state=Arizona</code></td></tr>
+                <tr><td><code>recorder</code></td><td>The office that records deeds there, as it calls itself.</td><td><code>recorder=Harris%20County%20Clerk</code></td></tr>
+                <tr><td><code>name</code></td><td>The program's name.</td><td><code>name=Maricopa%20County%20S.T.O.P.%20Initiative</code></td></tr>
+                <tr><td><code>expansion</code></td><td>What the acronym stands for.</td><td><code>expansion=Stop%20Theft%20of%20Property</code></td></tr>
+                <tr><td><code>url</code></td><td>The program's web address, printed on every PDF.</td><td><code>url=https://example.gov/stop</code></td></tr>
+                <tr><td><code>authority</code></td><td>The office that confirms business and trust signers.</td><td><code>authority=Arizona%20Corporation%20Commission</code></td></tr>
+                <tr><td><code>seal</code></td><td>The logo or seal: the image itself, as a <code>data:image/png;base64,...</code> or <code>data:image/jpeg;base64,...</code> address. A web address is refused: the page never loads anything from other servers.</td><td>(made by the builder below)</td></tr>
+                <tr><td><code>#about</code>, <code>#key</code>, <code>#register</code>, <code>#sign</code>, <code>#verify</code></td><td>The tab the link opens on (after the parameters).</td><td><code>#register</code></td></tr>
+              </tbody>
+            </table>
+            <h4>Link builder</h4>
+            <p class="hint">Builds the link from the settings above as they are now (applied or not). Change them, and the link follows.</p>
+            <div class="grid2 tight">
+              <div>
+                <label for="lb-base">Link to</label>
+                <select id="lb-base"></select>
+              </div>
+              <div>
+                <label for="lb-tab">Open on the tab</label>
+                <select id="lb-tab">
+                  <option value="">About the program (the default)</option>
+                  <option value="key">1 Your key</option>
+                  <option value="register">2 Register</option>
+                  <option value="sign">3 Sign a document</option>
+                  <option value="verify">4 Check a document</option>
+                </select>
+              </div>
+            </div>
+            <div class="checkline"><label><input type="checkbox" id="lb-seal" /> Include the logo in the link (makes it long)</label></div>
+            <label for="lb-out">The link</label>
+            <textarea id="lb-out" rows="3" readonly class="mono"></textarea>
+            <div class="actions">
+              <button type="button" id="lb-copy">Copy the link</button>
+              <a id="lb-open" class="button" target="_blank" rel="noopener">Open it</a>
+            </div>
+            <p id="lb-status" class="hint" role="status"></p>
+            <h4>Download this county's program</h4>
+            <p class="hint">
+              A ready-to-deploy copy for the county above: the whole program as one HTML file with these settings (and the
+              logo) built in as its defaults, plus the Cloudflare Worker that serves it, relays its signing rooms and counts its
+              use, with instructions. Put it online in a few minutes, and that copy can make the next county's.
+            </p>
+            <label for="lb-host">The program's web address <span class="opt">(where this copy will be online; printed on its PDFs)</span></label>
+            <input id="lb-host" placeholder="https://maricopa-county-stop.your-account.workers.dev" />
+            <div class="checkline"><label><input type="checkbox" id="lb-rooms" /> Sign together runs at this address (deploy the included Worker there)</label></div>
+            <p class="hint">Not ticked: this copy doesn't run signing rooms itself, and its Sign together section sends people to
+              <span data-official-site></span>, where they work.</p>
+            <div class="actions"><button type="button" id="lb-package" class="primary">Download this county's program (zip)</button></div>
+            <p class="error" data-error role="alert"></p>
+          </details>
           <p id="j-link-out" class="hint mono" hidden></p>
+          <p class="hint">County list: U.S. Census Bureau (public domain). Recording office titles are each state's usual
+            title, as a starting point.</p>
           <label for="j-load">Load a settings file</label>
           <input id="j-load" type="file" accept=".json,application/json" />
           <p class="error" data-error role="alert"></p>
@@ -202,8 +270,14 @@
             <p>No. The codes carry the exact text you signed. Staff see that text when they scan, so it won't match a
               different deed.</p></details>
           <details><summary>Is my key or my document sent anywhere?</summary>
-            <p>No. This website runs entirely in your browser and is blocked from making network connections. You can
-              even save it and use it offline.</p></details>
+            <p>Your private key: never. Your documents: only if you choose to sign together in a signing room, and then
+              only encrypted, with a key that is in the room link and never reaches the server, so the program's relay
+              can't read them and stores nothing. Otherwise the page runs entirely in your browser; its security
+              settings let it connect to that one relay and nowhere else. You can save it and use it offline.</p></details>
+          <details><summary>Does the website track me?</summary>
+            <p>No tracking in the page: no cookies, no analytics scripts, no IP addresses kept. The program's server
+              counts how many times the page is loaded or downloaded and how many signing rooms are opened, by country,
+              to show the program is being used. Nothing about you or your documents is counted.</p></details>
           <details><summary>We own the property together, or through a trust or company. How does that work?</summary>
             <p>It's your choice. One key can cover everyone: name it with a list of the owners or the entity's name. Or
               register several keys, for example the trust and its beneficiary, or each spouse, and describe each key
@@ -225,6 +299,8 @@
             <dd class="mono" data-app="version"></dd>
             <dt>Built</dt>
             <dd data-app="built"></dd>
+            <dt data-copy-of hidden>Made for</dt>
+            <dd data-copy-of hidden id="copy-of"></dd>
           </dl>
           <p id="self-download">
             <a class="button" data-self-download download>Download this tool</a>
@@ -232,6 +308,13 @@
             one, compare its SHA-256 fingerprint with the one published for this version in the project's README on GitHub.
           </p>
           <p id="self-offline" class="hint" hidden>You are using a saved copy of this tool, opened from your own computer.</p>
+          <details id="seal-credits-box">
+            <summary>State seals: sources and credits</summary>
+            <p class="hint">From Wikimedia Commons (Category: SVG state seals of the United States), shown when a county in another
+              state is chosen. Most are public domain; one is CC BY-SA 4.0. Many are insignia whose use states restrict by law:
+              get the state's permission before any official use.</p>
+            <ul id="seal-credits" class="credits"></ul>
+          </details>
           <details id="changelog">
             <summary>What's new: the full list of changes</summary>
             <div id="changelog-body" class="changelog"></div>
@@ -509,12 +592,48 @@
                 signature shows up in everyone's tab. The document is encrypted in your tab with a key that is only in the
                 link, so the program's relay can't read it, and nothing is stored. You still print, sign in ink and notarize.
               </p>
+              <!-- Sign together is off until the person turns it on: nothing connects before that. -->
+              <div id="room-consent" class="callout">
+                <p id="room-where"></p>
+                <p id="room-need-key" class="hint">First load and unlock your private key (step 1, Your key): everyone in a room is shown with the key they proved they hold.</p>
+                <details id="room-terms">
+                  <summary>Terms of service and waiver of liability for Sign together</summary>
+                  <div class="terms">
+                    <p><strong>1. What this is.</strong> Sign together is an optional, experimental feature of a free, open-source
+                      tool. It passes encrypted messages between the browser tabs of people signing the same document, through a
+                      relay run by the program's operator. It is part of a proposed program that no county or state has adopted; it
+                      is not a government service and not an official county process.</p>
+                    <p><strong>2. No warranty.</strong> It is provided "as is" and "as available", with no warranty of any kind,
+                      express or implied, including merchantability, fitness for a particular purpose, availability, security,
+                      confidentiality, accuracy or non-infringement. It may be interrupted, changed or discontinued at any time.</p>
+                    <p><strong>3. Waiver and release of liability.</strong> To the fullest extent the law allows, you use Sign together
+                      at your own risk, and you waive and release, and agree not to bring any claim against, the project's creator,
+                      the operator of the relay, contributors and any government body that hosts or provides the tool, for any loss or
+                      damage of any kind arising from its use or inability to use it, including loss of property, title, money, data
+                      or time, a document that is wrong, incomplete, forged or not accepted, or a failure of the relay or the
+                      encryption.</p>
+                    <p><strong>4. Your responsibility.</strong> You are responsible for the documents you sign, for checking every
+                      word before you sign, for the people you share a room link with (anyone with the link can join), for keeping
+                      your private key and passphrase safe, and for the ink signatures, notarization and recording that the law
+                      requires. The digital signature does not replace any of them. Nothing in this tool is legal advice.</p>
+                    <p><strong>5. Privacy.</strong> Messages are encrypted in your browser with a key that is only in the room link;
+                      the relay cannot read them and keeps nothing once the room closes. The site counts page loads, downloads and
+                      signing rooms by country, and nothing else about you.</p>
+                    <p><strong>6. Lawful use.</strong> Don't use Sign together for anything unlawful, to impersonate anyone, or to
+                      interfere with the relay.</p>
+                    <p><strong>7. Changes.</strong> These terms may change with new versions of the tool; the terms shown when you turn
+                      Sign together on are the ones that apply.</p>
+                  </div>
+                </details>
+                <label class="checkline"><input type="checkbox" id="room-agree" /> I have read and agree to the terms of service and waiver of liability above</label>
+                <label class="checkline"><input type="checkbox" id="room-enable" /> Turn on Sign together (lets this tab connect to <strong id="room-host"></strong>)</label>
+              </div>
               <div id="room-invite" class="callout" hidden>
-                This link invites you to a signing room.
-                <button type="button" id="room-join" class="primary">Join the signing room</button>
+                This link invites you to a signing room. Unlock your private key (step 1), turn on Sign together above, then join.
+                <button type="button" id="room-join" class="primary" disabled>Join the signing room</button>
               </div>
               <div class="actions">
-                <button type="button" id="room-start">Start a signing room</button>
+                <button type="button" id="room-start" disabled>Start a signing room</button>
                 <button type="button" id="room-leave" hidden>Leave the room</button>
               </div>
               <p id="room-status" class="hint" role="status"></p>
@@ -855,7 +974,14 @@ each under its own license, which continues to apply to that library:
   - node-qrcode: MIT (https://github.com/soldair/node-qrcode)
   - JsBarcode: MIT (https://github.com/lindell/JsBarcode)
   - bwip-js: MIT (https://github.com/metafloor/bwip-js)
-  - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)</pre>
+  - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)
+  - County names: U.S. Census Bureau, 2020 FIPS county codes, a U.S. government work
+    in the public domain (https://www2.census.gov/geo/docs/reference/codes2020/)
+  - State seals: Wikimedia Commons, Category: SVG state seals of the United States
+    (https://commons.wikimedia.org/wiki/Category:SVG_state_seals_of_the_United_States).
+    49 are public domain; Maryland's is CC BY-SA 4.0 and stays under that license.
+    Each file's author and license are in SEALS.md and on the page (About this
+    software). Many are insignia whose use is restricted by state law.</pre>
       </details>
     </footer>
     <script type="module" src="/src/main.ts"></script>

@@ -334,7 +334,8 @@ try {
   await loadKey(p, keys.ivy.priv);
   await p.click('#tab-sign');
   await p.click('#j-open');
-  await p.fill('#j-county', 'Maricopa County');
+  await p.selectOption('#j-county', 'Maricopa County');
+  const office = await p.inputValue('#j-recorder');
   await p.click('#j-apply');
   await p.waitForTimeout(300);
   const heading = flat(await p.textContent('h1'));
@@ -345,10 +346,34 @@ try {
   await p.close();
   check(
     '10. Change county from the header (Sign tab)',
-    heading === 'Maricopa County S.T.O.P. Initiative' && /Working for Maricopa County, Arizona/.test(bar) && /not yet adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
-    `heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
+    heading === 'Maricopa County S.T.O.P. Initiative' && office === 'Maricopa County Recorder' && /Working for Maricopa County, Arizona/.test(bar) && /not yet adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
+    `chosen from the list; office "${office}"; heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
     [card],
   );
+
+  // ---- 10b. Other states: the recording office and the county's own kind of name ----
+  {
+    const sp = await newPage();
+    await loadKey(sp, keys.ivy.priv);
+    await sp.click('#j-open');
+    await sp.selectOption('#j-state', 'Texas');
+    await sp.selectOption('#j-county', 'Harris County');
+    const tx = await sp.inputValue('#j-recorder');
+    await sp.selectOption('#j-state', 'Louisiana');
+    await sp.selectOption('#j-county', 'Orleans Parish');
+    const la = await sp.inputValue('#j-recorder');
+    await sp.click('#j-apply');
+    await sp.click('#tab-sign');
+    await sp.selectOption('#tpl', 'warranty');
+    const deedText = await sp.inputValue('#doc-text');
+    const progName = flat(await sp.textContent('h1'));
+    await sp.close();
+    check(
+      '10b. Recording offices and county names by state',
+      tx === 'Harris County Clerk' && la === 'Orleans Parish Clerk of Court' && /Orleans Parish, Louisiana/.test(deedText) && !/Parish County/.test(deedText) && progName === 'Orleans Parish S.T.O.P. Initiative',
+      `Texas: "${tx}"; Louisiana: "${la}"; the deed says "Orleans Parish, Louisiana"; program "${progName}"`,
+    );
+  }
 
   // ---- 11. Settings from the link, including a seal embedded in it ----
   {
@@ -391,6 +416,157 @@ try {
     const msg = flat(await bad.textContent('#boot'));
     await bad.close();
     check('11. A seal at a web address is refused', /never loads images from other servers/.test(msg) && badRequests.length === 0, `"${msg.slice(0, 90)}"; requests: ${badRequests.length}`);
+  }
+
+  // ---- 13. Link builder, state seals, and "Download this county's program" ----
+  {
+    const pg = await newPage();
+    const pimaSeal = await pg.getAttribute('#brand-seal', 'src');
+    await pg.click('#j-open');
+    await pg.selectOption('#j-state', 'Texas');
+    await pg.selectOption('#j-county', 'Harris County');
+    const preview = await pg.getAttribute('#j-seal-preview', 'src');
+    await pg.click('#link-api summary');
+    await pg.selectOption('#lb-tab', 'register');
+    await pg.waitForTimeout(100);
+    const built = await pg.inputValue('#lb-out');
+    await pg.fill('#lb-host', 'https://harris-county-stop.example.workers.dev');
+    await pg.check('#lb-rooms');
+    const zip = await save(pg, '#lb-package', '13-harris-county-program.zip');
+    await pg.click('#j-apply');
+    const sealNow = await pg.getAttribute('#brand-seal', 'src');
+    await pg.close();
+    // The link it built opens with the same settings.
+    const lp = await browser.newPage();
+    await lp.goto(`${APP}${built.slice(built.indexOf('?'))}`);
+    const linkHeading = flat(await lp.textContent('h1'));
+    await lp.close();
+    // The package: unzip it and open its HTML.
+    const unz = join(WORK, 'pkg');
+    mkdirSync(unz);
+    execFileSync('unzip', ['-q', zip, '-d', unz]);
+    const dir = join(unz, readdirSync(unz)[0]);
+    const files = ['public/index.html', 'src/index.ts', 'wrangler.toml', 'package.json', 'README.md'].filter((f) => {
+      try {
+        readFileSync(join(dir, f));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const html = readFileSync(join(dir, 'public/index.html'), 'utf8');
+    const csp = /connect-src [^;"]*/.exec(html)?.[0] ?? '';
+    const cp = await browser.newPage({ acceptDownloads: true });
+    cp.on('pageerror', (e) => errors.push(e.message));
+    await cp.goto(pathToFileURL(join(dir, 'public/index.html')).href);
+    const copyHeading = flat(await cp.textContent('h1'));
+    const copySeal = await cp.getAttribute('#brand-seal', 'src');
+    await cp.click('#j-open');
+    const copyOffice = await cp.inputValue('#j-recorder');
+    await loadKey(cp, keys.ivy.priv);
+    const card = await save(cp, '#dl-card', '13-harris-county-copy-key-card.pdf');
+    await cp.close();
+    const cardText = flat(execFileSync('pdftotext', [card, '-']).toString());
+    check(
+      '13. State seal switches with the state',
+      preview !== pimaSeal && sealNow === preview && /^data:image\/png/.test(sealNow ?? ''),
+      'choosing a Texas county shows the Texas seal in the preview and the header',
+    );
+    check('13. Link builder', /county=Harris\+County|county=Harris%20County/.test(built) && built.endsWith('#register') && linkHeading === 'Harris County S.T.O.P. Initiative', `"${built.slice(0, 120)}..." opens as "${linkHeading}"`);
+    check(
+      '13. Download this county\u2019s program',
+      files.length === 5 &&
+        csp.includes('harris-county-stop.example.workers.dev') &&
+        !csp.includes('pimastopinitiative') &&
+        copyHeading === 'Harris County S.T.O.P. Initiative' &&
+        copyOffice === 'Harris County Clerk' &&
+        copySeal === sealNow &&
+        /not yet adopted by Harris County/.test(cardText) &&
+        /harris-county-stop\.example\.workers\.dev/.test(cardText),
+      `zip: ${files.join(', ')}; the copy opens as "${copyHeading}", office "${copyOffice}", Texas seal; its policy connects only to its own address; its PDFs name Harris County and its address`,
+      [zip, card],
+    );
+  }
+
+  // ---- 12. Sign together, live: two owners in a signing room, through a test relay ----
+  {
+    const sockets = new Map(); // room -> Set of server-side routes
+    const seen = [];
+    const relay = async (page) => {
+      await page.routeWebSocket(/\/relay\//, (ws) => {
+        const id = new URL(ws.url()).pathname.split('/').pop();
+        const set = sockets.get(id) ?? new Set();
+        sockets.set(id, set);
+        for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+        set.add(ws);
+        ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+        ws.onMessage((m) => {
+          seen.push(String(m));
+          for (const other of set) if (other !== ws) other.send(m);
+        });
+        ws.onClose(() => set.delete(ws));
+      });
+    };
+    // Sign together works only on the program's exact address: serve the built file there
+    // (answered locally by the test; nothing goes to the internet).
+    const OFFICIAL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+    const html = readFileSync(DIST);
+    const atOfficial = async (page) => {
+      await page.route(`${OFFICIAL}**`, (r) => r.fulfill({ body: html, contentType: 'text/html' }));
+      await relay(page);
+      page.on('pageerror', (e) => errors.push(e.message));
+    };
+    // A saved copy (file://) can't sign together, even with a key unlocked.
+    const local = await newPage();
+    await loadKey(local, keys.ann.priv);
+    await local.click('#tab-sign');
+    const localBlocked = (await local.isDisabled('#room-enable')) && /works only on the program/.test(await local.textContent('#room-where'));
+    await local.close();
+    const a = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    await atOfficial(a);
+    await a.goto(OFFICIAL);
+    await loadKey(a, keys.ann.priv);
+    await loadSignRegistration(a, R0);
+    // Off until the terms are accepted and it is turned on.
+    const offFirst = (await a.isDisabled('#room-start')) && (await a.isDisabled('#room-enable'));
+    await a.check('#room-agree');
+    const agreedNotOn = (await a.isEnabled('#room-enable')) && (await a.isDisabled('#room-start'));
+    await a.check('#room-enable');
+    await a.click('#room-start');
+    await a.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const link = await a.inputValue('#room-link');
+    const b = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    await atOfficial(b);
+    await b.goto(link);
+    // Asked first, and not possible without an unlocked key.
+    const invited = (await b.isVisible('#room-invite-top')) && (await b.isDisabled('#room-enable'));
+    await loadKey(b, keys['bob-carol'].priv);
+    await b.click('#tab-sign');
+    await b.check('#room-agree');
+    await b.check('#room-enable');
+    await b.click('#room-join');
+    await b.waitForFunction(() => /2 tabs/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    await a.waitForFunction(() => /proven by their key/.test(document.getElementById('room-peers').textContent), null, { timeout: 30000 });
+    // Ann writes and signs; Bob and Carol's tab receives it and adds their signature.
+    await a.click('#tab-sign');
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#f-terms', 'For the bank.');
+    await a.click('#text-sign-btn');
+    await b.waitForFunction(() => /Not complete: 1 of 2/.test(document.getElementById('tr-status').textContent), null, { timeout: 30000 });
+    await b.click('#text-sign-btn');
+    await a.waitForFunction(() => /Complete/.test(document.getElementById('tr-status').textContent), null, { timeout: 30000 });
+    const roomDoc = await save(a, '#dl-instrument', '12-signed-together-in-a-room.pdf');
+    await a.close();
+    await b.close();
+    const leaked = seen.some((m) => /OWNERSHIP|222-33-4444|BEGIN PGP/i.test(m));
+    const c = await checkDocument(R0, roomDoc, null);
+    check(
+      '12. Sign together in a signing room',
+      localBlocked && link.startsWith(`${OFFICIAL}#room=`) && offFirst && agreedNotOn && invited && !leaked && /GOOD/.test(c.verdict),
+      `unavailable in a saved copy; on ${OFFICIAL} off until the terms of service and waiver are accepted and it is turned on, and only with an unlocked key; the link asks before joining; peers proven by their keys; ${seen.length} relay messages, all encrypted; the result checks ${c.verdict}`,
+      [roomDoc],
+    );
   }
 
   check('No page errors or network requests', errors.length === 0, errors.length ? errors.slice(0, 3).join(' | ') : 'none');

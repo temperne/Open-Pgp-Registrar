@@ -665,7 +665,10 @@ async function drawRegistration(
     fonts,
     'No fee  |  Voluntary',
     info.role === 'lienholder' ? 'Lien Holder Public Key Registration' : 'Owner Public Key Registration',
-    info.county?.trim() ? `For filing with the Recorder, ${info.county.trim()}` : 'For filing with the County Recorder',
+    // The county's own recording office, when the form is for the county the tool is set to.
+    !info.county?.trim() || info.county.trim().toLowerCase() === BRAND.county.toLowerCase()
+      ? `For filing with the ${BRAND.recorderOffice}`
+      : `For filing with the recording office, ${info.county.trim()}`,
   );
 
   checkbox(p, M, y - 9, !info.replacement);
@@ -1576,7 +1579,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
     'This deed names the buyers’ signing keys. When it is recorded, these keys become the keys registered for the parcel, in place of ' +
       'the keys that signed the deed, with no separate registration: the sellers’ registered keys signed the deed that names them. ' +
       'From then on, every key below must sign any instrument affecting the parcel. To check a later document, load this deed in place of ' +
-      'a registration form; the tool confirms that the previous keys signed it. Confirm with the Recorder that this deed was recorded and is ' +
+      `a registration form; the tool confirms that the previous keys signed it. Confirm with the ${BRAND.recorderOffice} that this deed was recorded and is ` +
       'the latest for the parcel.',
     y,
     { size: 9.5 },

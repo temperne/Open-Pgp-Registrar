@@ -26,6 +26,12 @@ export const BRAND = {
   /** State: used in the deed templates ("... County, Arizona") and the notary venue ("STATE OF ARIZONA"). */
   state: 'Arizona',
   /**
+   * The office that records deeds in this county, as it calls itself (it differs
+   * by state and by county: County Recorder, County Clerk, Register of Deeds...).
+   * Used on the registration form, the certificate and in the templates.
+   */
+  recorderOffice: 'Pima County Recorder',
+  /**
    * Program web address, printed on every PDF and linked from the site.
    * The test site for now; replace it with the official address once there is one, e.g.
    * 'https://www.example.gov/stop'.
@@ -58,6 +64,13 @@ export const BRAND = {
   proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
 };
 
+/**
+ * The program's master address (the original site). Fixed in every build and copy: a
+ * county copy whose own signing rooms can't be reached falls back to it, and copies
+ * without their own rooms send people there.
+ */
+export const MASTER_URL = 'https://pimastopinitiative.jasonajensen.workers.dev';
+
 /** The values as built, so an override can be undone. */
 export const BRAND_DEFAULTS = { ...BRAND };
 
@@ -68,6 +81,8 @@ export interface Jurisdiction {
   expansion: string;
   county: string;
   state: string;
+  /** The office that records deeds there (e.g. "Harris County Clerk"). */
+  recorderOffice: string;
   projectUrl: string;
   entityAuthority: string;
 }
@@ -80,7 +95,7 @@ export interface Jurisdiction {
 export function applyJurisdiction(j: Partial<Jurisdiction> | null) {
   Object.assign(BRAND, BRAND_DEFAULTS);
   if (!j) return;
-  for (const k of ['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const) {
+  for (const k of ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority'] as const) {
     const v = j[k]?.trim();
     if (v) BRAND[k] = v;
   }

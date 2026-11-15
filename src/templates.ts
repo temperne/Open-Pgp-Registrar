@@ -39,9 +39,19 @@ export interface Template {
 
 const blank = (v: string, what: string) => v.trim() || `[${what}]`;
 
+/**
+ * "Pima" or "Pima County" -> "Pima County"; names that already say what they are
+ * stay as they are ("Orleans Parish", "Juneau City and Borough", "Richmond City").
+ */
+export function countyName(v: string) {
+  const c = v.trim();
+  if (!c) return '[COUNTY] County';
+  return /\b(County|Parish|Borough|City|Census Area|Municipality|Municipio|District|Island|Islands|Region)$/i.test(c) ? c : `${c} County`;
+}
+
 function property(f: TemplateFields) {
   const lines = [
-    `the following real property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}:`,
+    `the following real property situated in ${countyName(f.county)}, ${BRAND.state}:`,
     '',
     blank(f.legal, 'LEGAL DESCRIPTION'),
     '',
@@ -115,13 +125,13 @@ export const TEMPLATES: Template[] = [
     recordable: false,
     body: (f) =>
       [
-        `${blank(f.grantor, 'OWNER')}, owner of record and Landlord, leases to ${blank(f.grantee, 'TENANT')}, Tenant, the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}.`,
+        `${blank(f.grantor, 'OWNER')}, owner of record and Landlord, leases to ${blank(f.grantee, 'TENANT')}, Tenant, the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}.`,
         '',
         `Rent: ${blank(f.consideration, 'RENT')}.`,
         '',
         `Terms: ${blank(f.terms, 'LEASE TERMS')}`,
         '',
-        'The Landlord signs with the signing key registered for this parcel with the County Recorder, so the Tenant can confirm that the owner of record made this lease.',
+        `The Landlord signs with the signing key registered for this parcel with the ${BRAND.recorderOffice}, so the Tenant can confirm that the owner of record made this lease.`,
         '',
         dated(f),
       ].join('\n'),
@@ -136,11 +146,11 @@ export const TEMPLATES: Template[] = [
     recordable: false,
     body: (f) =>
       [
-        `${blank(f.grantor, 'OWNER')}, owner of record, offers to sell to ${blank(f.grantee, 'BUYER')} (or accepts the offer of ${blank(f.grantee, 'BUYER')} to buy) the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, for ${blank(f.consideration, 'PRICE')}.`,
+        `${blank(f.grantor, 'OWNER')}, owner of record, offers to sell to ${blank(f.grantee, 'BUYER')} (or accepts the offer of ${blank(f.grantee, 'BUYER')} to buy) the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, for ${blank(f.consideration, 'PRICE')}.`,
         '',
         `Terms and conditions: ${blank(f.terms, 'TERMS')}`,
         '',
-        'Signed with the signing key registered for this parcel with the County Recorder, so the buyer can confirm that the owner of record made this offer.',
+        `Signed with the signing key registered for this parcel with the ${BRAND.recorderOffice}, so the buyer can confirm that the owner of record made this offer.`,
         '',
         dated(f),
       ].join('\n'),
@@ -155,11 +165,11 @@ export const TEMPLATES: Template[] = [
     recordable: false,
     body: (f) =>
       [
-        `${blank(f.grantor, 'OWNER')} is the owner of record of the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}.`,
+        `${blank(f.grantor, 'OWNER')} is the owner of record of the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}.`,
         '',
         `Purpose: ${blank(f.terms, 'PURPOSE')}`,
         '',
-        'This statement is signed with the signing key registered for this parcel with the County Recorder. The signature can be checked against that registration.',
+        `This statement is signed with the signing key registered for this parcel with the ${BRAND.recorderOffice}. The signature can be checked against that registration.`,
         '',
         dated(f),
       ].join('\n'),
@@ -174,11 +184,11 @@ export const TEMPLATES: Template[] = [
     recordable: false,
     body: (f) =>
       [
-        `${blank(f.grantor, 'OWNER')}, owner of record of the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, authorizes ${blank(f.grantee, 'AUTHORIZED PERSON')} to act as follows:`,
+        `${blank(f.grantor, 'OWNER')}, owner of record of the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, authorizes ${blank(f.grantee, 'AUTHORIZED PERSON')} to act as follows:`,
         '',
         blank(f.terms, 'WHAT IS AUTHORIZED, AND UNTIL WHEN'),
         '',
-        'Signed with the signing key registered for this parcel with the County Recorder. This authorization does not convey any interest in the property.',
+        `Signed with the signing key registered for this parcel with the ${BRAND.recorderOffice}. This authorization does not convey any interest in the property.`,
         '',
         dated(f),
       ].join('\n'),
@@ -193,9 +203,9 @@ export const TEMPLATES: Template[] = [
     recordable: true,
     body: (f) =>
       [
-        `${blank(f.grantor, 'LIEN HOLDER')}, holder of the lien described as ${blank(f.terms, 'LIEN AND RECORDING NUMBER')}, against the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, hereby releases that lien in full.`,
+        `${blank(f.grantor, 'LIEN HOLDER')}, holder of the lien described as ${blank(f.terms, 'LIEN AND RECORDING NUMBER')}, against the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, hereby releases that lien in full.`,
         '',
-        'Signed with the signing keys registered for this lien with the County Recorder.',
+        `Signed with the signing keys registered for this lien with the ${BRAND.recorderOffice}.`,
         '',
         dated(f),
       ].join('\n'),
@@ -210,7 +220,7 @@ export const TEMPLATES: Template[] = [
     recordable: true,
     body: (f) =>
       [
-        `${blank(f.grantor, 'OWNER')}, owner of record of the property situated in ${blank(f.county, 'COUNTY')} County, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, withdraws this parcel from the ${BRAND.name} (${BRAND.expansion}).`,
+        `${blank(f.grantor, 'OWNER')}, owner of record of the property situated in ${countyName(f.county)}, ${BRAND.state}, Assessor's Parcel Number ${blank(f.parcels, 'PARCEL NUMBER')}${f.propertyAddress.trim() ? `, ${f.propertyAddress.trim()}` : ''}, withdraws this parcel from the ${BRAND.name} (${BRAND.expansion}).`,
         '',
         'When this document is recorded, the signing keys registered for this parcel are retired, and instruments affecting the parcel no longer need to be signed with them. This document is signed with every one of those keys.',
         '',
