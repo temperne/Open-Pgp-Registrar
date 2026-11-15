@@ -70,9 +70,9 @@ import {
   combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
-import { BRAND } from './brand';
+import { BRAND, BRAND_DEFAULTS, applyJurisdiction, type Jurisdiction } from './brand';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
-import { canonicalText } from './text';
+import { canonicalText, safeText } from './text';
 import { extractFile, extractImages, fileSignedText, parcelFilingStatement, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
 
 // ---------------------------------------------------------------------------
@@ -2100,14 +2100,30 @@ try {
 }
 $('frame-note').hidden = !framed;
 
-// Branding (src/brand.ts) and the seal embedded in index.html.
-document.title = `${BRAND.name} (${BRAND.expansion})`;
-document.querySelectorAll<HTMLElement>('[data-brand]').forEach((el) => {
-  const v = BRAND[el.dataset.brand as keyof typeof BRAND];
-  if (typeof v === 'string') el.textContent = v;
-});
-$('proposed-note').hidden = BRAND.status !== 'proposed';
+// Branding (src/brand.ts) and the seal embedded in index.html. Re-run when the
+// jurisdiction is overridden ("Use this tool for another county or state").
+let defaultSeal: { bytes: Uint8Array; src: string } | null = null;
+let customLogo: { bytes: Uint8Array; type: string } | null = null;
 {
+  const seal = $<HTMLImageElement>('brand-seal');
+  const src = seal.getAttribute('src') ?? '';
+  const m = /^data:image\/(png|jpe?g);base64,(.+)$/s.exec(src);
+  if (m) {
+    try {
+      defaultSeal = { bytes: fromBase64Text(m[2]), src };
+    } catch {
+      /* bad image data: PDFs are made without the seal */
+    }
+  }
+}
+
+function applyBrandToPage() {
+  document.title = `${BRAND.name} (${BRAND.expansion})`;
+  document.querySelectorAll<HTMLElement>('[data-brand]').forEach((el) => {
+    const v = BRAND[el.dataset.brand as keyof typeof BRAND];
+    if (typeof v === 'string') el.textContent = v;
+  });
+  $('proposed-note').hidden = BRAND.status !== 'proposed';
   const holder = $('project-url');
   holder.textContent = '';
   if (/^https?:\/\//.test(BRAND.projectUrl)) {
@@ -2115,20 +2131,108 @@ $('proposed-note').hidden = BRAND.status !== 'proposed';
   } else {
     holder.textContent = BRAND.projectUrl;
   }
-}
-{
   const seal = $<HTMLImageElement>('brand-seal');
-  const m = /^data:image\/(png|jpe?g);base64,(.+)$/s.exec(seal.getAttribute('src') ?? '');
-  if (m) {
-    try {
-      setBrandSeal(fromBase64Text(m[2]));
-    } catch {
-      /* bad image data: PDFs are made without the seal */
-    }
+  if (customLogo) {
+    seal.src = `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`;
+    seal.hidden = false;
+    setBrandSeal(customLogo.bytes);
+  } else if (defaultSeal) {
+    seal.src = defaultSeal.src;
+    seal.hidden = false;
+    setBrandSeal(defaultSeal.bytes);
   } else {
     seal.hidden = true;
+    setBrandSeal(null);
   }
 }
+applyBrandToPage();
+
+// ---- Use this tool for another county or state ----
+function fillJurisdictionForm() {
+  input('j-name').value = BRAND.name;
+  input('j-county').value = BRAND.county;
+  input('j-state').value = BRAND.state;
+  input('j-url').value = BRAND.projectUrl;
+  input('j-authority').value = BRAND.entityAuthority;
+}
+fillJurisdictionForm();
+
+/** Form defaults that still hold the old county follow the new one. */
+function followCounty(oldCounty: string) {
+  if (!input('reg-county').value || input('reg-county').value === oldCounty) input('reg-county').value = BRAND.county;
+  const short = (c: string) => c.replace(/\s+County$/i, '');
+  if (!input('f-county').value || input('f-county').value === short(oldCounty)) input('f-county').value = short(BRAND.county);
+  if (input('c-agency').value === `${oldCounty} Recorder`) input('c-agency').value = `${BRAND.county} Recorder`;
+  syncTemplate();
+}
+
+function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLogo) {
+  const oldCounty = BRAND.county;
+  const clean = j && (Object.fromEntries(Object.entries(j).map(([k, v]) => [k, safeText(String(v ?? '')).trim()])) as Partial<Jurisdiction>);
+  applyJurisdiction(clean);
+  customLogo = logo;
+  applyBrandToPage();
+  fillJurisdictionForm();
+  followCounty(oldCounty);
+  const custom = !!logo || (['name', 'county', 'state', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
+  $('j-status').textContent = custom
+    ? `Using ${BRAND.name} (${BRAND.county}, ${BRAND.state}) until this page is closed.`
+    : 'Using the defaults.';
+}
+
+async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>> {
+  const img = await toPrintableImage(file, new Uint8Array(await file.arrayBuffer()));
+  return { bytes: img.bytes, type: img.format === 'png' ? 'image/png' : 'image/jpeg' };
+}
+
+action('j-apply', async () => {
+  const f = input('j-logo').files?.[0];
+  const logo = f ? await logoFromFile(f) : customLogo;
+  useJurisdiction(
+    { name: input('j-name').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
+    logo,
+  );
+  input('j-logo').value = '';
+});
+action('j-reset', () => {
+  useJurisdiction(null, null);
+  input('j-logo').value = '';
+});
+action('j-save', () => {
+  const file = {
+    format: 'stop-jurisdiction-1',
+    name: BRAND.name,
+    county: BRAND.county,
+    state: BRAND.state,
+    projectUrl: BRAND.projectUrl,
+    entityAuthority: BRAND.entityAuthority,
+    logo: customLogo ? { type: customLogo.type, base64: toBase64(customLogo.bytes) } : undefined,
+  };
+  download(new TextEncoder().encode(JSON.stringify(file, null, 2)), `${fileSlug(BRAND.county)}-settings.json`, 'application/json');
+});
+input('j-load').addEventListener('change', async () => {
+  const f = input('j-load').files?.[0];
+  const err = $('jurisdiction').querySelector<HTMLElement>('[data-error]')!;
+  err.textContent = '';
+  if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    if (j?.format !== 'stop-jurisdiction-1') throw new Error('That is not a settings file saved by this tool.');
+    let logo: typeof customLogo = null;
+    if (j.logo?.base64) {
+      const bytes = fromBase64Text(String(j.logo.base64));
+      const png = bytes[0] === 0x89 && bytes[1] === 0x50;
+      const jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+      if (!png && !jpg) throw new Error('The logo in that settings file is not a PNG or JPG.');
+      logo = { bytes, type: png ? 'image/png' : 'image/jpeg' };
+    }
+    useJurisdiction(j, logo);
+  } catch (e) {
+    err.textContent = e instanceof SyntaxError ? 'That settings file could not be read.' : (e as Error).message;
+  } finally {
+    input('j-load').value = '';
+  }
+});
 // About this software: version, build date and changelog, built into the file.
 document.querySelectorAll<HTMLElement>('[data-app="version"]').forEach((el) => (el.textContent = __APP_VERSION__));
 document.querySelectorAll<HTMLElement>('[data-app="built"]').forEach((el) => (el.textContent = __BUILD_DATE__));

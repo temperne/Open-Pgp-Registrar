@@ -177,6 +177,34 @@
               Every signature can also be checked with free tools such as GnuPG.</p></details>
         </div>
 
+        <details class="card" id="jurisdiction">
+          <summary><strong>Use this tool for another county or state</strong></summary>
+          <p class="hint">
+            Changes the program name, county, state, web address, business verification office and logo everywhere:
+            on this page, in the deed templates and notary wording, and on every PDF made from now on. Nothing is
+            saved: closing or reloading the page goes back to the defaults. Save a settings file to load them again
+            later. Every page and PDF keeps saying the program is proposed and not an official county form.
+            The deed templates follow Arizona statutes; have them checked for your state.
+          </p>
+          <div class="grid2 tight">
+            <div><label for="j-name">Program name</label><input id="j-name" /></div>
+            <div><label for="j-county">County</label><input id="j-county" placeholder="e.g. Maricopa County" /></div>
+            <div><label for="j-state">State</label><input id="j-state" placeholder="e.g. Arizona" /></div>
+            <div><label for="j-url">Program web address</label><input id="j-url" /></div>
+            <div class="span2"><label for="j-authority">Office that confirms business and trust signers</label><input id="j-authority" /></div>
+            <div class="span2"><label for="j-logo">Logo or seal <span class="opt">(PNG or JPG; used on the page and every PDF)</span></label><input id="j-logo" type="file" accept="image/*" /></div>
+          </div>
+          <p id="j-status" class="hint" role="status"></p>
+          <div class="actions">
+            <button type="button" id="j-apply" class="primary">Use these settings</button>
+            <button type="button" id="j-reset">Back to the defaults</button>
+            <button type="button" id="j-save">Save settings file</button>
+          </div>
+          <label for="j-load">Load a settings file</label>
+          <input id="j-load" type="file" accept=".json,application/json" />
+          <p class="error" data-error role="alert"></p>
+        </details>
+
         <div class="card" id="about-software">
           <h2>About this software</h2>
           <dl class="facts">
