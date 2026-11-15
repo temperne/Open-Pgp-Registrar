@@ -92,10 +92,22 @@ last part is the date the version was tagged.
   web address is its program address; a checkbox runs Sign together there with its own
   Worker. Otherwise, or if its relay can't be reached, Sign together falls back to the
   master site (https://pimastopinitiative.jasonajensen.workers.dev), same room.
-- **Analytics on the server side only:** the site's Worker counts page loads, downloads and
-  signing rooms by country (Cloudflare Workers Analytics Engine). No script in the page, no
-  cookies, no IP addresses, nothing about anyone's documents. The Worker (`worker/`) also
-  serves the site and the relay.
+- **Signed release statement for a county copy (optional).** The builder can name who is
+  making the copy (person or office, title or authority, where the statement will be
+  posted) and sign the program file with the maker's key. It then offers a **release
+  statement** PDF to post on the maker's website: the program file's and the zip's
+  SHA-256, the publisher, the key fingerprint and the signature (QR code, with the key and
+  `.sig` attached). The hash can't be inside the file it describes, so it lives in the
+  statement. The zip carries `index.html.sig` and `publisher-key.asc`
+  (`gpg --verify index.html.sig public/index.html`), and "Check a binary-signed file"
+  accepts the statement on its own, using its attached key. The copy's About tab names
+  its publisher.
+- **Analytics, asked first.** On the web the page asks each visitor whether it may count
+  the visit with Cloudflare Web Analytics (no cookies, no cross-site tracking); the beacon
+  loads only on "Allow". County copies can use their own token or, by default, the master
+  site's. The site's Worker also counts page loads, downloads and signing rooms by
+  country on the server (Workers Analytics Engine). Nothing about keys or documents is
+  counted. The Worker (`worker/`) also serves the site and the relay.
 
 ### Build proof (this release)
 - `npm run proof` runs the built app through the full ownership chain (complex

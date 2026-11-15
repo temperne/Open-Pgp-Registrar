@@ -16,6 +16,13 @@
  * Only the standard PDF characters can be printed (plain Latin letters,
  * digits and common punctuation), so avoid curly quotes or symbols here.
  */
+/**
+ * The master site's Cloudflare Web Analytics token (public; it is in every visitor's
+ * page). Fixed in every build and copy: county copies that don't set their own count
+ * with this one. '' leaves analytics off. From the Cloudflare dashboard, Web Analytics.
+ */
+export const MASTER_ANALYTICS_TOKEN = '';
+
 export const BRAND = {
   /** Full program name. */
   name: 'Pima County S.T.O.P. Initiative',
@@ -61,6 +68,13 @@ export const BRAND = {
    * signing rooms off.
    */
   relayUrl: 'https://pimastopinitiative.jasonajensen.workers.dev',
+  /**
+   * Cloudflare Web Analytics site token (public: it is in every visitor's page). The
+   * page asks each visitor first and loads the beacon only if they allow it. ''
+   * leaves analytics off. Get it from the Cloudflare dashboard, Web Analytics, after
+   * adding the site. County copies use this one unless they give their own.
+   */
+  analyticsToken: MASTER_ANALYTICS_TOKEN,
   proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
 };
 

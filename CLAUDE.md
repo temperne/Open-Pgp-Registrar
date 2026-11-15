@@ -30,8 +30,13 @@ gives counter staff a way to check a filing.
   stores nothing. Participants prove their keys by signing a challenge.
 - The production build's Content-Security-Policy allows `connect-src` to `'self'` and
   the relay host in `BRAND.relayUrl` **only**. Do not loosen it further.
-- **Analytics are server-side only** (`worker/`, Workers Analytics Engine): page loads,
-  downloads and rooms, by country. No script, cookie, IP address or document data.
+- **Analytics:** (1) server-side in the Worker (Workers Analytics Engine): page loads,
+  downloads and rooms by country; (2) Cloudflare Web Analytics in the page **only if the
+  visitor allows it** (`#analytics-ask`, asked on every visit on https, never in a saved
+  copy; no cookies). Token: `MASTER_ANALYTICS_TOKEN` in `src/brand.ts` (public); county
+  copies carry their own or the master's. The CSP allows `script-src
+  https://static.cloudflareinsights.com` and `connect-src https://cloudflareinsights.com`
+  for it. Never count anything about keys or documents.
 - Keys are never published anywhere (no keyservers, no WKD). The public key only
   goes onto the printed registration form.
 - Use standard OpenPGP only. Every signature must also verify with stock GnuPG
@@ -269,6 +274,13 @@ Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`
   "proposed"), the seal swapped in, the CSP's connect-src set to the copy's own address
   (only if "Sign together runs at this address" is ticked; otherwise `MASTER_URL`), and
   the Worker source (`__WORKER_SOURCE__`) with a wrangler.toml and README, zipped.
+  Optional **publisher** (`lb-pub-*`, baked in as `publisher`, shown on About) and
+  **signing** (`lb-sign`, needs an unlocked key): `signDocument` over the exact
+  `index.html` bytes; the zip adds `index.html.sig` and `publisher-key.asc`; a separate
+  **release statement** (`releaseStatementPdf`) carries both SHA-256s, the publisher, the
+  fingerprint and the `PGPSIG1` code, with the key and .sig attached. The hash never goes
+  in the HTML (it would change it). `#bin-check` uses the statement's attached key when no
+  registration is loaded.
 - **`MASTER_URL`** (`src/brand.ts`, fixed in every copy): the original site. Copies
   without their own rooms send Sign together there; a copy whose relay can't be reached
   offers "Continue this room on the main site" (same room key).
@@ -338,10 +350,15 @@ Every build that is released, or pushed for a pull request, must be proven:
    - the state seal switching with the state, the link builder's link round-tripping,
      and "Download this county's program": the zip's HTML opens as that county (office,
      seal), its CSP allows only its own address, and its PDFs name it
+   - a signed release: the statement names the publisher and carries the file's and the
+     zip's SHA-256; `gpg --verify` passes; the program's check with the file and the
+     statement is GOOD, and a changed file DOES NOT VERIFY
    - two owners signing together in a signing room through a test relay, with the app
      served at the program's exact address (and a saved copy refused): off until a
      key is unlocked and it is turned on, the link asks first, peers proven by their
      keys, every relay message encrypted, and the result checks GOOD
+   - usage analytics: asked first on the web, never in a saved copy; nothing loaded
+     before an answer or after "No thanks"; only the beacon after "Allow"
    - no page errors and no network requests
 4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
    each check and its files), goes to `proof/<version>/`. Commit that folder. The

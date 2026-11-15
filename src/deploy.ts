@@ -18,8 +18,19 @@ export interface CountyConfig {
   entityAuthority: string;
   /** Where the county will host it (https); '' leaves Sign together off. */
   relayUrl: string;
+  /** Cloudflare Web Analytics token: the county's own, or the master site's. */
+  analyticsToken: string;
   /** Which version it was made from, and when. */
   madeFrom: string;
+  /** Who made this copy (optional): name, and title or authority. */
+  publisher?: string;
+}
+
+/** The signature over public/index.html, when the maker signed it. */
+export interface PackageSignature {
+  signature: Uint8Array;
+  publicArmored: string;
+  fingerprint: string;
 }
 
 export const CONFIG_ID = 'stop-config';
@@ -63,7 +74,7 @@ export function countyHtml(pristine: string, cfg: CountyConfig, seal: { type: st
   }
   // 3. The security policy: connections to the county's own address only (or none).
   const host = cfg.relayUrl ? new URL(cfg.relayUrl).host : '';
-  html = html.replace(/connect-src [^;"]*/, `connect-src 'self'${host ? ` https://${host} wss://${host}` : ''}`);
+  html = html.replace(/connect-src [^;"]*/, `connect-src 'self'${host ? ` https://${host} wss://${host}` : ''} https://cloudflareinsights.com`);
   // 4. The page title.
   html = html.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(cfg.name)}</title>`);
   return html;
@@ -99,7 +110,7 @@ dataset = "stop_usage"
 `;
 }
 
-export function workerReadme(cfg: CountyConfig) {
+export function workerReadme(cfg: CountyConfig, signed?: PackageSignature | null) {
   const name = slug(cfg.name);
   return `# ${cfg.name}
 
@@ -132,16 +143,32 @@ Sign together: ${
 If the address differs, make a new copy with the right address from the program's
 "Change county or state" panel (link builder).
 
-Every page and PDF says the program is proposed and not an official county form until the
+${
+  signed
+    ? `## Check that this is the published file
+
+${cfg.publisher ? `Published by ${cfg.publisher}. ` : ''}\`public/index.html\` is signed with the publisher's OpenPGP key
+(fingerprint ${signed.fingerprint}). Compare that fingerprint with the one in the
+publisher's signed release statement (PDF), then:
+
+\`\`\`sh
+gpg --import publisher-key.asc
+gpg --verify index.html.sig public/index.html
+sha256sum public/index.html      # must match the statement
+\`\`\`
+
+`
+    : ''
+}Every page and PDF says the program is proposed and not an official county form until the
 county adopts it (change \`status\` in the source's \`src/brand.ts\` and rebuild).
 `;
 }
 
 /** The whole package, as a zip. */
-export function countyPackage(html: string, cfg: CountyConfig, workerSource: string): Uint8Array {
+export function countyPackage(html: string | Uint8Array, cfg: CountyConfig, workerSource: string, signed?: PackageSignature | null): Uint8Array {
   const dir = `${slug(cfg.name)}/`;
   const files: Record<string, Uint8Array> = {
-    [`${dir}public/index.html`]: strToU8(html),
+    [`${dir}public/index.html`]: typeof html === 'string' ? strToU8(html) : html,
     [`${dir}src/index.ts`]: strToU8(workerSource),
     [`${dir}wrangler.toml`]: strToU8(workerToml(cfg.name)),
     [`${dir}package.json`]: strToU8(
@@ -151,12 +178,17 @@ export function countyPackage(html: string, cfg: CountyConfig, workerSource: str
         2,
       ),
     ),
-    [`${dir}README.md`]: strToU8(workerReadme(cfg)),
+    [`${dir}README.md`]: strToU8(workerReadme(cfg, signed)),
   };
+  if (signed) {
+    // Outside public/ is fine too, but next to the README is where people look.
+    files[`${dir}index.html.sig`] = signed.signature;
+    files[`${dir}publisher-key.asc`] = strToU8(signed.publicArmored);
+  }
   return zipSync(files, { level: 9 });
 }
 
 export function cleanConfig(c: CountyConfig): CountyConfig {
   const t = (s: string) => safeText(s ?? '').trim();
-  return { ...c, name: t(c.name), expansion: t(c.expansion), county: t(c.county), state: t(c.state), recorderOffice: t(c.recorderOffice), entityAuthority: t(c.entityAuthority) };
+  return { ...c, name: t(c.name), expansion: t(c.expansion), county: t(c.county), state: t(c.state), recorderOffice: t(c.recorderOffice), entityAuthority: t(c.entityAuthority), publisher: t(c.publisher ?? '') || undefined };
 }

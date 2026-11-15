@@ -19,10 +19,11 @@ const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.u
 const brandSource = readFileSync(new URL('./src/brand.ts', import.meta.url), 'utf8');
 const relay = /relayUrl:\s*'([^']*)'/.exec(brandSource)?.[1] ?? '';
 const relayHost = relay ? new URL(relay).host : '';
-const connect = ["'self'", ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : [])].join(' ');
+const connect = ["'self'", ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : []), 'https://cloudflareinsights.com'].join(' ');
 const csp = [
   "default-src 'none'",
-  "script-src 'unsafe-inline'",
+  // Cloudflare Web Analytics: its beacon script, loaded only if the visitor allows it.
+  "script-src 'unsafe-inline' https://static.cloudflareinsights.com",
   "style-src 'unsafe-inline'",
   'img-src data: blob:',
   `connect-src ${connect}`,

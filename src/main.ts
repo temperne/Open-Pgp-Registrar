@@ -35,6 +35,7 @@ import {
   keyLabel,
   transferClause,
   describeKey,
+  sha256Hex,
   keyIdentity,
   identityFromUserID,
   signRegistration,
@@ -56,6 +57,10 @@ import {
 import {
   registrationPdf,
   signaturePagePdf,
+  releaseStatementPdf,
+  pdfAttachments as releaseAttachments,
+  RELEASE_KEY_ATTACHMENT,
+  type ReleaseStatementInfo,
   printCopyPdf,
   privateKeyPdf,
   keyTextFromPdf,
@@ -84,7 +89,7 @@ import {
   combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
-import { BRAND, BRAND_DEFAULTS, MASTER_URL, applyJurisdiction, type Jurisdiction } from './brand';
+import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, type Jurisdiction } from './brand';
 import { SigningRoom, relayBase, officialOrigin, roomsAvailableHere, type Peer, type RoomMessage } from './room';
 import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
 import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
@@ -2104,12 +2109,18 @@ $('v-use-mine').addEventListener('click', () => {
 action(
   'bin-v-btn',
   async () => {
-    if (!verifyRegs.length) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
     const file = input('bin-v-file').files?.[0];
     const sigFile = input('bin-v-sig').files?.[0];
     if (!file) throw new UserError('Choose the signed file, exactly as you received it.');
     if (!sigFile) throw new UserError('Choose its signature: the .sig file, or the verification page.');
     const sigBytes = new Uint8Array(await sigFile.arrayBuffer());
+    // A program release statement carries the publisher's key: use it when no registration is loaded.
+    let publisherKey: AnyKey | null = null;
+    if (!verifyRegs.length && isPdfBytes(sigBytes)) {
+      const att = (await releaseAttachments(sigBytes).catch(() => [])).find((a) => a.name === RELEASE_KEY_ATTACHMENT);
+      if (att) publisherKey = await readAnyKey(new TextDecoder().decode(att.data));
+    }
+    if (!verifyRegs.length && !publisherKey) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
     let signature: Uint8Array;
     if (isPdfBytes(sigBytes) || isImage(sigFile)) {
       // The verification page: read its PGPSIG1 code.
@@ -2123,20 +2134,28 @@ action(
         throw new UserError('That is not a signature file. Load the .sig file, or the verification page.');
       });
     }
-    await checkBinary(file, signature);
+    await checkBinary(file, signature, publisherKey);
   },
   'Checking...',
 );
 
 /** Checks a binary-signed file against the loaded keys and shows the result. */
-async function checkBinary(file: File, signature: Uint8Array) {
-  const keys = mergeRegistrations(verifyRegs).keys;
+async function checkBinary(file: File, signature: Uint8Array, publisherKey: AnyKey | null = null) {
+  const keys = publisherKey ? [publisherKey] : mergeRegistrations(verifyRegs).keys;
   const r = await verifyBinaryFile({ signature, document: new Uint8Array(await file.arrayBuffer()), keys });
-  r.checks.push({
-    label: 'What this proves',
-    state: 'skipped',
-    detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
-  });
+  r.checks.push(
+    publisherKey
+      ? {
+          label: 'What this proves',
+          state: 'skipped',
+          detail: `That this exact file was signed by the key attached to the release statement (fingerprint ${publisherKey.getFingerprint().toUpperCase()}). Compare that fingerprint with the one the publisher gives elsewhere: anyone can make a statement with their own key.`,
+        }
+      : {
+          label: 'What this proves',
+          state: 'skipped',
+          detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
+        },
+  );
   lastCheck = null;
   checkedFiles = [file];
   $('cert-wrap').hidden = true;
@@ -2687,7 +2706,7 @@ $('frame-note').hidden = !framed;
 {
   const cfg = bakedConfig();
   if (cfg) {
-    const keys = ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority', 'relayUrl'] as const;
+    const keys = ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority', 'relayUrl', 'analyticsToken'] as const;
     for (const k of keys) {
       const v = cfg[k];
       if (typeof v === 'string' && (v.trim() || k === 'relayUrl')) {
@@ -2700,6 +2719,10 @@ $('frame-note').hidden = !framed;
     BRAND.proposedNotice = BRAND_DEFAULTS.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
     document.querySelectorAll<HTMLElement>('[data-copy-of]').forEach((el) => (el.hidden = false));
     $('copy-of').textContent = `${BRAND.county}, ${BRAND.state} (a copy made from ${cfg.madeFrom ?? 'the S.T.O.P. tool'})`;
+    if (typeof cfg.publisher === 'string' && cfg.publisher.trim()) {
+      document.querySelectorAll<HTMLElement>('[data-publisher]').forEach((el) => (el.hidden = false));
+      $('copy-publisher').textContent = `${safeText(cfg.publisher)} (check the file against their signed release statement)`;
+    }
   }
 }
 
@@ -2899,6 +2922,9 @@ action('lb-package', async () => {
   }
   const ownRooms = input('lb-rooms').checked;
   if (ownRooms && !host) throw new UserError('To run Sign together at the copy\u2019s own address, enter that address.');
+  if (input('lb-analytics').checked && !/^[A-Za-z0-9]{16,64}$/.test(input('lb-analytics-token').value.trim())) {
+    throw new UserError('Enter your Cloudflare Web Analytics token (letters and digits, from the Cloudflare dashboard), or untick "Use our own".');
+  }
   const cfg = cleanConfig({
     name: input('j-name').value,
     expansion: input('j-expansion').value,
@@ -2910,18 +2936,91 @@ action('lb-package', async () => {
     entityAuthority: input('j-authority').value,
     // Sign together: at the copy's own address (its own Worker), or at the original program's site.
     relayUrl: ownRooms ? host : MASTER_URL,
+    // Their own analytics, or the master site's.
+    analyticsToken: input('lb-analytics').checked ? input('lb-analytics-token').value.trim() : MASTER_ANALYTICS_TOKEN,
     madeFrom: `${__APP_VERSION__}, ${new Date().toISOString().slice(0, 10)}`,
   });
   if (!cfg.county || !cfg.state) throw new UserError('Choose the state and county first.');
+  const pubName = safeText(input('lb-pub-name').value).trim();
+  const pubTitle = safeText(input('lb-pub-title').value).trim();
+  const postedAt = input('lb-pub-site').value.trim();
+  if (postedAt && !/^https?:\/\/\S+$/i.test(postedAt)) throw new UserError('Where the statement will be posted must be a web address (https://...).');
+  const sign = input('lb-sign').checked;
+  if (sign && !state.signer) throw new UserError('To sign the program file, unlock your private key in "Your key" first, or untick "Sign the program file".');
+  cfg.publisher = [pubName, pubTitle].filter(Boolean).join(', ') || undefined;
   const f = input('j-logo').files?.[0];
   const logo = f ? await logoFromFile(f) : customLogo;
   const st = logo ? null : sealForState(cfg.state, cfg.county);
-  const html = countyHtml(PRISTINE_HTML, cfg, logo ? { type: logo.type, base64: toBase64(logo.bytes) } : st ? { type: 'image/png', base64: st.png } : null);
-  download(countyPackage(html, cfg, __WORKER_SOURCE__), `${slug(cfg.name)}-program.zip`, 'application/zip');
-  $('lb-status').textContent = `Downloaded the program for ${cfg.county}, ${cfg.state}. Unzip it and follow its README.md.`;
+  const html = new TextEncoder().encode(
+    countyHtml(PRISTINE_HTML, cfg, logo ? { type: logo.type, base64: toBase64(logo.bytes) } : st ? { type: 'image/png', base64: st.png } : null),
+  );
+  // The signature covers the exact program file (index.html), so it verifies with gpg and "Check a binary-signed file".
+  const signed = sign && state.signer ? await signDocument(state.signer, html) : null;
+  const publicArmored = signed && state.signer ? state.signer.toPublic().armor() : '';
+  const zipName = `${slug(cfg.name)}-program.zip`;
+  const zip = countyPackage(html, cfg, __WORKER_SOURCE__, signed ? { signature: signed.signature, publicArmored, fingerprint: signed.fingerprint } : null);
+  download(zip, zipName, 'application/zip');
+  const sha256 = await sha256Hex(html);
+  lastRelease = {
+    program: cfg.name,
+    county: cfg.county,
+    state: cfg.state,
+    office: cfg.recorderOffice,
+    programUrl: cfg.projectUrl,
+    signTogether: ownRooms ? `at ${host}` : `at ${MASTER_URL} (the original program)`,
+    madeFrom: cfg.madeFrom,
+    publisherName: pubName,
+    publisherTitle: pubTitle,
+    postedAt,
+    fileName: 'index.html',
+    fileSize: html.length,
+    sha256,
+    zipName,
+    zipSha256: await sha256Hex(zip),
+    documentId: signed?.documentId ?? sha256.slice(0, 24).toUpperCase(),
+    signed: signed && state.signer
+      ? { userID: describeKey(state.signer), fingerprint: signed.fingerprint, signedAt: signed.signedAt, payload: signed.payload, signature: signed.signature, publicArmored }
+      : null,
+  };
+  $('lb-statement').hidden = false;
+  $('lb-status').textContent =
+    `Downloaded the program for ${cfg.county}, ${cfg.state}. Unzip it and follow its README.md. ` +
+    (signed
+      ? 'Signed with your key: download the release statement and post it on your website.'
+      : 'Not signed. The release statement records the file\u2019s hash; tick "Sign the program file" to make it provable.');
+});
+let lastRelease: ReleaseStatementInfo | null = null;
+action('lb-statement', async () => {
+  if (!lastRelease) throw new UserError('Download the program first.');
+  download(await releaseStatementPdf(lastRelease), `${slug(lastRelease.program)}-release-statement.pdf`, 'application/pdf');
 });
 
 document.querySelectorAll<HTMLElement>('[data-official-site]').forEach((el) => (el.textContent = MASTER_URL));
+
+input('lb-analytics').addEventListener('change', () => ($('lb-analytics-wrap').hidden = !input('lb-analytics').checked));
+
+// ---- Usage analytics: Cloudflare Web Analytics, only if the visitor allows it ----
+function askAnalytics() {
+  let web = false;
+  try {
+    web = /^https:$/.test(location.protocol);
+  } catch {
+    web = false;
+  }
+  // Only on the web (a saved copy has no visit to count), and only with a token.
+  $('analytics-ask').hidden = !(web && /^[A-Za-z0-9]{16,64}$/.test(BRAND.analyticsToken));
+}
+action('analytics-yes', () => {
+  $('analytics-ask').hidden = true;
+  const s = document.createElement('script');
+  s.defer = true;
+  s.src = 'https://static.cloudflareinsights.com/beacon.min.js';
+  s.setAttribute('data-cf-beacon', JSON.stringify({ token: BRAND.analyticsToken, spa: false }));
+  document.head.append(s);
+});
+action('analytics-no', () => {
+  $('analytics-ask').hidden = true;
+});
 
 // ---- Link builder: the link for the panel's settings as they are now ----
 {
@@ -3136,3 +3235,4 @@ showRoomConsent();
 $('boot').hidden = true;
 // After start-up, so a problem with the link's settings stays visible.
 settingsFromLink();
+askAnalytics();

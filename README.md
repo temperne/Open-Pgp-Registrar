@@ -186,7 +186,9 @@ hold, and every signature shows up in every tab. The document is encrypted in ea
 with a key that is only in the link, so the program's relay can't read it, and nothing is
 stored. It's off until you turn it on. The relay is the site's own Cloudflare Worker
 ([`worker/`](worker/README.md)), which also counts page loads, downloads and rooms by
-country, with no tracking in the page.
+country. On the web the page also asks each visitor whether it may count the visit with
+Cloudflare Web Analytics (no cookies); it loads only if they allow it. Set your token in
+`MASTER_ANALYTICS_TOKEN` (`src/brand.ts`).
 
 **Lien holders** register the same way, choosing **Registering as: Lien holder** and
 naming the lien. A release of that lien (the **Release of lien** template) is then
@@ -274,6 +276,14 @@ address" to run signing rooms on its own Worker; otherwise, or whenever its rela
 be reached, Sign together falls back to the master site,
 https://pimastopinitiative.jasonajensen.workers.dev, in the same room. Each copy can
 make the next county's copy.
+
+Optionally, say **who is making the copy** (a person or office, a title or authority, and
+where you'll post the statement) and tick **Sign the program file with my key** (unlock
+your key first). You then get a **release statement** PDF to put on your website. It
+gives the program file's SHA-256 (a file can't carry its own hash), the zip's, your key
+fingerprint and your signature. Anyone can check their copy with `sha256sum`, with
+`gpg --verify index.html.sig public/index.html`, or in the program's "Check a
+binary-signed file" with just the file and the statement.
 
 **State seals.** Choosing a county in another state shows that state's seal on the page
 and the PDFs (Pima County keeps its own; an uploaded logo always wins). The 50 seals come

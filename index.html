@@ -43,6 +43,15 @@
       </div>
       <div class="wrap">
         <p id="proposed-note" class="callout warn" data-brand="proposedNotice" hidden></p>
+        <div id="analytics-ask" class="callout" role="dialog" aria-label="Usage analytics" hidden>
+          May this site count your visit with <strong>Cloudflare Web Analytics</strong>? It uses no cookies and doesn't
+          follow you across sites; it never sees your keys or documents. Nothing is loaded unless you allow it, and this
+          page can't remember your answer, so it asks each visit.
+          <div class="actions">
+            <button type="button" id="analytics-yes">Allow</button>
+            <button type="button" id="analytics-no">No thanks</button>
+          </div>
+        </div>
         <p id="room-invite-top" class="callout" hidden>
           <strong>You're invited to sign together.</strong> This link opens a signing room. First unlock your private key
           (step 1, Your key), then go to step 3, Sign a document, turn on Sign together and join.
@@ -135,9 +144,28 @@
             <label for="lb-host">The program's web address <span class="opt">(where this copy will be online; printed on its PDFs)</span></label>
             <input id="lb-host" placeholder="https://maricopa-county-stop.your-account.workers.dev" />
             <div class="checkline"><label><input type="checkbox" id="lb-rooms" /> Sign together runs at this address (deploy the included Worker there)</label></div>
+            <div class="checkline"><label><input type="checkbox" id="lb-analytics" /> Use our own Cloudflare Web Analytics</label></div>
+            <div id="lb-analytics-wrap" hidden>
+              <label for="lb-analytics-token">Your Web Analytics token <span class="opt">(Cloudflare dashboard, Web Analytics, after adding the site)</span></label>
+              <input id="lb-analytics-token" />
+            </div>
+            <p class="hint">Not ticked: the copy asks visitors the same question and, if they allow it, counts with the master site's analytics.</p>
             <p class="hint">Not ticked: this copy doesn't run signing rooms itself, and its Sign together section sends people to
               <span data-official-site></span>, where they work.</p>
-            <div class="actions"><button type="button" id="lb-package" class="primary">Download this county's program (zip)</button></div>
+            <h5>Who is making this copy <span class="opt">(optional)</span></h5>
+            <p class="hint">Name yourself or your office so people know whose copy this is, and sign it with your key so they
+              can prove it. The program file can't hold its own hash, so it goes in a separate <b>release statement</b> (PDF)
+              to post on your website: "this is the file to use, and I signed it".</p>
+            <label for="lb-pub-name">Published by <span class="opt">(a person or office)</span></label>
+            <input id="lb-pub-name" placeholder="Maricopa County Recorder's Office" />
+            <label for="lb-pub-title">Title or authority <span class="opt">(optional)</span></label>
+            <input id="lb-pub-title" placeholder="Chief Deputy Recorder" />
+            <label for="lb-pub-site">Where the release statement will be posted <span class="opt">(optional)</span></label>
+            <input id="lb-pub-site" placeholder="https://recorder.example.gov/stop" />
+            <div class="checkline"><label><input type="checkbox" id="lb-sign" /> Sign the program file with my key
+              <span class="opt">(unlock it in "Your key" first)</span></label></div>
+            <div class="actions"><button type="button" id="lb-package" class="primary">Download this county's program (zip)</button>
+              <button type="button" id="lb-statement" hidden>Download the release statement (PDF)</button></div>
             <p class="error" data-error role="alert"></p>
           </details>
           <p id="j-link-out" class="hint mono" hidden></p>
@@ -275,9 +303,10 @@
               can't read them and stores nothing. Otherwise the page runs entirely in your browser; its security
               settings let it connect to that one relay and nowhere else. You can save it and use it offline.</p></details>
           <details><summary>Does the website track me?</summary>
-            <p>No tracking in the page: no cookies, no analytics scripts, no IP addresses kept. The program's server
-              counts how many times the page is loaded or downloaded and how many signing rooms are opened, by country,
-              to show the program is being used. Nothing about you or your documents is counted.</p></details>
+            <p>Only if you allow it, and then without cookies. When the page opens on the web it asks whether it may count
+              your visit with Cloudflare Web Analytics, which uses no cookies and doesn't follow you across sites; nothing
+              loads unless you choose Allow. The program's server also counts page loads, downloads and signing rooms by
+              country. Nothing about your keys or documents is ever counted or sent.</p></details>
           <details><summary>We own the property together, or through a trust or company. How does that work?</summary>
             <p>It's your choice. One key can cover everyone: name it with a list of the owners or the entity's name. Or
               register several keys, for example the trust and its beneficiary, or each spouse, and describe each key
@@ -301,6 +330,8 @@
             <dd data-app="built"></dd>
             <dt data-copy-of hidden>Made for</dt>
             <dd data-copy-of hidden id="copy-of"></dd>
+            <dt data-publisher hidden>Published by</dt>
+            <dd data-publisher hidden id="copy-publisher"></dd>
           </dl>
           <p id="self-download">
             <a class="button" data-self-download download>Download this tool</a>

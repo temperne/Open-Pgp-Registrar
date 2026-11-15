@@ -1014,6 +1014,123 @@ export async function signaturePagePdf(info: SignaturePageInfo): Promise<Uint8Ar
   return finish(doc);
 }
 
+/** A county copy's release statement: the program file's hash, who published it, and (optionally) their signature. */
+export interface ReleaseStatementInfo {
+  program: string;
+  county: string;
+  state: string;
+  office: string;
+  programUrl: string;
+  signTogether: string;
+  madeFrom: string;
+  publisherName: string;
+  publisherTitle: string;
+  postedAt: string;
+  fileName: string;
+  fileSize: number;
+  sha256: string;
+  zipName: string;
+  zipSha256: string;
+  documentId: string;
+  signed: null | {
+    userID: string;
+    fingerprint: string;
+    signedAt: Date;
+    payload: string;
+    signature: Uint8Array;
+    publicArmored: string;
+  };
+}
+
+export const RELEASE_KEY_ATTACHMENT = 'publisher-key.asc';
+
+export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc(`Program release statement - ${info.program}`);
+  const p = doc.addPage([PAGE_W, PAGE_H]);
+  let y = header(
+    p,
+    fonts,
+    'Program release statement',
+    `${info.program}: ${info.county}, ${info.state}`,
+    info.signed
+      ? 'Signed by the publisher. Post this page where people get the program, so they can confirm they have the published file. It is kept apart from the file because a file cannot carry its own hash.'
+      : 'NOT SIGNED. This statement records the file’s hash and who made it, but carries no signature, so it proves nothing by itself.',
+  );
+  const rows: Row[] = [];
+  if (info.publisherName) rows.push({ label: 'Published by', value: info.publisherName });
+  if (info.publisherTitle) rows.push({ label: 'Title or authority', value: info.publisherTitle });
+  if (info.postedAt) rows.push({ label: 'This statement is posted at', value: info.postedAt });
+  rows.push(
+    { label: 'Program', value: info.program },
+    { label: 'For', value: `${info.county}, ${info.state} (deeds recorded with the ${info.office})` },
+    { label: 'Program web address', value: info.programUrl || '(none given)' },
+    { label: 'Sign together', value: info.signTogether },
+    { label: 'Made from', value: info.madeFrom },
+    { label: 'Program file', value: `${info.fileName}, ${humanSize(info.fileSize)}` },
+    { label: 'Program file SHA-256', value: `${info.sha256.slice(0, 32)}\n${info.sha256.slice(32)}`, mono: true },
+    { label: 'Package (zip) SHA-256', value: `${info.zipName}\n${info.zipSha256.slice(0, 32)}\n${info.zipSha256.slice(32)}`, mono: true },
+  );
+  if (info.signed) {
+    rows.push(
+      { label: 'Signed by (key)', value: info.signed.userID },
+      { label: 'Publisher key fingerprint', value: fingerprintTwoLines(info.signed.fingerprint), mono: true },
+      { label: 'Signed at', value: isoDateTime(info.signed.signedAt) },
+    );
+  }
+  y = table(p, fonts, rows, y, CONTENT_W, 150);
+
+  if (info.signed) {
+    y -= 14;
+    const qr = bestQr(info.signed.payload)!;
+    const qrSize = 150;
+    drawQr(p, qr, M, y, qrSize);
+    text(p, fonts, 'Scan: carries the signature over the program file', y - qrSize - 6, { x: M, size: 7.5, font: fonts.bold, color: MUTED, width: qrSize });
+    const rx = M + qrSize + 24;
+    const rw = PAGE_W - M - rx;
+    let ry = text(p, fonts, 'DOCUMENT ID', y, { x: rx, size: 8, font: fonts.bold, color: MUTED });
+    const moduleW = Math.min(1.0, rw / (code128Bits(info.documentId).length + 20));
+    const bw = drawCode128(p, info.documentId, rx + 10 * moduleW, ry - 44, moduleW, 38);
+    ry -= 48;
+    const idW = fonts.mono.widthOfTextAtSize(info.documentId, 10);
+    p.drawText(info.documentId, { x: rx + 10 * moduleW + (bw - idW) / 2, y: ry - 10, size: 10, font: fonts.mono, color: INK });
+    ry -= 20;
+    ry = text(p, fonts, 'How to check the program file', ry - 4, { x: rx, size: 9.5, font: fonts.bold, width: rw });
+    ry = text(
+      p,
+      fonts,
+      `1. Compare the fingerprint above with the one the publisher gives elsewhere (their website, letterhead or in person). ` +
+        `2. Check the file: on this program's website, "Check a document", "Check a binary-signed file": load ${info.fileName} and this page ` +
+        `(the publisher's key is attached to it). Or with GnuPG: gpg --import ${RELEASE_KEY_ATTACHMENT}; gpg --verify ${info.fileName}.sig ${info.fileName}. ` +
+        `3. Or just compare the SHA-256: sha256sum ${info.fileName} (Windows: Get-FileHash ${info.fileName}).`,
+      ry - 3,
+      { x: rx, size: 8, width: rw },
+    );
+    y = Math.min(y - qrSize - 20, ry) - 10;
+    rule(p, y);
+    y = text(p, fonts, 'Code text (for manual entry if the code cannot be scanned):', y - 6, { size: 7.5, font: fonts.bold, color: MUTED });
+    text(p, fonts, info.signed.payload, y - 2, { size: 6.5, font: fonts.mono, leading: 8 });
+    await doc.attach(new TextEncoder().encode(info.signed.publicArmored), RELEASE_KEY_ATTACHMENT, {
+      mimeType: 'application/pgp-keys',
+      description: 'The publisher’s public key',
+    });
+    await doc.attach(info.signed.signature, `${info.fileName}.sig`, {
+      mimeType: 'application/pgp-signature',
+      description: 'Detached OpenPGP signature over the program file',
+    });
+  } else {
+    y = text(
+      p,
+      fonts,
+      `To check a copy, compare its SHA-256 with the one above: sha256sum ${info.fileName} (Windows: Get-FileHash ${info.fileName}). ` +
+        'Without a signature, this only helps if you got this statement from someone you trust.',
+      y - 16,
+      { size: 9 },
+    );
+  }
+  footer(p, fonts, `Program release statement  |  Document ID ${info.documentId}`, 1, 1);
+  return finish(doc);
+}
+
 /**
  * Print copy: the original PDF with the verification page appended. This is a
  * new file for printing; the signature covers the original file, not this one.

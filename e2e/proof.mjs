@@ -488,6 +488,79 @@ try {
     );
   }
 
+  // ---- 13b. A signed release: the maker names themselves, signs the program file, and posts a statement ----
+  {
+    const pg = await newPage();
+    await loadKey(pg, keys.ivy.priv);
+    await pg.click('#j-open');
+    await pg.selectOption('#j-state', 'Texas');
+    await pg.selectOption('#j-county', 'Harris County');
+    await pg.click('#link-api summary');
+    await pg.fill('#lb-host', 'https://harris-county-stop.example.workers.dev');
+    await pg.fill('#lb-pub-name', 'Harris County Clerk Office');
+    await pg.fill('#lb-pub-title', 'Chief Deputy Clerk');
+    await pg.fill('#lb-pub-site', 'https://clerk.example.gov/stop');
+    await pg.check('#lb-sign');
+    const zip = await save(pg, '#lb-package', '13b-signed-program.zip');
+    const statement = await save(pg, '#lb-statement', '13b-release-statement.pdf');
+    await pg.close();
+    const unz = join(WORK, 'pkg-signed');
+    mkdirSync(unz);
+    execFileSync('unzip', ['-q', zip, '-d', unz]);
+    const dir = join(unz, readdirSync(unz)[0]);
+    const htmlPath = join(dir, 'public/index.html');
+    const sha = createHash('sha256').update(readFileSync(htmlPath)).digest('hex');
+    const zipSha = createHash('sha256').update(readFileSync(zip)).digest('hex');
+    const stText = flat(execFileSync('pdftotext', [statement, '-']).toString()).replace(/\s+/g, '');
+    // Stock GnuPG, with the files in the zip.
+    const home = join(WORK, 'gnupg-release');
+    mkdirSync(home, { mode: 0o700 });
+    const gpg = (...a) => execFileSync('gpg', ['--homedir', home, '--batch', ...a], { stdio: ['ignore', 'pipe', 'pipe'] });
+    gpg('--import', join(dir, 'publisher-key.asc'));
+    let gpgOk = false;
+    try {
+      gpg('--verify', join(dir, 'index.html.sig'), htmlPath);
+      gpgOk = true;
+    } catch {
+      gpgOk = false;
+    }
+    // The program's own check, with only the file and the statement (its key is attached).
+    const tampered = join(WORK, 'index-tampered.html');
+    writeFileSync(tampered, readFileSync(htmlPath, 'utf8').replace('Harris County', 'Harris  County'));
+    const binCheck = async (file) => {
+      const r = await newPage();
+      await r.click('#tab-verify');
+      await r.click('#bin-check summary');
+      await r.setInputFiles('#bin-v-file', file);
+      await r.setInputFiles('#bin-v-sig', statement);
+      await r.click('#bin-v-btn');
+      await r.waitForSelector('#vr-banner strong', { timeout: 60000 });
+      const v = flat(await r.textContent('#vr-banner strong'));
+      const shown = flat(await r.textContent('#verify-result').catch(() => ''));
+      await r.close();
+      return { v, shown };
+    };
+    const good = await binCheck(htmlPath);
+    const bad = await binCheck(tampered);
+    const copy = await browser.newPage();
+    await copy.goto(pathToFileURL(htmlPath).href);
+    const pub = flat(await copy.textContent('#copy-publisher'));
+    await copy.close();
+    check(
+      '13b. Signed release statement',
+      gpgOk &&
+        stText.includes(sha) &&
+        stText.includes(zipSha) &&
+        stText.includes('HarrisCountyClerkOffice') &&
+        stText.includes('ChiefDeputyClerk') &&
+        /GOOD/.test(good.v) &&
+        /DOES NOT VERIFY/.test(bad.v) &&
+        /Harris County Clerk Office/.test(pub),
+      `the statement names the publisher and carries the file's SHA-256 (${sha.slice(0, 16)}...) and the zip's; gpg --verify index.html.sig passes; the program's check with only the file and the statement: ${good.v}; a changed file: ${bad.v}; the copy names its publisher`,
+      [zip, statement],
+    );
+  }
+
   // ---- 12. Sign together, live: two owners in a signing room, through a test relay ----
   {
     const sockets = new Map(); // room -> Set of server-side routes
@@ -566,6 +639,43 @@ try {
       localBlocked && link.startsWith(`${OFFICIAL}#room=`) && offFirst && agreedNotOn && invited && !leaked && /GOOD/.test(c.verdict),
       `unavailable in a saved copy; on ${OFFICIAL} off until the terms of service and waiver are accepted and it is turned on, and only with an unlocked key; the link asks before joining; peers proven by their keys; ${seen.length} relay messages, all encrypted; the result checks ${c.verdict}`,
       [roomDoc],
+    );
+  }
+
+  // ---- 14. Usage analytics: asked first, loaded only if allowed ----
+  {
+    const OFFICIAL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+    const dist = readFileSync(DIST, 'utf8');
+    const end = dist.lastIndexOf('</head>');
+    // A test token, carried the way a county copy carries its settings.
+    const withToken = `${dist.slice(0, end)}<script type="application/json" id="stop-config">{"analyticsToken":"0123456789abcdef0123456789abcdef"}</script>${dist.slice(end)}`;
+    const visit = async (answer) => {
+      const pg = await browser.newPage();
+      const seen = [];
+      pg.on('request', (r) => {
+        if (!r.url().startsWith(OFFICIAL)) seen.push(r.url());
+      });
+      await pg.route(`${OFFICIAL}**`, (r) => r.fulfill({ body: withToken, contentType: 'text/html' }));
+      await pg.route('https://static.cloudflareinsights.com/**', (r) => r.fulfill({ body: '/* test beacon */', contentType: 'text/javascript' }));
+      await pg.goto(OFFICIAL);
+      await pg.waitForTimeout(500);
+      const asked = await pg.isVisible('#analytics-ask');
+      const before = seen.length;
+      if (answer) await pg.click(answer);
+      await pg.waitForTimeout(500);
+      const beacon = await pg.getAttribute('script[src*="cloudflareinsights"]', 'data-cf-beacon').catch(() => null);
+      await pg.close();
+      return { asked, before, after: [...seen], beacon };
+    };
+    const no = await visit('#analytics-no');
+    const yes = await visit('#analytics-yes');
+    const local = await newPage();
+    const localAsked = await local.isVisible('#analytics-ask');
+    await local.close();
+    check(
+      '14. Usage analytics asked first',
+      no.asked && no.before === 0 && no.after.length === 0 && yes.asked && yes.before === 0 && yes.after.every((u) => u.startsWith('https://static.cloudflareinsights.com/')) && yes.after.length >= 1 && /0123456789abcdef/.test(yes.beacon ?? '') && !localAsked,
+      `asked on the web, never in a saved copy; nothing loaded before an answer; "No thanks": no requests; "Allow": only ${yes.after.map((u) => new URL(u).host).join(', ') || 'none'}`,
     );
   }
 
