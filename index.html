@@ -502,6 +502,8 @@
             <input id="reg-continue-file" type="file" accept=".pdf,application/pdf" aria-label="Registration PDF to continue" />
             <p id="reg-continue-status" class="hint" role="status"></p>
           </div>
+          <!-- Sign together: the room card (below, on the Sign tab) moves here on this tab. -->
+          <div data-room-slot="register"></div>
           <div id="reg-locked-note" class="callout warn" hidden></div>
           <fieldset class="choice">
             <legend>This is a</legend>
@@ -615,10 +617,10 @@
               <input id="continue-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Signed document" />
               <p id="continue-status" class="hint" role="status"></p>
             </div>
-            <div class="subcard" id="room-card">
+            <div data-room-slot="sign"><div class="subcard" id="room-card">
               <h3>Sign together, live <span class="opt">(a signing room)</span></h3>
               <p class="hint">
-                Co-owners and buyers sign the same document at the same time, each on their own computer. Start a room and
+                Co-owners and buyers sign the same registration or document (typed, or a file) at the same time, each on their own computer. Start a room and
                 send the link; everyone who opens it and unlocks their key appears below, proven by their key, and every
                 signature shows up in everyone's tab. The document is encrypted in your tab with a key that is only in the
                 link, so the program's relay can't read it, and nothing is stored. You still print, sign in ink and notarize.
@@ -676,7 +678,7 @@
               </div>
               <ul id="room-peers" class="keylist"></ul>
               <p class="error" data-error role="alert"></p>
-            </div>
+            </div></div>
             <div class="subcard">
               <h3>Sign a file <span class="opt">(instead of writing the document here)</span></h3>
               <p class="hint">

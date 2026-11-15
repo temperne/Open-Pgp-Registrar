@@ -22,6 +22,7 @@ const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 export type RoomMessage =
   | { t: 'hello'; key: string; ts: number; sig: string }
   | { t: 'state'; draft: unknown }
+  | { t: 'reg'; reg: unknown }
   | { t: 'ask' };
 
 export interface Peer {

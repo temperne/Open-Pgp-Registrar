@@ -233,6 +233,8 @@ function showTab(name: Tab, focus = false) {
     $(`tab-${t}`).tabIndex = on ? 0 : -1;
     $(`panel-${t}`).hidden = !on;
   }
+  // Sign together works on the Register and Sign tabs: the room card goes with the tab.
+  document.querySelector(`[data-room-slot="${name}"]`)?.append($('room-card'));
   if (focus) $(`tab-${name}`).focus();
   try {
     if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
@@ -746,6 +748,7 @@ action(
     }
     lockRegistration();
     renderRegDraft();
+    void roomShare();
     $('reg-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
   'Signing...',
@@ -755,25 +758,10 @@ action(
   'dl-reg',
   async () => {
     const d = state.regDraft;
-    if (!d) return;
+    const draft = regDraftForPdf();
+    if (!d || !draft) return;
     const first = d.keys[0];
     const s = summarize(first);
-    const sigsOf = (p?: SignedText) =>
-      (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
-    const draft: RegistrationDraft = {
-      format: 'stop-registration-draft-1',
-      ownerName: input('reg-owner').value.trim(),
-      parcels: d.parcels.join('\n'),
-      propertyAddress: input('reg-property').value.trim(),
-      mailingAddress: input('reg-mailing').value.trim(),
-      county: input('reg-county').value.trim(),
-      replacement: isReplacement(),
-      previousFingerprint: input('reg-prev').value.trim(),
-      keys: d.keys.map((k) => k.armor()),
-      proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
-      role: d.role,
-      interest: d.interest,
-    };
     const pdf = await registrationPdf({
       ownerName: draft.ownerName,
       parcels: draft.parcels,
@@ -804,6 +792,91 @@ action(
   'Preparing PDF...',
 );
 
+/** The registration in progress, as the PDF embeds it (and a signing room shares it). */
+function regDraftForPdf(): RegistrationDraft | null {
+  const d = state.regDraft;
+  if (!d) return null;
+  const sigsOf = (p?: SignedText) =>
+    (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
+  return {
+    format: 'stop-registration-draft-1',
+    ownerName: input('reg-owner').value.trim(),
+    parcels: d.parcels.join('\n'),
+    propertyAddress: input('reg-property').value.trim(),
+    mailingAddress: input('reg-mailing').value.trim(),
+    county: input('reg-county').value.trim(),
+    replacement: isReplacement(),
+    previousFingerprint: input('reg-prev').value.trim(),
+    keys: d.keys.map((k) => k.armor()),
+    proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
+    role: d.role,
+    interest: d.interest,
+  };
+}
+
+/** Takes up a registration in progress (from its PDF, or from another tab in a signing room). */
+async function loadRegDraft(draft: RegistrationDraft) {
+  const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+  const parcels = splitParcels(draft.parcels);
+  const proofs: Record<string, SignedText> = {};
+  const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
+  for (const p of parcels) {
+    const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest }, draft.proofs[p] ?? []);
+    if (proof) proofs[p] = proof;
+  }
+  state.regDraft = { keys, parcels, proofs, role, interest: draft.interest };
+  input('reg-role').value = role ?? 'owner';
+  input('reg-interest').value = draft.interest ?? '';
+  syncRegRole();
+  input('reg-owner').value = draft.ownerName;
+  textarea('reg-parcels').value = draft.parcels;
+  input('reg-property').value = draft.propertyAddress;
+  input('reg-mailing').value = draft.mailingAddress;
+  input('reg-county').value = draft.county;
+  input('reg-prev').value = draft.previousFingerprint;
+  document.querySelectorAll<HTMLInputElement>('input[name="reg-kind"]').forEach((r) => (r.checked = r.value === (draft.replacement ? 'replacement' : 'new')));
+  state.coOwners = keys.slice(1);
+  renderCoOwners();
+  lockRegistration();
+  renderRegDraft();
+  refresh();
+  return keys;
+}
+
+/** A registration from another tab in the room: take it up, or add its key holders' signatures to ours. */
+async function applyRoomReg(remote: RegistrationDraft) {
+  const status = $('room-status');
+  const d = state.regDraft;
+  if (!d) {
+    await loadRegDraft(remote);
+    status.textContent = `A registration from the room is open on the Register tab: signed by ${state.regDraft!.keys.length - regMissing().length} of ${state.regDraft!.keys.length} keys.`;
+    return;
+  }
+  const keys = await Promise.all(remote.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+  const parcels = splitParcels(remote.parcels);
+  const role = remote.role === 'lienholder' ? 'lienholder' : undefined;
+  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || role !== d.role || (remote.interest ?? '') !== (d.interest ?? '')) {
+    status.textContent = 'Another tab in the room has a different registration open (other parcels or keys). Everyone must sign the same one: start over, or leave the room.';
+    return;
+  }
+  let changed = false;
+  for (const p of d.parcels) {
+    const theirs = await proofFromSigs({ parcel: p, keys: d.keys, role: d.role, interest: d.interest }, remote.proofs[p] ?? []);
+    const merged = await mergeSigned(d.proofs[p], theirs);
+    if (merged && merged !== d.proofs[p]) {
+      d.proofs[p] = merged;
+      changed = true;
+    }
+  }
+  if (changed) {
+    lockRegistration();
+    renderRegDraft();
+  }
+  const ours = d.parcels.reduce((n, p) => n + (d.proofs[p]?.signatures.length ?? 0), 0);
+  const theirs = d.parcels.reduce((n, p) => n + (remote.proofs[p]?.length ?? 0), 0);
+  if (ours > theirs) void roomShare();
+}
+
 $('reg-next').addEventListener('click', () => {
   state.key = null;
   state.signer = null;
@@ -823,30 +896,8 @@ input('reg-continue-file').addEventListener('change', async () => {
   try {
     const draft = await registrationDraftFromPdf(new Uint8Array(await f.arrayBuffer()));
     if (!draft) throw new Error('No registration in progress was found in that PDF. Load the registration PDF made by this tool.');
-    const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
-    const parcels = splitParcels(draft.parcels);
-    const proofs: Record<string, SignedText> = {};
-    const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
-    for (const p of parcels) {
-      const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest }, draft.proofs[p] ?? []);
-      if (proof) proofs[p] = proof;
-    }
-    state.regDraft = { keys, parcels, proofs, role, interest: draft.interest };
-    input('reg-role').value = role ?? 'owner';
-    input('reg-interest').value = draft.interest ?? '';
-    syncRegRole();
-    input('reg-owner').value = draft.ownerName;
-    textarea('reg-parcels').value = draft.parcels;
-    input('reg-property').value = draft.propertyAddress;
-    input('reg-mailing').value = draft.mailingAddress;
-    input('reg-county').value = draft.county;
-    input('reg-prev').value = draft.previousFingerprint;
-    document.querySelectorAll<HTMLInputElement>('input[name="reg-kind"]').forEach((r) => (r.checked = r.value === (draft.replacement ? 'replacement' : 'new')));
-    state.coOwners = keys.slice(1);
-    renderCoOwners();
-    lockRegistration();
-    renderRegDraft();
-    refresh();
+    const keys = await loadRegDraft(draft);
+    void roomShare();
     status.className = 'hint ok';
     status.textContent = `Loaded a registration signed by ${keys.length - regMissing().length} of ${keys.length} keys. Unlock your key and choose "Sign the registration with my key".`;
   } catch (err) {
@@ -1689,9 +1740,28 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
 async function roomShare() {
   if (!room?.ws) return;
   if (state.signer) await room.hello(state.signer);
+  const reg = regDraftForPdf();
+  if (reg) await room.send({ t: 'reg', reg });
   const d = draftForPdf();
-  if (d && !d.source) await room.send({ t: 'state', draft: d });
+  if (!d) return;
+  if (d.source) {
+    // A signed file: the next signer needs the original to recreate the same package.
+    const src = state.source;
+    const size = (src?.pdf?.length ?? 0) + (src?.images ?? []).reduce((n, i) => n + i.bytes.length, 0);
+    const files =
+      src && size <= ROOM_FILE_LIMIT
+        ? { pdf: src.pdf ? toBase64(src.pdf) : undefined, images: src.images?.map((i) => ({ name: i.name, format: i.format, b64: toBase64(i.bytes) })) }
+        : null;
+    await room.send({ t: 'state', draft: { ...d, files } });
+    if (!files) $('room-status').textContent = 'This file is too large to pass through the room: send the others the PDF ("Sign exactly as others"). Signatures still go through the room.';
+    return;
+  }
+  await room.send({ t: 'state', draft: d });
 }
+
+/** The largest original file a room passes on (the relay takes 4 MB per message, after encryption and base64). */
+const ROOM_FILE_LIMIT = 2_800_000;
+type RoomFiles = { pdf?: string; images?: { name: string; format: 'png' | 'jpg'; b64: string }[] } | null;
 
 /** The same signatures, merged: everyone's signatures over the same text. */
 async function mergeSigned(a: SignedText | undefined, b: SignedText | undefined) {
@@ -1703,11 +1773,19 @@ async function mergeSigned(a: SignedText | undefined, b: SignedText | undefined)
 }
 
 /** A document from another tab in the room: adopt it, or add its signatures to ours. */
-async function applyRoomDraft(remote: DocumentDraft) {
+async function applyRoomDraft(remote: DocumentDraft & { files?: RoomFiles }) {
   const status = $('room-status');
-  if (remote.source) {
-    status.textContent = 'Another tab is signing a file. Files are passed as the PDF ("Sign exactly as others"), not through a room.';
-    return;
+  if (remote.source && !state.draft) {
+    if (!remote.files) {
+      status.textContent = 'Another tab is signing a file too large to pass through the room. Ask them for the PDF and load it under "Sign exactly as others".';
+      return;
+    }
+    state.source = {
+      ...remote.source,
+      pdf: remote.files.pdf ? fromBase64(remote.files.pdf) : undefined,
+      images: remote.files.images?.map((i) => ({ name: i.name, format: i.format, bytes: fromBase64(i.b64) })),
+    };
+    showSource();
   }
   const canonical = canonicalText(fullText(remote.title, remote.text));
   const signed = await assembleSigned(
@@ -1725,8 +1803,11 @@ async function applyRoomDraft(remote: DocumentDraft) {
     }
     const merged = await mergeSigned(d.signed, signed);
     const proof = await mergeSigned(d.buyerProof, remoteProof);
-    if (merged === d.signed && proof === d.buyerProof) return;
-    setDraft({ ...d, signed: merged!, buyerProof: proof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    if (merged !== d.signed || proof !== d.buyerProof) {
+      setDraft({ ...d, signed: merged!, buyerProof: proof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    }
+    // The sender is missing signatures we have (two signed at once): send ours back, so every tab ends with all of them.
+    if (merged!.signatures.length > signed.signatures.length || (proof?.signatures.length ?? 0) > (remoteProof?.signatures.length ?? 0)) void roomShare();
     return;
   }
   if (reg && !sameKeys(reg.keys, state.signReg?.keys ?? [])) useSignRegistration([reg]);
@@ -1739,25 +1820,34 @@ async function applyRoomDraft(remote: DocumentDraft) {
     returnTo: remote.returnTo,
     signers: remote.signers,
     recordable: remote.recordable !== false,
+    source: remote.source,
   });
 }
 
 const roomEvents = {
   onStatus: roomStatus,
   onJoined: () => void roomShare(),
-  onMessage: async (m: RoomMessage, r: SigningRoom) => {
+  // One message at a time: two signatures arriving together must both be merged, not race.
+  onMessage: (m: RoomMessage, r: SigningRoom) => {
+    roomQueue = roomQueue.then(() => handleRoomMessage(m, r));
+  },
+};
+let roomQueue: Promise<void> = Promise.resolve();
+async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
+  {
     try {
       if (m.t === 'ask') await roomShare();
       else if (m.t === 'hello') {
         const p = await r.checkHello(m);
         peers.set(p.fingerprint, p);
         renderPeers();
-      } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft);
+      } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft & { files?: RoomFiles });
+      else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
     } catch (err) {
       $('room-status').textContent = `A message from the room could not be used: ${(err as Error).message}`;
     }
-  },
-};
+  }
+}
 
 async function enterRoom(r: SigningRoom) {
   room?.leave();
