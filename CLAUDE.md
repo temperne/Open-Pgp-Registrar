@@ -91,6 +91,23 @@ gives counter staff a way to check a filing.
    shows each registration's proof status, and a deed check fails unless the
    registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
    card** PDF for sharing with co-owners.
+   **Roles**: a registration is for the owner of record (default) or a **lien holder**
+   (`role: 'lienholder'`, `interest` names the lien); the role is in
+   `registrationStatement`, the codes (the fifth field becomes a JSON object
+   `{labels, role, interest, transfer}`; a plain label array is still read) and the
+   embedded JSON. A release of lien is checked against the lien holder's registration.
+   **Registration by sale** (`transfer`): a warranty or quitclaim deed can name buyers'
+   keys (`transferClause`, part of the signed text); the deed PDF embeds them as
+   `stop-registration-1.json` with `transfer: {documentId, from}` and prints them as
+   `PGPR1` codes. **Every buyer key proves possession** by signing the new
+   registration's statement ("Prove my buyer key"; `buyerProof` in the document draft,
+   `proof` in the embedded JSON, printed as `PGPQ1` codes on the sale page *before* the
+   key codes, so a reader going last page first meets the keys first and waits for
+   both groups). Loaded as a registration, it is proven by the deed itself and the
+   buyers' proof (`checkTransfer`: every previous key signed the deed, it names the
+   parcel and every new key, and every new key signed the statement). The Recorder's index decides which registration or deed is current.
+   Templates also include **Release of lien** and **Deregistration** (leave the
+   program; signed by every registered key).
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
    body), not a file, so it can be checked from paper. Load the parcel's registration
    first (PDF, scan or photo) so the tool knows every owner who must sign, and refuses
@@ -155,6 +172,9 @@ gives counter staff a way to check a filing.
    agency, ink signature and date lines, the document ID barcode, the signed text and
    the codes reprinted. It is appended to the filing. A public key card can stand in
    for the registration (the result then says it was checked against a key only).
+   **Combined filing** (`combinedFilingPdf`): two checkboxes add the original (pages
+   copied untouched) and the checked copy before the certificate, which lists the page
+   ranges and each original's SHA-256.
    **Check a binary-signed file** (`#bin-check`, `verifyBinaryFile`): the file plus
    its `.sig` or verification page (PDF, scan, photo). After any check, a **checked
    copy** (`checkedCopyPdf`) reprints the checked file(s), PDF pages or images, with
@@ -165,6 +185,15 @@ gives counter staff a way to check a filing.
    solves the problem, and an FAQ.
 
 ## Branding
+
+- **Session override** (the header's "Change county or state" button or the seal,
+  on every tab, opens `#jurisdiction`;
+  `applyJurisdiction` in `brand.ts`): program name, county, state, web address,
+  business verification office and logo, in memory only, with an optional settings
+  file (`stop-jurisdiction-1`), or from the link (`settingsFromLink`: `name`,
+  `expansion`, `county`, `state`, `url`, `authority`, `seal` as a `data:` image only;
+  a seal at a web address is refused, never fetched). An override always shows the
+  proposed notice for the chosen county.
 
 - Program name, acronym expansion, county, web address (test site:
   https://pimastopinitiative.jasonajensen.workers.dev/) and the proposed/adopted status live in `src/brand.ts`, with
@@ -222,12 +251,58 @@ at fractional pixel sizes, which real scans and photos produce.
 - `tests/`: vitest. Includes GnuPG interop and a test that rasterizes the PDFs and
   decodes the codes with `zbarimg` (both skipped if the tools are missing)
 
+## Versioning
+
+- Versions are `v<major>.<minor>.<mmddyyyy>` (for example `v0.1.11152026`). **Only the
+  project owner changes major or minor.** The last part is always the date the
+  version is tagged.
+- A release: set `version` in `package.json` (without the `v`), move the CHANGELOG's
+  Unreleased items under a heading for the version, build, put the printed SHA-256 in
+  the README's "Download and verify" table, commit, and tag that commit (annotated
+  tag, with the SHA-256 in its message). Two releases on one day: add `-2`, `-3`.
+- The build bakes the version, build date and CHANGELOG into the page ("About this
+  software" on the About tab, and the footer).
+
+## Build directives (provability)
+
+Every build that is released, or pushed for a pull request, must be proven:
+
+1. `npm run typecheck` and `npm test` pass.
+2. Update the CHANGELOG **before** building: it is built into the page, so editing it
+   changes the file's SHA-256. (README and CLAUDE.md are not built in.)
+3. `npm run proof`: builds `dist/index.html`, then `e2e/proof.mjs` runs the built app in
+   Chromium through the full ownership chain and asserts every result:
+   - a complex registration (an individual + a group key, both signing)
+   - a sale to a group + a company position key, with the grantee filled from the keys;
+     the buyers prove their keys (one from the PDF on another computer, one on the
+     same computer), and a deed with unproven buyers does not hand over the registration
+   - the Recorder's filing in all three forms (original + certificate; original +
+     checked copy + certificate; certificate only) and a tilted JPEG scan of it, each
+     loaded as the new registration ("proven by sale")
+   - the second seller signing on their own computer ("Sign exactly as others")
+   - a sale to an individual checked against the previous filing, and the new owner's
+     document checked against the certificate-only filing
+   - checks that must fail: the new owner's document against the original
+     registration, and a deed signed by a key that isn't registered
+   - changing the county from the header on another tab, and settings from the link
+     (with an embedded seal; "Copy a link" round-trips; a seal at a web address is
+     refused with no request)
+   - no page errors and no network requests
+4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
+   each check and its files), goes to `proof/<version>/`. Commit that folder. The
+   SHA-256 in the report must match the README's "Download and verify" table and the
+   file that is published. A failing proof is not released.
+5. Any change to the code or the CHANGELOG after the proof means building and proving
+   again. Add a step to `e2e/proof.mjs` for any new workflow worth guarding.
+
 ## Commands
 
 - `npm run dev`: dev server
 - `npm test`: unit, interop and scan tests
 - `npm run typecheck`
 - `npm run build`: writes `dist/index.html` (single file)
+- `npm run proof`: build, then the end-to-end ownership chain in Chromium; writes
+  `proof/<version>/` (needs Playwright with Chromium, poppler-utils, ImageMagick)
 
 ## Working agreements
 

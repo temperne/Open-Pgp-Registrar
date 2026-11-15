@@ -50,6 +50,39 @@ export const BRAND = {
   proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
 };
 
+/** The values as built, so an override can be undone. */
+export const BRAND_DEFAULTS = { ...BRAND };
+
+/** What can be changed on the page to use the tool for another county or state. */
+export interface Jurisdiction {
+  name: string;
+  /** What the acronym stands for. */
+  expansion: string;
+  county: string;
+  state: string;
+  projectUrl: string;
+  entityAuthority: string;
+}
+
+/**
+ * Uses the tool for another county or state, until the page is closed (nothing
+ * is stored). An overridden jurisdiction is always shown as a proposed program:
+ * only a county's own build can say it has adopted it.
+ */
+export function applyJurisdiction(j: Partial<Jurisdiction> | null) {
+  Object.assign(BRAND, BRAND_DEFAULTS);
+  if (!j) return;
+  for (const k of ['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const) {
+    const v = j[k]?.trim();
+    if (v) BRAND[k] = v;
+  }
+  const changed = (['name', 'county', 'state'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
+  if (changed) {
+    BRAND.status = 'proposed';
+    BRAND.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
+  }
+}
+
 /** Text for the PDF footers. */
 export function brandLine() {
   const parts = [`${BRAND.name} (${BRAND.expansion})`, BRAND.projectUrl];

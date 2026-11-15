@@ -180,7 +180,8 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
-button {
+button,
+a.button {
   font: inherit;
   font-size: 0.95rem;
   padding: 9px 16px;
@@ -765,4 +766,52 @@ fieldset.signers legend {
 }
 .checkline .hint {
   margin-top: 4px;
+}
+
+.changelog {
+  max-height: 32rem;
+  overflow: auto;
+  font-size: 0.9rem;
+  padding: 0 0.25rem;
+}
+.changelog h3 {
+  margin: 1.25rem 0 0.25rem;
+  font-size: 1.05rem;
+}
+.changelog h4 {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.95rem;
+}
+.changelog ul {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+}
+a.button {
+  display: inline-block;
+  margin-right: 0.5rem;
+  text-decoration: none;
+}
+
+.jbar {
+  margin: 0.4rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+}
+.jbutton {
+  font-size: 0.85rem;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+#brand-seal {
+  cursor: pointer;
+}
+details.jurisdiction {
+  margin: 0.75rem 0;
+  border: 2px solid var(--accent);
 }

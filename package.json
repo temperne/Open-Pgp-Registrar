@@ -1,13 +1,14 @@
 {
   "name": "open-pgp-registrar",
-  "version": "0.1.0",
+  "version": "0.1.11152026",
   "description": "Browser-only tool for property owners to register an OpenPGP signing key with a county recorder on paper and sign instruments with QR/barcode verification pages.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "proof": "npm run build && node e2e/proof.mjs"
   },
   "repository": {
     "type": "git",

@@ -1,10 +1,74 @@
 # Changelog
 
 All notable changes to this project are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions are
+`v<major>.<minor>.<mmddyyyy>`: the project owner sets major and minor, and the
+last part is the date the version was tagged.
 
 ## [Unreleased]
+
+## [v0.1.11152026] - 2026-11-15
+
+### Added (this release)
+- **Protection passes with a sale.** Warranty and quitclaim deeds can name any number
+  of buyers' signing keys. Their fingerprints are part of the signed deed, and the
+  deed PDF carries them as a "registration by sale". Once the deed is recorded, load it
+  in place of a registration form (the PDF, a scan or a photo): the tool confirms that
+  every previous registered key signed the deed naming the new keys. No separate
+  registration or identity check is needed.
+  The **Grantee** field fills itself from the buyers' keys: a person's name, every
+  member of a group key, or the business or trust for a position key. Wording you
+  type yourself is kept.
+- **Buyers prove their keys.** As on a registration form, every buyer key signs the new
+  registration (on the same computer, or by loading the deed with "Sign exactly as
+  others" and choosing "Prove my buyer key"). The deed's registration-by-sale page shows
+  COMPLETE / NOT COMPLETE, the Recorder's check reports it, and a deed whose buyers
+  haven't all proven their keys doesn't hand over the registration.
+- **Lien holder registrations.** "Registering as: Lien holder" names the lien; the role
+  is part of the statement every key signs. A new **Release of lien** template is
+  checked against the lien holder's registration.
+- **Deregistration** template: signed with every registered key, it takes a parcel out
+  of the program once recorded.
+- **Combined filing PDF.** On the check page, two checkboxes add the original document
+  (exactly as loaded) and the checked copy to the certificate download: one PDF in that
+  order. The certificate lists the page ranges and each original's SHA-256.
+- **Use the tool for another county or state.** The page header shows the county and
+  state with a **Change county or state** button (on every tab; clicking the seal works
+  too). It changes the
+  program name, county, state, web address, business verification office and logo on
+  the page, the templates, the notary wording and every PDF, for the session only
+  (nothing stored). The program name and business office follow the new county unless
+  typed differently. Settings can be saved to a file and loaded again, or **given in the
+  link**: `?name=`, `expansion=`, `county=`, `state=`, `url=`, `authority=` and `seal=`
+  (the image itself as a `data:image/png;base64,...` address; a seal at a web address is
+  refused, because the page never contacts other servers). **Copy a link with these
+  settings** builds such a link. The "proposed
+  program" notice follows the chosen county.
+- **About this software**: the version, build date and full changelog are built into
+  the page, with a **Download this tool** link (the page saves itself; hidden when
+  opened from a saved copy). The README lists each version's SHA-256.
+- **Versions** are now `v<major>.<minor>.<mmddyyyy>`.
+
+### Fixed (this release)
+- Loading a finished sale deed with "Sign exactly as others" no longer reopens it for
+  signing with the buyers' keys locked in. A document every owner has signed has
+  nothing to add: a sale deed is loaded as the new owners' registration instead.
+  An unfinished document loads the registration it was started for, and loading a
+  different registration while a signed document is open asks before clearing it.
+  The registered owners' own keys can't be listed as buyers.
+- A co-owner signing on their own computer ("Sign exactly as others") no longer sees a
+  false "this registration is not fully signed" warning: the document now carries its
+  registration whole, including its proof (or, for a registration by sale, the deed).
+- A Recorder's filing made of the certificate only now works as the new owners'
+  registration: the certificate reprints the buyers' keys from a sale deed. Loading a
+  signed document as a registration explains what to load instead.
+
+### Build proof (this release)
+- `npm run proof` runs the built app through the full ownership chain (complex
+  registration, two sales, every form of the Recorder's filing as the next
+  registration, a co-owner signing apart, and checks that must fail) and saves every
+  PDF with a report in `proof/<version>/`, tied to the build by its SHA-256.
+
 
 ### Performance
 - **Code maps: checking a document is many times faster.** Every page with QR codes
