@@ -859,7 +859,8 @@ async function applyRoomReg(remote: RegistrationDraft) {
   const keys = await Promise.all(remote.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
   const parcels = splitParcels(remote.parcels);
   const role = remote.role === 'lienholder' ? 'lienholder' : undefined;
-  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || role !== d.role || (remote.interest ?? '') !== (d.interest ?? '')) {
+  const lien = (r?: string) => r === 'lienholder';
+  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || lien(role) !== lien(d.role) || (remote.interest ?? '') !== (d.interest ?? '')) {
     status.textContent = 'Another tab in the room has a different registration open (other parcels or keys). Everyone must sign the same one: start over, or leave the room.';
     return;
   }
