@@ -9,15 +9,21 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8');
 
 // The built app is one self-contained HTML file. Owners and Recorder staff can
-// save it and open it offline. The Content-Security-Policy blocks every network
-// connection, so the page can't send keys or documents anywhere even if it
-// tried. It is added only to the build because the dev server needs a websocket.
+// save it and open it offline. The Content-Security-Policy allows network
+// connections to one place only: the signing-room relay named in src/brand.ts
+// (and the site's own origin, which serves it). Even there, a room's messages are
+// encrypted in the tab with a key the relay never sees. Nothing else can be
+// reached. It is added only to the build because the dev server needs a websocket.
+const brandSource = readFileSync(new URL('./src/brand.ts', import.meta.url), 'utf8');
+const relay = /relayUrl:\s*'([^']*)'/.exec(brandSource)?.[1] ?? '';
+const relayHost = relay ? new URL(relay).host : '';
+const connect = ["'self'", ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : [])].join(' ');
 const csp = [
   "default-src 'none'",
   "script-src 'unsafe-inline'",
   "style-src 'unsafe-inline'",
   'img-src data: blob:',
-  "connect-src 'none'",
+  `connect-src ${connect}`,
   "form-action 'none'",
   "base-uri 'none'",
   "object-src 'none'",

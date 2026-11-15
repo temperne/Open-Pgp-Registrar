@@ -80,8 +80,9 @@
           <p class="error" data-error role="alert"></p>
         </details>
         <p class="privacy" role="note">
-          <strong>Nothing leaves this page.</strong> Everything runs in this browser tab. Nothing is uploaded or
-          saved, and closing the tab forgets your key, so download what you need.
+          <strong>Nothing leaves this page</strong> unless you open a signing room, and even then only encrypted
+          messages pass through the program's relay, which can't read them and stores nothing. Everything else runs in
+          this browser tab. Nothing is uploaded or saved, and closing the tab forgets your key, so download what you need.
         </p>
         <div id="boot" class="callout warn" role="alert">
           Starting... If this message does not go away, the app could not start here. Open the file directly in
@@ -499,6 +500,32 @@
               </p>
               <input id="continue-file" type="file" accept=".pdf,application/pdf,image/*" aria-label="Signed document" />
               <p id="continue-status" class="hint" role="status"></p>
+            </div>
+            <div class="subcard" id="room-card">
+              <h3>Sign together, live <span class="opt">(a signing room)</span></h3>
+              <p class="hint">
+                Co-owners and buyers sign the same document at the same time, each on their own computer. Start a room and
+                send the link; everyone who opens it and unlocks their key appears below, proven by their key, and every
+                signature shows up in everyone's tab. The document is encrypted in your tab with a key that is only in the
+                link, so the program's relay can't read it, and nothing is stored. You still print, sign in ink and notarize.
+              </p>
+              <div id="room-invite" class="callout" hidden>
+                This link invites you to a signing room.
+                <button type="button" id="room-join" class="primary">Join the signing room</button>
+              </div>
+              <div class="actions">
+                <button type="button" id="room-start">Start a signing room</button>
+                <button type="button" id="room-leave" hidden>Leave the room</button>
+              </div>
+              <p id="room-status" class="hint" role="status"></p>
+              <div id="room-share" hidden>
+                <label for="room-link">Send this link to the others <span class="opt">(it holds the room's key: send it privately)</span></label>
+                <input id="room-link" readonly />
+                <div class="actions"><button type="button" id="room-copy">Copy the link</button></div>
+                <div id="room-qr" class="room-qr"></div>
+              </div>
+              <ul id="room-peers" class="keylist"></ul>
+              <p class="error" data-error role="alert"></p>
             </div>
             <div class="subcard">
               <h3>Sign a file <span class="opt">(instead of writing the document here)</span></h3>

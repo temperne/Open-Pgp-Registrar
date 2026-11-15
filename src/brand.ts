@@ -47,6 +47,14 @@ export const BRAND = {
    * (and the use of its seal).
    */
   status: 'proposed' as 'proposed' | 'adopted',
+  /**
+   * Signing rooms: the relay that passes encrypted messages between co-owners'
+   * tabs (worker/ in this repository, deployed with Cloudflare). The page may
+   * connect only to this host (the build's Content-Security-Policy allows it and
+   * nothing else), and only when someone starts or joins a room. '' turns
+   * signing rooms off.
+   */
+  relayUrl: 'https://pimastopinitiative.jasonajensen.workers.dev',
   proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
 };
 

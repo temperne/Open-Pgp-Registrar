@@ -815,3 +815,14 @@ details.jurisdiction {
   margin: 0.75rem 0;
   border: 2px solid var(--accent);
 }
+
+.room-qr svg {
+  width: 180px;
+  height: 180px;
+  margin-top: 0.5rem;
+  background: #fff;
+}
+#room-peers .proven {
+  color: var(--good, #14692e);
+  font-weight: 600;
+}

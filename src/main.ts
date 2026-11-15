@@ -27,6 +27,7 @@ import {
   transferClause,
   describeKey,
   keyIdentity,
+  identityFromUserID,
   signRegistration,
   checkRegistrationProof,
   signHolderUpdate,
@@ -75,6 +76,8 @@ import {
   type CheckedFile,
 } from './pdf';
 import { BRAND, BRAND_DEFAULTS, applyJurisdiction, type Jurisdiction } from './brand';
+import { SigningRoom, relayBase, type Peer, type RoomMessage } from './room';
+import { bestQr } from './codes';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText, safeText } from './text';
 import { extractFile, extractImages, fileSignedText, parcelFilingStatement, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
@@ -320,6 +323,10 @@ function isReplacement() {
 function refresh() {
   showAutoSigners();
   if (state.draft) renderDraft();
+  if (room?.ws) {
+    renderPeers();
+    void roomShare();
+  }
   const k = state.key;
   $('key-current').hidden = !k;
   $('key-choose').hidden = !!k;
@@ -1513,6 +1520,7 @@ input('continue-file').addEventListener('change', async () => {
       const signed = await signedFromCodes(codes.join('\n'));
       setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: true });
     }
+    void roomShare();
     const n = state.draft!.signed.signatures.length;
     status.className = 'hint ok';
     status.textContent =
@@ -1538,6 +1546,7 @@ action(
       if (d.buyerProof?.signatures.some((x) => x.fingerprint.toUpperCase() === me)) throw new UserError('This buyer key has already proven possession.');
       const buyerProof = await signRegistration(state.signer, { ...buyerReg, proof: d.buyerProof });
       setDraft({ ...d, buyerProof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+      void roomShare();
       $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
@@ -1595,10 +1604,187 @@ action(
       const signed = await signText(state.signer, fullText(title, text));
       setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: currentTemplate().recordable });
     }
+    void roomShare();
     $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
   'Signing...',
 );
+
+// ---------------------------------------------------------------------------
+// Signing rooms (src/room.ts): sign together, live, through the encrypted relay
+// ---------------------------------------------------------------------------
+let room: SigningRoom | null = null;
+const peers = new Map<string, Peer>();
+
+function renderPeers() {
+  const ul = $('room-peers');
+  ul.innerHTML = '';
+  const me = state.signer ?? state.key;
+  if (room?.ws && me) {
+    ul.append(
+      Object.assign(document.createElement('li'), {
+        textContent: `You: ${describeKey(me)} (${formatFingerprint(me.getFingerprint().toUpperCase()).slice(-24)})${state.signer ? '' : ', unlock your key to sign'}`,
+      }),
+    );
+  }
+  for (const p of peers.values()) {
+    const li = document.createElement('li');
+    li.append(
+      Object.assign(document.createElement('strong'), { textContent: identityFromUserID(p.userID).name || p.userID || '(no name)' }),
+      ` ${formatFingerprint(p.fingerprint).slice(-24)} `,
+      Object.assign(document.createElement('span'), {
+        className: p.proven ? 'proven' : 'error',
+        textContent: p.proven ? 'proven by their key' : 'NOT proven: could not show they hold this key',
+      }),
+    );
+    ul.append(li);
+  }
+}
+
+function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number, detail?: string) {
+  const el = $('room-status');
+  const connected = status === 'connected';
+  el.className = connected ? 'hint ok' : status === 'closed' && detail ? 'hint error' : 'hint';
+  el.textContent =
+    status === 'connecting'
+      ? 'Connecting to the signing room...'
+      : connected
+        ? `Connected (encrypted). ${tabs} tab${tabs === 1 ? '' : 's'} in the room, yours included.`
+        : (detail ?? (room ? 'Disconnected from the signing room.' : ''));
+  $('room-leave').hidden = !room || status === 'closed';
+  $('room-start').hidden = !!room && status !== 'closed';
+  $('room-share').hidden = !room || status === 'closed';
+  if (status === 'closed') peers.clear();
+  renderPeers();
+}
+
+/** Sends who we are (proven by our key) and the document so far. */
+async function roomShare() {
+  if (!room?.ws) return;
+  if (state.signer) await room.hello(state.signer);
+  const d = draftForPdf();
+  if (d && !d.source) await room.send({ t: 'state', draft: d });
+}
+
+/** The same signatures, merged: everyone's signatures over the same text. */
+async function mergeSigned(a: SignedText | undefined, b: SignedText | undefined) {
+  if (!a) return b;
+  if (!b) return a;
+  const seen = new Map<string, DocSignature>();
+  for (const x of [...a.signatures, ...b.signatures]) if (!seen.has(x.fingerprint.toUpperCase())) seen.set(x.fingerprint.toUpperCase(), x);
+  return seen.size === a.signatures.length ? a : assembleSigned(a.canonical, [...seen.values()]);
+}
+
+/** A document from another tab in the room: adopt it, or add its signatures to ours. */
+async function applyRoomDraft(remote: DocumentDraft) {
+  const status = $('room-status');
+  if (remote.source) {
+    status.textContent = 'Another tab is signing a file. Files are passed as the PDF ("Sign exactly as others"), not through a room.';
+    return;
+  }
+  const canonical = canonicalText(fullText(remote.title, remote.text));
+  const signed = await assembleSigned(
+    canonical,
+    remote.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: new Date(x.signedAt), bytes: fromBase64(x.sig) })),
+  );
+  const reg = remote.registration ? await registrationFromDraft(remote.registration) : null;
+  const remoteBuyers = await Promise.all((remote.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
+  const remoteProof = reg?.parcel && remote.buyerProof?.length ? await proofFromSigs({ parcel: reg.parcel, keys: remoteBuyers }, remote.buyerProof) : undefined;
+  const d = state.draft;
+  if (d) {
+    if (d.signed.canonical !== canonical) {
+      status.textContent = 'Another tab in the room has a different document open. Everyone must sign the same text: start over, or leave the room.';
+      return;
+    }
+    const merged = await mergeSigned(d.signed, signed);
+    const proof = await mergeSigned(d.buyerProof, remoteProof);
+    if (merged === d.signed && proof === d.buyerProof) return;
+    setDraft({ ...d, signed: merged!, buyerProof: proof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    return;
+  }
+  if (reg && !sameKeys(reg.keys, state.signReg?.keys ?? [])) useSignRegistration([reg]);
+  buyerKeys = remoteBuyers;
+  setDraft({
+    signed,
+    buyerProof: remoteProof,
+    title: remote.title,
+    text: remote.text,
+    returnTo: remote.returnTo,
+    signers: remote.signers,
+    recordable: remote.recordable !== false,
+  });
+}
+
+const roomEvents = {
+  onStatus: roomStatus,
+  onJoined: () => void roomShare(),
+  onMessage: async (m: RoomMessage, r: SigningRoom) => {
+    try {
+      if (m.t === 'ask') await roomShare();
+      else if (m.t === 'hello') {
+        const p = await r.checkHello(m);
+        peers.set(p.fingerprint, p);
+        renderPeers();
+      } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft);
+    } catch (err) {
+      $('room-status').textContent = `A message from the room could not be used: ${(err as Error).message}`;
+    }
+  },
+};
+
+async function enterRoom(r: SigningRoom) {
+  room?.leave();
+  room = r;
+  peers.clear();
+  input('room-link').value = r.link();
+  // The link as a QR code, for a phone in the same room.
+  const qr = bestQr(r.link());
+  $('room-qr').innerHTML = qr ? qrSvg(qr) : '';
+  r.connect();
+}
+
+/** A QR code as an inline SVG (drawn here, no image files). */
+function qrSvg(m: { size: number; dark(r: number, c: number): boolean }) {
+  let path = '';
+  for (let r = 0; r < m.size; r++) for (let c = 0; c < m.size; c++) if (m.dark(r, c)) path += `M${c + 4} ${r + 4}h1v1h-1z`;
+  const n = m.size + 8;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" role="img" aria-label="QR code of the room link"><rect width="${n}" height="${n}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+}
+
+action('room-start', async () => {
+  if (!relayBase()) throw new UserError('Signing rooms are turned off for this site.');
+  await enterRoom(await SigningRoom.create(roomEvents));
+  try {
+    history.replaceState(null, '', `#room=${room!.secret}`);
+  } catch {
+    /* sandboxed preview: the link is shown to copy */
+  }
+});
+action('room-join', async () => {
+  const secret = /room=([A-Za-z0-9_-]+)/.exec(location.hash)?.[1];
+  if (!secret) throw new UserError('This link has no signing room in it.');
+  $('room-invite').hidden = true;
+  await enterRoom(await SigningRoom.open(secret, roomEvents));
+});
+action('room-leave', () => {
+  room?.leave();
+  room = null;
+  roomStatus('closed', 0);
+  try {
+    if (/room=/.test(location.hash)) history.replaceState(null, '', location.href.split('#')[0]);
+  } catch {
+    /* sandboxed preview */
+  }
+});
+action('room-copy', async () => {
+  try {
+    await navigator.clipboard.writeText(input('room-link').value);
+    $('room-status').textContent = 'Link copied. Send it privately: anyone with it can join the room.';
+  } catch {
+    input('room-link').select();
+    $('room-status').textContent = 'Select the link above and copy it.';
+  }
+});
 
 function draftForPdf(): DocumentDraft | undefined {
   const d = state.draft;
@@ -2660,7 +2846,9 @@ $('show-about-software').addEventListener('click', () => {
 {
   const local = location.protocol === 'file:';
   const name = `${BRAND.name.replace(/\./g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()}-${__APP_VERSION__}.html`;
-  const href = location.href.split('#')[0];
+  // "dl=1" lets the site count downloads (it has no other meaning to the page).
+  const base = location.href.split('#')[0];
+  const href = `${base}${base.includes('?') ? '&' : '?'}dl=1`;
   document.querySelectorAll<HTMLAnchorElement>('[data-self-download]').forEach((a) => {
     a.href = href;
     a.download = name;
@@ -2674,7 +2862,11 @@ if (!input('f-county').value) input('f-county').value = BRAND.county.replace(/\s
 syncTemplate();
 
 const initial = location.hash.slice(1) as Tab;
-showTab(TABS.includes(initial) ? initial : 'about');
+const roomLink = /^#room=[A-Za-z0-9_-]{20,}$/.test(location.hash);
+showTab(roomLink ? 'sign' : TABS.includes(initial) ? initial : 'about');
+// A room link: offer to join (nothing connects until the person chooses to).
+if (roomLink) $('room-invite').hidden = false;
+if (!relayBase()) $('room-card').hidden = true;
 $('boot').hidden = true;
 // After start-up, so a problem with the link's settings stays visible.
 settingsFromLink();
