@@ -19,6 +19,11 @@ last part is the date the version was tagged.
   The **Grantee** field fills itself from the buyers' keys: a person's name, every
   member of a group key, or the business or trust for a position key. Wording you
   type yourself is kept.
+- **Buyers prove their keys.** As on a registration form, every buyer key signs the new
+  registration (on the same computer, or by loading the deed with "Sign exactly as
+  others" and choosing "Prove my buyer key"). The deed's registration-by-sale page shows
+  COMPLETE / NOT COMPLETE, the Recorder's check reports it, and a deed whose buyers
+  haven't all proven their keys doesn't hand over the registration.
 - **Lien holder registrations.** "Registering as: Lien holder" names the lien; the role
   is part of the statement every key signs. A new **Release of lien** template is
   checked against the lien holder's registration.
@@ -44,6 +49,18 @@ last part is the date the version was tagged.
   An unfinished document loads the registration it was started for, and loading a
   different registration while a signed document is open asks before clearing it.
   The registered owners' own keys can't be listed as buyers.
+- A co-owner signing on their own computer ("Sign exactly as others") no longer sees a
+  false "this registration is not fully signed" warning: the document now carries its
+  registration whole, including its proof (or, for a registration by sale, the deed).
+- A Recorder's filing made of the certificate only now works as the new owners'
+  registration: the certificate reprints the buyers' keys from a sale deed. Loading a
+  signed document as a registration explains what to load instead.
+
+### Build proof (this release)
+- `npm run proof` runs the built app through the full ownership chain (complex
+  registration, two sales, every form of the Recorder's filing as the next
+  registration, a co-owner signing apart, and checks that must fail) and saves every
+  PDF with a report in `proof/<version>/`, tied to the build by its SHA-256.
 
 
 ### Performance

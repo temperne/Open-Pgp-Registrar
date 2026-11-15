@@ -64,6 +64,8 @@ import {
   type RegistrationDraft,
   publicKeyCardPdf,
   registrationsFromPdf,
+  draftRegistration,
+  registrationFromDraft,
   draftFromPdf,
   splitParcels,
   type DocumentDraft,
@@ -101,6 +103,8 @@ interface State {
     recordable: boolean;
     /** A signed file: printed as cover page, the file's pages, and signatures. */
     source?: { kind: ExtractedFile['kind']; name: string; pages: string[]; pageCount: number; sha256: string[]; description?: string; parcelStatement?: string };
+    /** Sale deeds: the buyers' proof that they hold the keys named (each signs the new registration). */
+    buyerProof?: SignedText;
   } | null;
   /** The file being signed (its pages and images), when signing a file. */
   source: ExtractedFile | null;
@@ -315,6 +319,7 @@ function isReplacement() {
 // ---------------------------------------------------------------------------
 function refresh() {
   showAutoSigners();
+  if (state.draft) renderDraft();
   const k = state.key;
   $('key-current').hidden = !k;
   $('key-choose').hidden = !!k;
@@ -866,6 +871,11 @@ async function registrationsFromFile(file: File, onProgress?: (msg: string) => v
       }
       return regs;
     }
+    if (codes.some((c) => c.startsWith('PGPQ1|')) && !codes.some((c) => /^(PGPK1|PGPKEY1)\|/.test(c) || /BEGIN PGP/.test(c))) {
+      throw new Error(
+        'That is a signed document or a certificate, not a registration: it has signature codes but no registered keys. Load the registration form, or the recorded sale deed (or its filing) that names the current owners\u2019 keys.',
+      );
+    }
     return [{ parcel: '', keys: [(await keyFromCodes(codes)).toPublic()] }];
   }
   return [{ parcel: '', keys: [(await readAnyKey(bytes)).toPublic()] }];
@@ -1117,6 +1127,18 @@ function lockDraft() {
   $('text-sign-btn').textContent = state.draft ? 'Add my signature' : 'Sign';
 }
 
+/** The registration a sale deed hands over: the parcel with the buyers' keys. */
+function buyerRegistration(): Registration | null {
+  return state.signReg?.parcel && buyerKeys.length ? { parcel: state.signReg.parcel, keys: buyerKeys } : null;
+}
+
+/** Buyers' keys that haven't proven possession yet (signed the new registration). */
+function missingBuyers() {
+  if (!state.draft || !buyerRegistration()) return [];
+  const proved = new Set((state.draft.buyerProof?.signatures ?? []).map((x) => x.fingerprint.toUpperCase()));
+  return buyerKeys.filter((k) => !proved.has(k.getFingerprint().toUpperCase()));
+}
+
 function missingSigners() {
   const d = state.draft;
   if (!d || !state.signReg) return [];
@@ -1167,6 +1189,18 @@ function renderDraft() {
     );
     list.append(li);
   }
+  // Sale deeds: each buyer proves they hold the key being handed to them.
+  const buyersMissing = missingBuyers();
+  for (const k of buyerRegistration() ? buyerKeys : []) {
+    const done = !buyersMissing.includes(k);
+    const li = document.createElement('li');
+    li.className = done ? 'signed' : 'waiting';
+    li.append(
+      Object.assign(document.createElement('strong'), { textContent: `${done ? 'Buyer key proven' : 'Buyer still to prove their key'}: ${describeKey(k)}` }),
+      Object.assign(document.createElement('span'), { className: 'mono', textContent: formatFingerprint(k.getFingerprint()) }),
+    );
+    list.append(li);
+  }
   const status = $('tr-status');
   if (!state.signReg) {
     status.textContent = `${d.signed.signatures.length} signed`;
@@ -1174,17 +1208,26 @@ function renderDraft() {
   } else if (missing.length) {
     status.textContent = `Not complete: ${d.signed.signatures.length} of ${state.signReg.keys.length}`;
     status.className = 'pill warn';
+  } else if (buyersMissing.length) {
+    status.textContent = `Signed by every owner; ${buyerKeys.length - buyersMissing.length} of ${buyerKeys.length} buyer keys proven`;
+    status.className = 'pill warn';
   } else {
-    status.textContent = 'Complete: every registered key signed';
+    status.textContent = buyerRegistration() ? 'Complete: every owner signed and every buyer key proven' : 'Complete: every registered key signed';
     status.className = 'pill good';
   }
+  const meBuyer = !!state.signer && buyersMissing.some((k) => k.getFingerprint() === state.signer!.getFingerprint());
+  $('text-sign-btn').textContent = meBuyer ? 'Prove my buyer key' : state.draft ? 'Add my signature' : 'Sign';
   $('tr-id').textContent = d.signed.documentId;
   $('tr-codes').textContent = `${d.signed.codes.length} QR code${d.signed.codes.length === 1 ? '' : 's'} on the signature page at the end`;
-  $('dl-instrument').textContent = missing.length ? 'Download for the next owner (PDF)' : 'Download signed document (PDF)';
-  $('next-signer').hidden = missing.length === 0 && !!state.signReg;
+  const waiting = missing.length + buyersMissing.length;
+  $('dl-instrument').textContent = missing.length ? 'Download for the next owner (PDF)' : buyersMissing.length ? 'Download for the buyers (PDF)' : 'Download signed document (PDF)';
+  $('next-signer').hidden = waiting === 0 && !!state.signReg;
+  $('next-signer').textContent = missing.length ? 'Next owner signs on this computer' : 'Next buyer proves their key on this computer';
   $('tr-step1').textContent = missing.length
     ? 'Not complete yet. Give the PDF to the next owner (they choose "Sign exactly as others" and load it), or let them sign on this computer.'
-    : 'Print it. The last page holds the QR codes with the signatures.';
+    : buyersMissing.length
+      ? 'Every owner signed. Now each buyer proves they hold their key: they load this PDF with "Sign exactly as others", unlock their key and choose "Prove my buyer key" (or do it on this computer). Until then the deed does not hand over the registration.'
+      : 'Print it. The last page holds the QR codes with the signatures.';
   $('text-result').hidden = false;
 }
 
@@ -1419,15 +1462,12 @@ input('continue-file').addEventListener('change', async () => {
       }));
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
       // The registration the document was started for: its owners are the ones who must sign.
-      const embReg: Registration | null = embedded.registration
-        ? {
-            parcel: embedded.registration.parcel,
-            keys: await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic())),
-            labels: embedded.registration.labels,
-          }
-        : null;
+      const embReg: Registration | null = embedded.registration ? await registrationFromDraft(embedded.registration) : null;
       const signedBy = new Set(embedded.signatures.map((x) => x.fingerprint.toUpperCase()));
-      if (embReg && embReg.keys.every((k) => signedBy.has(k.getFingerprint().toUpperCase()))) {
+      const embBuyers = await Promise.all((embedded.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
+      const proved = new Set((embedded.buyerProof ?? []).map((x) => x.fingerprint.toUpperCase()));
+      const buyersDone = embBuyers.every((k) => proved.has(k.getFingerprint().toUpperCase()));
+      if (embReg && buyersDone && embReg.keys.every((k) => signedBy.has(k.getFingerprint().toUpperCase()))) {
         // Already signed by every owner: nothing to add. A sale deed is the new owners' registration.
         const sale = (await registrationsFromPdf(bytes)).find((r) => r.transfer);
         if (sale) {
@@ -1450,8 +1490,11 @@ input('continue-file').addEventListener('change', async () => {
         state.source = { ...embedded.source, pdf: files.pdf, images: files.images.length ? files.images : undefined };
         showSource();
       }
-      buyerKeys = await Promise.all((embedded.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
+      buyerKeys = embBuyers;
+      const buyerProof =
+        embReg?.parcel && embedded.buyerProof?.length ? await proofFromSigs({ parcel: embReg.parcel, keys: embBuyers }, embedded.buyerProof) : undefined;
       setDraft({
+        buyerProof,
         signed,
         title: embedded.title,
         text: embedded.text,
@@ -1473,7 +1516,7 @@ input('continue-file').addEventListener('change', async () => {
     const n = state.draft!.signed.signatures.length;
     status.className = 'hint ok';
     status.textContent =
-      `Loaded a document signed by ${n} owner${n === 1 ? '' : 's'}. Unlock your key and choose "Add my signature".` +
+      `Loaded a document signed by ${n} owner${n === 1 ? '' : 's'}. Unlock your key and choose "Add my signature" (a buyer: "Prove my buyer key").` +
       (switched ? ' It was started for a different registration than the one loaded, so its own registration is loaded now (above).' : '');
   } catch (err) {
     status.className = 'hint error';
@@ -1488,6 +1531,16 @@ action(
   async () => {
     if (!state.signer) return;
     const me = state.signer.getFingerprint().toUpperCase();
+    // A buyer proving they hold a key named in the sale deed: sign the new registration's statement.
+    const buyerReg = buyerRegistration();
+    if (state.draft && buyerReg && buyerKeys.some((k) => k.getFingerprint().toUpperCase() === me)) {
+      const d = state.draft;
+      if (d.buyerProof?.signatures.some((x) => x.fingerprint.toUpperCase() === me)) throw new UserError('This buyer key has already proven possession.');
+      const buyerProof = await signRegistration(state.signer, { ...buyerReg, proof: d.buyerProof });
+      setDraft({ ...d, buyerProof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+      $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     if (state.signReg && !state.signReg.keys.some((k) => k.getFingerprint().toUpperCase() === me)) {
       throw new UserError(
         `Your key is not registered for ${state.signReg.parcel ? `parcel ${state.signReg.parcel}` : 'this parcel'}. Load one of the keys listed on the registration.`,
@@ -1559,10 +1612,9 @@ function draftForPdf(): DocumentDraft | undefined {
     recordable: d.recordable,
     source: d.source,
     signatures: d.signed.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
-    registration: state.signReg
-      ? { parcel: state.signReg.parcel, keys: state.signReg.keys.map((k) => k.armor()), labels: state.signReg.labels }
-      : undefined,
+    registration: state.signReg ? draftRegistration(state.signReg) : undefined,
     buyerKeys: buyerKeys.length ? buyerKeys.map((k) => k.armor()) : undefined,
+    buyerProof: d.buyerProof?.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) })),
   };
 }
 
@@ -1617,7 +1669,7 @@ async function downloadInstrument() {
   const named = canonicalText(d.text).replace(/\s+/g, '');
   const transfer =
     state.signReg?.parcel && buyerKeys.length && buyerKeys.every((k) => named.includes(k.getFingerprint().toUpperCase()))
-      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys }
+      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys, proof: d.buyerProof }
       : undefined;
   const pdf = await instrumentPdf({
     transfer,
@@ -1878,6 +1930,9 @@ input('v-codes-file').addEventListener('change', async () => {
   try {
     const { readCodesFromFile } = await import('./qrscan');
     const results: { name: string; signed?: SignedText; legacy?: string[]; problem?: string }[] = [];
+    // Registration-by-sale codes (the buyers' keys) on a sale deed, kept for the certificate.
+    const regGroups = new Map<string, string[]>();
+    const statementProofs: SignedText[] = [];
     for (const [i, f] of files.entries()) {
       // Document IDs printed in the pages' code maps: must match the text the codes carry.
       const mapIds = new Set<string>();
@@ -1885,14 +1940,48 @@ input('v-codes-file').addEventListener('change', async () => {
         f,
         (m) => (el.textContent = files.length > 1 ? `File ${i + 1} of ${files.length}: ${m}` : m),
         (c) => {
-          const p = scanProgress(c.join('\n'));
-          return (p.total > 0 && p.missing.length === 0) || c.some((x) => x.startsWith('PGPSIG1|'));
+          if (c.some((x) => x.startsWith('PGPSIG1|'))) return true;
+          // Every group of signature codes seen is complete (a sale deed has two: the deed and the buyers' proof).
+          const groups = new Set(c.filter((x) => x.startsWith('PGPQ1|')).map((x) => x.split('|')[1]));
+          if (!groups.size) return false;
+          const sale = c.some((x) => x.startsWith('PGPR1|'));
+          if (sale && groups.size < 2) return false;
+          return [...groups].every((g) => {
+            const p = scanProgress(c.filter((x) => x.split('|')[1] === g).join('\n'));
+            return p.total > 0 && p.missing.length === 0;
+          });
         },
         (map) => {
           if (map.documentId) mapIds.add(map.documentId);
         },
       );
-      const sigCodes = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
+      for (const c of codes) {
+        const m = /^PGPR1\|([0-9A-F]{12})\|/.exec(c);
+        if (m && !regGroups.get(m[1])?.includes(c)) regGroups.set(m[1], [...(regGroups.get(m[1]) ?? []), c]);
+      }
+      // A sale deed also carries the buyers' proof (signatures over the new registration's
+      // statement) as signature codes: keep those apart from the document's own codes.
+      const allSig = codes.filter((c) => /^(PGPQ1|PGPSIG1)\|/.test(c.trim()));
+      const byGroup = new Map<string, string[]>();
+      for (const c of allSig.filter((x) => x.startsWith('PGPQ1|'))) {
+        const g = c.split('|')[1];
+        byGroup.set(g, [...(byGroup.get(g) ?? []), c]);
+      }
+      const proofGroups = new Set<string>();
+      if (byGroup.size > 1) {
+        for (const [g, list] of byGroup) {
+          try {
+            const t = await signedFromCodes(list.join('\n'));
+            if (/^S\.T\.O\.P\. (PARCEL|LIEN HOLDER) KEY REGISTRATION\./.test(t.canonical)) {
+              proofGroups.add(g);
+              statementProofs.push(t);
+            }
+          } catch {
+            /* incomplete group: left with the document's codes */
+          }
+        }
+      }
+      const sigCodes = allSig.filter((c) => !proofGroups.has(c.split('|')[1]));
       if (!sigCodes.length) {
         results.push({ name: f.name, problem: codes.length ? 'no signature codes' : 'no QR codes found' });
         continue;
@@ -1947,6 +2036,20 @@ input('v-codes-file').addEventListener('change', async () => {
       problem: r.problem ?? (r.legacy ? 'electronic-filing code; check it on its own' : undefined),
     }));
     checkedFiles = files;
+    saleRegistrationCodes = [];
+    saleProofCodes = [];
+    for (const g of regGroups.values()) {
+      try {
+        const r = await decodeRegistrationCodes(g.join('\n'));
+        if (r.transfer?.documentId === merged.documentId) {
+          saleRegistrationCodes = orderedCodes(g.join('\n'), 'PGPR1');
+          const proof = statementProofs.find((t) => t.canonical === canonicalText(registrationStatement(r)));
+          saleProofCodes = proof ? proof.codes : [];
+        }
+      } catch {
+        /* incomplete: the certificate simply won't carry it */
+      }
+    }
     setPayload(merged.codes.join('\n') + '\n');
     // Check right away when everything needed is there.
     if (verifyRegs.length) $('verify-btn').click();
@@ -1971,10 +2074,16 @@ let lastCheck: {
 } | null = null;
 
 
+/** A sale deed's registration-by-sale codes, read with the checked file (reprinted on the certificate). */
+let saleRegistrationCodes: string[] = [];
+/** The buyers' proof of key possession from that deed (reprinted with them). */
+let saleProofCodes: string[] = [];
+
 textarea('v-payload').addEventListener('input', () => {
   if (!settingPayload) {
     scannedFiles = [];
     checkedFiles = [];
+    saleRegistrationCodes = [];
   }
   const v = textarea('v-payload').value;
   const p = scanProgress(v);
@@ -2008,6 +2117,8 @@ action(
       checkedAt: new Date(),
       signedText: c.signedText,
       codes: c.codes,
+      saleRegistration: saleRegistrationCodes.length ? saleRegistrationCodes : undefined,
+      saleProof: saleProofCodes.length ? saleProofCodes : undefined,
     };
     const withOriginal = input('c-with-original').checked && checkedFiles.length > 0;
     const withChecked = input('c-with-checked').checked && checkedFiles.length > 0;
@@ -2180,6 +2291,25 @@ action(
               ? `The sale that made this registration could not be confirmed: ${ps.problems.join(' ')} Do not rely on it.`
               : `The registration is not fully proven: ${ps.missing.length} key${ps.missing.length === 1 ? ' has' : 's have'} not signed it. Do not rely on it.`,
         });
+        // A sale deed naming buyers' keys: say whether the registration by sale is complete.
+        if (saleRegistrationCodes.length) {
+          try {
+            const next = await decodeRegistrationCodes(saleRegistrationCodes.join('\n'));
+            const deed = await signedFromCodes(payload);
+            if (next.transfer) next.transfer.deed = deed;
+            if (saleProofCodes.length) next.proof = await signedFromCodes(saleProofCodes.join('\n'));
+            const ns = await checkRegistrationProof(next);
+            r.checks.push({
+              label: 'Buyers\u2019 keys (registration by sale)',
+              state: ns.complete ? 'pass' : 'skipped',
+              detail: ns.complete
+                ? `The deed names ${next.keys.length} buyer key${next.keys.length === 1 ? '' : 's'}, each proven by its holder. Once recorded, this deed is the parcel's registration.`
+                : `The deed names buyers' keys, but ${ns.problems.join(' ')} The deed itself is checked above; protection does not pass to the buyers until every buyer key is proven.`,
+            });
+          } catch {
+            /* unreadable: the deed check above stands on its own */
+          }
+        }
         if (registration.role === 'lienholder') {
           r.checks.push({
             label: 'Checked against a lien holder',

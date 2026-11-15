@@ -171,7 +171,10 @@ printed pages it will take, and asks you to tick **Sign it anyway**.
 (their public key card, registration form, a photo, or a `.asc` file) under
 **Buyers' signing keys**. The keys go into the deed text and onto a "registration by
 sale" page in the PDF. Once the deed is recorded, it is the parcel's registration:
-the buyers load it in place of a registration form to sign later documents.
+the buyers load it in place of a registration form to sign later documents. Before
+that, **each buyer proves they hold their key**, just as every key holder signs a
+registration form: they load the deed with **Sign exactly as others** (or use the same
+computer), unlock their key, and choose **Prove my buyer key**.
 
 ![A sale deed naming the buyers' keys](docs/images/10-sale-buyer-keys.png)
 
@@ -276,6 +279,7 @@ npm run dev        # local dev server
 npm test           # unit, GnuPG interop, and printed-code scan tests
 npm run typecheck
 npm run build      # dist/index.html: one self-contained file that works offline
+npm run proof      # build, then the full ownership chain in Chromium -> proof/<version>/
 ```
 
 The scan tests need `pdftoppm` (poppler-utils), `zbarimg` (zbar-tools) and
@@ -289,6 +293,11 @@ scans and photos), `src/text.ts` (the canonical text that gets signed),
 
 ## Download and verify
 
+Each release also has a **build proof** in [`proof/`](proof/): the built file was run
+through the full ownership chain (a registration, two sales with every form of the
+Recorder's filing used as the next registration, and checks that must fail), and every
+PDF it made is there with a `REPORT.md` naming the build's SHA-256.
+
 The site's footer and its About tab have **Download this tool**, which saves the
 whole program as one HTML file that works offline. To confirm a copy is the official
 one, compare its SHA-256 fingerprint (`sha256sum file.html` on Linux,
@@ -298,7 +307,7 @@ the version was released.
 
 | Version | SHA-256 of the HTML file |
 |---|---|
-| v0.1.11152026 | `d0a93f8e90797dfcd480448a99a3c275be48571fbc7ff5c2fa212d0fff2d6e84` |
+| v0.1.11152026 | `b93a72d276c9fc8d3d1b31eeab99076cf9a0bd39936d8a2e382c876f549d71f1` |
 
 ## License
 

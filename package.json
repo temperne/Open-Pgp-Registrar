@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "proof": "npm run build && node e2e/proof.mjs"
   },
   "repository": {
     "type": "git",

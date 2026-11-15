@@ -99,9 +99,13 @@ gives counter staff a way to check a filing.
    **Registration by sale** (`transfer`): a warranty or quitclaim deed can name buyers'
    keys (`transferClause`, part of the signed text); the deed PDF embeds them as
    `stop-registration-1.json` with `transfer: {documentId, from}` and prints them as
-   `PGPR1` codes. Loaded as a registration, it is proven by the deed itself
-   (`checkTransfer`: every previous key signed it, and it names the parcel and every
-   new key). The Recorder's index decides which registration or deed is current.
+   `PGPR1` codes. **Every buyer key proves possession** by signing the new
+   registration's statement ("Prove my buyer key"; `buyerProof` in the document draft,
+   `proof` in the embedded JSON, printed as `PGPQ1` codes on the sale page *before* the
+   key codes, so a reader going last page first meets the keys first and waits for
+   both groups). Loaded as a registration, it is proven by the deed itself and the
+   buyers' proof (`checkTransfer`: every previous key signed the deed, it names the
+   parcel and every new key, and every new key signed the statement). The Recorder's index decides which registration or deed is current.
    Templates also include **Release of lien** and **Deregistration** (leave the
    program; signed by every registered key).
 3. **Sign** (Exhibit B): the signature covers the document's **text** (title plus
@@ -256,12 +260,43 @@ at fractional pixel sizes, which real scans and photos produce.
 - The build bakes the version, build date and CHANGELOG into the page ("About this
   software" on the About tab, and the footer).
 
+## Build directives (provability)
+
+Every build that is released, or pushed for a pull request, must be proven:
+
+1. `npm run typecheck` and `npm test` pass.
+2. Update the CHANGELOG **before** building: it is built into the page, so editing it
+   changes the file's SHA-256. (README and CLAUDE.md are not built in.)
+3. `npm run proof`: builds `dist/index.html`, then `e2e/proof.mjs` runs the built app in
+   Chromium through the full ownership chain and asserts every result:
+   - a complex registration (an individual + a group key, both signing)
+   - a sale to a group + a company position key, with the grantee filled from the keys;
+     the buyers prove their keys (one from the PDF on another computer, one on the
+     same computer), and a deed with unproven buyers does not hand over the registration
+   - the Recorder's filing in all three forms (original + certificate; original +
+     checked copy + certificate; certificate only) and a tilted JPEG scan of it, each
+     loaded as the new registration ("proven by sale")
+   - the second seller signing on their own computer ("Sign exactly as others")
+   - a sale to an individual checked against the previous filing, and the new owner's
+     document checked against the certificate-only filing
+   - checks that must fail: the new owner's document against the original
+     registration, and a deed signed by a key that isn't registered
+   - no page errors and no network requests
+4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
+   each check and its files), goes to `proof/<version>/`. Commit that folder. The
+   SHA-256 in the report must match the README's "Download and verify" table and the
+   file that is published. A failing proof is not released.
+5. Any change to the code or the CHANGELOG after the proof means building and proving
+   again. Add a step to `e2e/proof.mjs` for any new workflow worth guarding.
+
 ## Commands
 
 - `npm run dev`: dev server
 - `npm test`: unit, interop and scan tests
 - `npm run typecheck`
 - `npm run build`: writes `dist/index.html` (single file)
+- `npm run proof`: build, then the end-to-end ownership chain in Chromium; writes
+  `proof/<version>/` (needs Playwright with Chromium, poppler-utils, ImageMagick)
 
 ## Working agreements
 

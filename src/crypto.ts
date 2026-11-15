@@ -781,6 +781,11 @@ export interface ProofStatus {
 export async function checkRegistrationProof(reg: Registration): Promise<ProofStatus> {
   const all = reg.keys.map((k) => k.getFingerprint().toUpperCase());
   if (reg.transfer) return checkTransfer(reg, reg.transfer, all);
+  return checkStatementProof(reg, all);
+}
+
+/** Every listed key signed this registration's statement (proof of key possession). */
+async function checkStatementProof(reg: Registration, all: string[]): Promise<ProofStatus> {
   if (!reg.proof) return { complete: false, signed: [], missing: all, problems: [] };
   const problems: string[] = [];
   if (reg.proof.canonical !== canonicalText(registrationStatement(reg))) {
@@ -809,8 +814,17 @@ async function checkTransfer(reg: Registration, t: Transfer, all: string[]): Pro
   if (reg.parcel && !parcelKey(t.deed.canonical).includes(parcelKey(reg.parcel))) problems.push('The deed does not name this parcel.');
   const r = await verifyScannedText({ scanned: t.deed.codes.join('\n'), registration: { parcel: '', keys: t.from } });
   if (r.verdict !== 'good') problems.push('The deed is not signed by every previous registered key.');
+  // The buyers prove they hold the new keys, as on any registration: each signs its statement.
+  const own = await checkStatementProof(reg, all);
+  if (!own.complete) {
+    problems.push(
+      own.missing.length
+        ? `${own.missing.length} of the buyers\u2019 ${all.length} key${all.length === 1 ? ' has' : 's have'} not proven possession (signed the new registration).`
+        : own.problems.join(' '),
+    );
+  }
   const ok = !problems.length;
-  return { complete: ok, byTransfer: true, signed: ok ? all : [], missing: ok ? [] : all, problems };
+  return { complete: ok, byTransfer: true, signed: own.signed, missing: ok ? [] : own.missing.length ? own.missing : all, problems };
 }
 
 /** Text a sale deed carries to hand protection to the buyers' keys (part of what the sellers sign). */
@@ -1146,14 +1160,14 @@ export function codesHaveKey(codes: string[]) {
   return codes.some((c) => /-----BEGIN PGP (PRIVATE|PUBLIC) KEY BLOCK-----/.test(c) || c.replace(/\s+/g, '').startsWith(`${PUBKEY_QR_PREFIX}|`));
 }
 
-/** The signature codes from a scan, one per part, in order (for reprinting). */
-export function orderedCodes(scanned: string): string[] {
-  const parts = parseParts(scanned);
+/** The codes from a scan, one per part, in order (for reprinting). Signature codes unless another prefix is given. */
+export function orderedCodes(scanned: string, prefix = PART_PREFIX): string[] {
+  const parts = parseParts(scanned, prefix);
   const group = parts[0]?.group;
   const byIndex = new Map(parts.filter((p) => p.group === group).map((p) => [p.index, p]));
   return [...byIndex.values()]
     .sort((a, b) => a.index - b.index)
-    .map((p) => `${PART_PREFIX}|${p.group}|${p.index}/${p.total}|${p.chunk}`);
+    .map((p) => `${prefix}|${p.group}|${p.index}/${p.total}|${p.chunk}`);
 }
 
 // ---------------------------------------------------------------------------

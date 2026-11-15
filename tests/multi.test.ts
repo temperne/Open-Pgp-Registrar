@@ -573,6 +573,9 @@ describe('roles and registration by sale', () => {
     expect(back.transfer?.documentId).toBe(deed.documentId);
     expect(back.transfer?.from.length).toBe(2);
     back.transfer!.deed = deed;
+    // The buyer hasn't proven the key yet: not complete.
+    expect((await checkRegistrationProof(back)).complete).toBe(false);
+    back.proof = await signRegistration(buyer, back);
     const ps = await checkRegistrationProof(back);
     expect(ps.complete).toBe(true);
     expect(ps.byTransfer).toBe(true);
