@@ -906,6 +906,12 @@ function fields(): TemplateFields {
   return f;
 }
 
+/** Two key lists with the same keys, in any order. */
+function sameKeys(a: openpgp.PublicKey[], b: openpgp.PublicKey[]) {
+  const f = (l: openpgp.PublicKey[]) => l.map((k) => k.getFingerprint().toUpperCase()).sort().join(',');
+  return a.length === b.length && f(a) === f(b);
+}
+
 /** The buyers' keys card: shown for sale deeds before anyone has signed. */
 function renderBuyerKeys() {
   const show = !!currentTemplate().buyerKeys && !state.draft && !state.source;
@@ -1243,6 +1249,8 @@ function useSignRegistration(regs: Registration[]) {
   sel.value = String(pick);
   const choose = () => {
     state.signReg = merged[Number(sel.value)] ?? null;
+    // The registered owners can't also be the buyers.
+    if (!state.draft && state.signReg) buyerKeys = buyerKeys.filter((b) => !state.signReg!.keys.some((k) => k.getFingerprint() === b.getFingerprint()));
     showAutoSigners();
     const info = $('s-reg-info');
     info.className = 'hint ok';
@@ -1276,7 +1284,23 @@ input('s-reg-file').addEventListener('change', async () => {
   const info = $('s-reg-info');
   info.className = 'hint';
   try {
-    useSignRegistration(await registrationsFromFile(f, (m) => (info.textContent = m)));
+    const regs = await registrationsFromFile(f, (m) => (info.textContent = m));
+    const d = state.draft;
+    if (d && state.signReg && !regs.some((r) => sameKeys(r.keys, state.signReg!.keys))) {
+      // A document signed for the previous registration is open: don't mix the two.
+      const n = d.signed.signatures.length;
+      if (!confirm(`A document signed by ${n} owner${n === 1 ? '' : 's'} for the previous registration is open. Download it first if you need it. Clear it and start a new document for this registration?`)) {
+        info.className = 'hint error';
+        info.textContent = 'Kept the open document and its registration. Download it, then load the new registration again.';
+        return;
+      }
+      state.draft = null;
+      $('text-result').hidden = true;
+      clearSource();
+      buyerKeys = [];
+      lockDraft();
+    }
+    useSignRegistration(regs);
   } catch (err) {
     info.className = 'hint error';
     info.textContent = (err as Error).message;
@@ -1359,6 +1383,7 @@ input('continue-file').addEventListener('change', async () => {
   try {
     const bytes = new Uint8Array(await f.arrayBuffer());
     const embedded = isPdfBytes(bytes) ? await draftFromPdf(bytes) : null;
+    let switched = false;
     if (embedded) {
       const sigs: DocSignature[] = embedded.signatures.map((x) => ({
         fingerprint: x.fingerprint,
@@ -1367,14 +1392,37 @@ input('continue-file').addEventListener('change', async () => {
         bytes: fromBase64(x.sig),
       }));
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
+      // The registration the document was started for: its owners are the ones who must sign.
+      const embReg: Registration | null = embedded.registration
+        ? {
+            parcel: embedded.registration.parcel,
+            keys: await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic())),
+            labels: embedded.registration.labels,
+          }
+        : null;
+      const signedBy = new Set(embedded.signatures.map((x) => x.fingerprint.toUpperCase()));
+      if (embReg && embReg.keys.every((k) => signedBy.has(k.getFingerprint().toUpperCase()))) {
+        // Already signed by every owner: nothing to add. A sale deed is the new owners' registration.
+        const sale = (await registrationsFromPdf(bytes)).find((r) => r.transfer);
+        if (sale) {
+          useSignRegistration([sale]);
+          status.className = 'hint ok';
+          status.textContent =
+            'That deed is already signed by every owner, so there is nothing to add to it. It names the buyers\u2019 keys, so it is now loaded as the parcel registration (above): write the new owners\u2019 document below.';
+        } else {
+          status.className = 'hint ok';
+          status.textContent = 'That document is already signed by every registered owner, so there is nothing to add to it. To sign a new document, write it below.';
+        }
+        return;
+      }
+      if (embReg && !sameKeys(embReg.keys, state.signReg?.keys ?? [])) {
+        switched = !!state.signReg;
+        useSignRegistration([embReg]);
+      }
       if (embedded.source) {
         const files = await sourceFromPdf(bytes);
         state.source = { ...embedded.source, pdf: files.pdf, images: files.images.length ? files.images : undefined };
         showSource();
-      }
-      if (embedded.registration && !state.signReg) {
-        const keys = await Promise.all(embedded.registration.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
-        useSignRegistration([{ parcel: embedded.registration.parcel, keys, labels: embedded.registration.labels }]);
       }
       buyerKeys = await Promise.all((embedded.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
       setDraft({
@@ -1398,7 +1446,9 @@ input('continue-file').addEventListener('change', async () => {
     }
     const n = state.draft!.signed.signatures.length;
     status.className = 'hint ok';
-    status.textContent = `Loaded a document signed by ${n} owner${n === 1 ? '' : 's'}. Unlock your key and choose "Add my signature".`;
+    status.textContent =
+      `Loaded a document signed by ${n} owner${n === 1 ? '' : 's'}. Unlock your key and choose "Add my signature".` +
+      (switched ? ' It was started for a different registration than the one loaded, so its own registration is loaded now (above).' : '');
   } catch (err) {
     status.className = 'hint error';
     status.textContent = (err as Error).message;

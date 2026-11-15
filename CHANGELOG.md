@@ -34,6 +34,14 @@ last part is the date the version was tagged.
   opened from a saved copy). The README lists each version's SHA-256.
 - **Versions** are now `v<major>.<minor>.<mmddyyyy>`.
 
+### Fixed (this release)
+- Loading a finished sale deed with "Sign exactly as others" no longer reopens it for
+  signing with the buyers' keys locked in. A document every owner has signed has
+  nothing to add: a sale deed is loaded as the new owners' registration instead.
+  An unfinished document loads the registration it was started for, and loading a
+  different registration while a signed document is open asks before clearing it.
+  The registered owners' own keys can't be listed as buyers.
+
 
 ### Performance
 - **Code maps: checking a document is many times faster.** Every page with QR codes
