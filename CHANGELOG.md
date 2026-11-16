@@ -103,6 +103,12 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **Live editing in a signing room.** Before anyone signs, everything people do on the
+  Sign and Register forms reaches the others in the room as they do it: loading the parcel
+  registration, the template, every field, the title and text, the buyers' and co-owners'
+  keys. Only what changed is sent, so people editing different fields don't overwrite
+  each other, and the field someone is typing in is never changed under them. Once
+  anyone signs, the text is settled and only signatures travel.
 - **The project's server has its own domain: https://securerecorder.csproject.org**, with
   a Let's Encrypt certificate (renewed automatically) and HSTS. Its earlier address,
   https://84-46-239-112.sslip.io, redirects there, room links included.

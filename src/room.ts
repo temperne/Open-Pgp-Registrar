@@ -25,6 +25,8 @@ export type RoomMessage =
   | { t: 'reg'; reg: unknown }
   | { t: 'need-file'; hash: string; to?: string }
   | { t: 'file-part'; hash: string; i: number; n: number; data: string }
+  // Live editing before anyone signs: changed form fields, the registration, keys.
+  | { t: 'prep'; fields: Record<string, string | boolean>; signReg?: unknown; buyers?: string[]; coOwners?: string[] }
   // The meetup room: who is there (signed), private invitations, and goodbyes.
   | { t: 'profile'; data: string; sig: string }
   | { t: 'invite'; from: string; to: string; iv: string; ct: string; sig: string }

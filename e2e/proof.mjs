@@ -868,6 +868,35 @@ try {
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 
+  // ---- 12p. Live editing in a room: the registration, the template and fields, both ways ----
+  {
+    const { tabs } = await openRoom(['ann', 'bob-carol']);
+    const [a, b] = tabs;
+    // Ann loads the parcel registration: it appears in Bob and Carol's tab.
+    await loadSignRegistration(a, R0);
+    await b.waitForFunction(() => /222-33-4444/.test(document.getElementById('s-reg-info').textContent), null, { timeout: 30000 });
+    const bReg = flat(await b.textContent('#s-reg-info'));
+    // Ann picks the template and a field; Bob and Carol fill in another; each sees the other's.
+    await a.selectOption('#tpl', 'warranty');
+    await a.fill('#f-grantee', 'Zed Buyer, a single man');
+    await b.waitForFunction(() => document.getElementById('tpl').value === 'warranty' && document.getElementById('f-grantee').value === 'Zed Buyer, a single man', null, { timeout: 30000 });
+    await b.fill('#f-consideration', 'One hundred dollars');
+    await a.waitForFunction(() => document.getElementById('f-consideration').value === 'One hundred dollars', null, { timeout: 30000 });
+    const aText = await a.inputValue('#doc-text');
+    const bText = await b.inputValue('#doc-text');
+    // The Register tab too.
+    await a.click('#tab-register');
+    await b.click('#tab-register');
+    await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
+    await b.waitForFunction(() => document.getElementById('reg-owner').value === 'Ann Smith, Bob Jones and Carol Jones', null, { timeout: 30000 });
+    for (const p of tabs) await p.close();
+    check(
+      '12p. Live editing in a room',
+      /222-33-4444/.test(bReg) && /Zed Buyer/.test(aText) && /One hundred dollars/.test(aText) && aText === bText,
+      'one owner loaded the parcel registration and it appeared in the other’s tab; the template, a field typed in each tab, and the registration form’s owner field reached the other tab; both ended with the same deed text',
+    );
+  }
+
   // ---- 12m. The meetup room: find people, invite a group, agree on the county, leave ----
   {
     const join = async (id, query = '') => {

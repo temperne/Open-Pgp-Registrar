@@ -40,6 +40,12 @@ gives counter staff a way to check a filing.
   later updates carry signatures only, and a late joiner asks with
   `need-file` naming the first signer, who answers at once; the others wait 3-5 s and
   stand down when it arrives.
+  **Live editing** (`prep` messages): before anyone signs, changes to the Sign and
+  Register forms (`prepFields`: every field with an id in `#text-form`/`#reg-form`, minus
+  files and the room's own), the loaded registration, buyers' and co-owners' keys are
+  sent as they happen (only what changed, `prepSeen`; a full snapshot to a newcomer) and
+  applied as if typed (`applyPrep` dispatches input/change events; never into the focused
+  field; the template first, title and text last).
   **Meetup room** (the owner's decision, Nov 2026): one public room for everyone
   (`SigningRoom.meetup`, fixed `MEETUP_SECRET`, relays allow 500 tabs for its name). Each
   tab sends `hello` and a `profile` signed with its key (name from the key, county,
@@ -437,6 +443,8 @@ Every build that is released, or pushed for a pull request, must be proven:
      for), and a file signed together in a room (the file crosses the relay once while
      both sign, and once more for someone who joins afterwards)
    - a 6.9 MB file through a room in parts (each message under 1 MB), checked GOOD
+   - live editing in a room: a loaded registration, the template and fields typed in
+     either tab, and the registration form reach the other tab
    - the meetup room: three people listed (proven, county, contact), "My county only",
      a group invitation for one county that switches the invitee from another county,
      and leaving removing an entry at once

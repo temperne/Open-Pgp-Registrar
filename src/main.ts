@@ -81,6 +81,7 @@ import {
   holderUpdateFromPdf,
   proofFromSigs,
   type RegistrationDraft,
+  type DraftRegistration,
   publicKeyCardPdf,
   registrationsFromPdf,
   draftRegistration,
@@ -623,6 +624,7 @@ function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
 }
 
 function renderCoOwners() {
+  setTimeout(schedulePrep);
   if (room) showRoomKeys();
   const list = $('co-list');
   list.innerHTML = '';
@@ -1093,6 +1095,7 @@ function sameKeys(a: openpgp.PublicKey[], b: openpgp.PublicKey[]) {
 
 /** The buyers' keys card: shown for sale deeds before anyone has signed. */
 function renderBuyerKeys() {
+  setTimeout(schedulePrep);
   const show = !!currentTemplate().buyerKeys && !state.draft && !state.source;
   $('buyer-keys').hidden = !show && !(state.draft && buyerKeys.length);
   const list = $('buyer-list');
@@ -1465,6 +1468,7 @@ function requireThisCounty(what: string, named: string | undefined) {
 
 function useSignRegistration(regs: Registration[]) {
   for (const r of regs) if (r.parcel) requireThisCounty('registration', r.jurisdiction);
+  setTimeout(schedulePrep);
   const sel = $<HTMLSelectElement>('s-reg-parcel');
   sel.innerHTML = '';
   const byParcel = new Map<string, Registration[]>();
@@ -1858,6 +1862,8 @@ async function roomShare(force = '') {
   if (!room?.ws) return;
   if (state.signer) await room.hello(state.signer);
   if (room.host && state.signer) await room.shareSettings(state.signer, roomSettings());
+  // Before anyone signs, the forms as they are (for someone who just arrived).
+  if (!state.draft || !state.regDraft) await sendPrep(true);
   const reg = regDraftForPdf();
   if (reg) await room.send({ t: 'reg', reg });
   const d = draftForPdf();
@@ -1882,6 +1888,111 @@ async function roomShare(force = '') {
     return;
   }
   await room.send({ t: 'state', draft: d });
+}
+
+// ---- Live editing in a signing room, before anyone signs ----
+// Every change to the registration or document form reaches the others in the room: only
+// the fields that changed, so people editing different fields don't overwrite each other.
+// The field someone is typing in is never changed under them. Once anyone signs, the text
+// is settled and only signatures travel.
+
+/** The form fields that are shared (by id): the Sign and Register forms, minus files and the room's own. */
+function prepFields(): (HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)[] {
+  return [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('#text-form [id], #reg-form [id]')].filter(
+    (el) =>
+      /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) &&
+      (el as HTMLInputElement).type !== 'file' &&
+      !/^(room-|meetup-|long-ok|j-|lb-)/.test(el.id),
+  );
+}
+const fieldValue = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) =>
+  el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.value;
+/** What the room has already seen from us (or from them), field by field. */
+let prepSeen = new Map<string, string | boolean>();
+let prepKeysSeen = '';
+let applyingPrep = false;
+let prepTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Sends what changed (everything, with full = true, for someone who just joined). */
+async function sendPrep(full = false) {
+  if (!room?.ws || applyingPrep) return;
+  const fields: Record<string, string | boolean> = {};
+  for (const el of prepFields()) {
+    const v = fieldValue(el);
+    if (full || prepSeen.get(el.id) !== v) fields[el.id] = v;
+  }
+  const keysNow = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  const keysChanged = full || keysNow !== prepKeysSeen;
+  if (!Object.keys(fields).length && !keysChanged) return;
+  for (const [k, v] of Object.entries(fields)) prepSeen.set(k, v);
+  prepKeysSeen = keysNow;
+  await room.send({
+    t: 'prep',
+    fields,
+    ...(keysChanged
+      ? {
+          signReg: state.signReg ? draftRegistration(state.signReg) : null,
+          buyers: buyerKeys.map((k) => k.armor()),
+          coOwners: state.coOwners.map((k) => k.armor()),
+        }
+      : {}),
+  });
+}
+function schedulePrep() {
+  if (!room?.ws || applyingPrep) return;
+  if (prepTimer) clearTimeout(prepTimer);
+  prepTimer = setTimeout(() => void sendPrep(), 300);
+}
+for (const type of ['input', 'change']) {
+  document.addEventListener(type, (e) => {
+    const el = e.target as HTMLElement;
+    if (el?.id && el.closest('#text-form, #reg-form') && !/^(room-|meetup-|long-ok)/.test(el.id)) schedulePrep();
+  });
+}
+
+/** Someone else's changes, before anyone signs: applied as if typed here (the app reacts as usual). */
+async function applyPrep(m: Extract<RoomMessage, { t: 'prep' }>) {
+  applyingPrep = true;
+  try {
+    // The registration and keys first: the template and fields depend on them.
+    if (m.signReg !== undefined && !state.draft) {
+      const reg = m.signReg ? await registrationFromDraft(m.signReg as DraftRegistration) : null;
+      if (reg && !(state.signReg && sameKeys(reg.keys, state.signReg.keys) && parcelKey(reg.parcel) === parcelKey(state.signReg.parcel))) {
+        useSignRegistration([reg]);
+        $('s-reg-info').prepend(Object.assign(document.createElement('p'), { className: 'hint ok', textContent: 'Loaded from the signing room.' }));
+      }
+    }
+    if (m.buyers && !state.draft) {
+      buyerKeys = await Promise.all(m.buyers.map(async (a) => (await readAnyKey(a)).toPublic()));
+      renderBuyerKeys();
+    }
+    if (m.coOwners && !state.regDraft) {
+      state.coOwners = await Promise.all(m.coOwners.map(async (a) => (await readAnyKey(a)).toPublic()));
+      renderCoOwners();
+    }
+    // The template choice before its fields, then the rest.
+    const byId = new Map(prepFields().map((el) => [el.id, el]));
+    // The template first (it rebuilds the fields), the title and text last (so a template
+    // rebuild can't overwrite text someone edited by hand).
+    const rank = (id: string) => (id === 'tpl' ? 0 : id === 'doc-title' || id === 'doc-text' ? 2 : 1);
+    const ids = Object.keys(m.fields).sort((a, b) => rank(a) - rank(b));
+    for (const id of ids) {
+      const el = byId.get(id);
+      if (!el || el.disabled) continue;
+      const v = m.fields[id];
+      prepSeen.set(id, v);
+      if (document.activeElement === el) continue; // never under someone's cursor
+      if (el.closest('#text-form') && state.draft) continue; // signed: the text is settled
+      if (el.closest('#reg-form') && state.regDraft && /^(reg-parcels|reg-role|reg-interest)$/.test(id)) continue;
+      if (fieldValue(el) === v) continue;
+      if (typeof v === 'boolean') (el as HTMLInputElement).checked = v;
+      else el.value = v;
+      el.dispatchEvent(new Event(el.tagName === 'SELECT' || typeof v === 'boolean' ? 'change' : 'input', { bubbles: true }));
+    }
+    prepKeysSeen = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  } finally {
+    applyingPrep = false;
+  }
 }
 
 /** The SHA-256 of the file(s) being signed: the file goes through the room again only if this changes. */
@@ -2124,6 +2235,7 @@ async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
         renderPeers();
       } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft & RoomDraftExtras);
       else if (m.t === 'file-part') await receiveFilePart(m);
+      else if (m.t === 'prep') await applyPrep(m);
       else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
       else if (m.t === 'settings') await applyRoomSettings(m, r);
       else if (m.t === 'need-file') {
@@ -2152,6 +2264,8 @@ async function enterRoom(r: SigningRoom) {
   room = r;
   peers.clear();
   roomFileSent = '';
+  prepSeen = new Map();
+  prepKeysSeen = '';
   input('room-link').value = r.link();
   // The link as a QR code, for a phone in the same room.
   const qr = bestQr(r.link());
