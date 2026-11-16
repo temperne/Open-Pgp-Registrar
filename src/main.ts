@@ -95,7 +95,7 @@ import {
 } from './pdf';
 import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, refreshStatus, type Jurisdiction } from './brand';
 import { adoptionFor, adoptionsByState } from './adoption';
-import { SigningRoom, officialOrigin, officialOrigins, roomsAvailableHere, type Peer, type RoomMessage } from './room';
+import { SigningRoom, officialOrigin, officialOrigins, roomsAvailableHere, newMeetupKeys, sealFor, openFrom, type Peer, type RoomMessage } from './room';
 import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
 import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
 import { STATE_SEALS } from './seals';
@@ -1785,6 +1785,15 @@ action(
 // Signing rooms (src/room.ts): sign together, live, through the encrypted relay
 // ---------------------------------------------------------------------------
 let room: SigningRoom | null = null;
+/** The public meetup room (see "The meetup room" below), kept apart from the signing room. */
+type MeetupProfile = { fpr: string; userID: string; county: string; contact: string; epk: string; ts: number };
+type MeetupPerson = { key: openpgp.PublicKey; userID: string; proven: boolean; profile?: MeetupProfile; seen: number };
+let meetup: SigningRoom | null = null;
+let meetupKeys: { pair: CryptoKeyPair; pub: string } | null = null;
+const people = new Map<string, MeetupPerson>();
+const selected = new Set<string>();
+let meetupQueue: Promise<void> = Promise.resolve();
+let pendingInvite: { from: string; name: string; secret: string; county: string } | null = null;
 const peers = new Map<string, Peer>();
 
 function renderPeers() {
@@ -1955,8 +1964,16 @@ function roomSettings() {
   const b = BRAND as unknown as Record<string, string>;
   const j: Record<string, string> = {};
   for (const [, key] of LINK_KEYS) j[key] = String(b[key] ?? '');
-  // The state seals are built in; an uploaded logo travels with the settings.
-  return JSON.stringify({ j, logo: customLogo ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}` : '' });
+  // The seal travels with the settings (the person with the county sends it), unless it is a
+  // state seal, which every copy has built in.
+  const seal = $('brand-seal').getAttribute('src') ?? '';
+  const st = sealForState();
+  const shared = customLogo
+    ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`
+    : /^data:image\/(png|jpe?g);base64,/.test(seal) && seal.length < 400_000 && !(st && seal === `data:image/png;base64,${st.png}`)
+      ? seal
+      : '';
+  return JSON.stringify({ j, logo: shared });
 }
 
 /** Whose settings this tab follows (the room's host), once they arrive. */
@@ -2206,6 +2223,7 @@ function showRoomConsent() {
   ($('room-start') as HTMLButtonElement).disabled = !on;
   ($('room-join') as HTMLButtonElement).disabled = !on;
   ($('room-code-join') as HTMLButtonElement).disabled = !on || !!room?.ws;
+  ($('meetup-join') as HTMLButtonElement).disabled = !on || !!meetup?.ws;
   $('room-paste').hidden = !!room?.ws;
 }
 input('room-agree').addEventListener('change', () => {
@@ -2274,6 +2292,230 @@ action('room-code-join', async () => {
     /* sandboxed preview */
   }
 });
+// ---- The meetup room: find the people you sign with, and invite them to a private room ----
+const myFpr = () => (state.signer ?? state.key)?.getFingerprint().toUpperCase() ?? '';
+
+const meetupEvents = {
+  onStatus: (status: 'connecting' | 'connected' | 'closed', tabs: number, detail?: string) => {
+    const el = $('meetup-status');
+    el.className = status === 'connected' ? 'hint ok' : detail ? 'hint error' : 'hint';
+    el.textContent =
+      status === 'connecting'
+        ? 'Joining the meetup room...'
+        : status === 'connected'
+          ? `In the meetup room${meetup?.via ? ' (through the backup relay)' : ''}: ${tabs} tab${tabs === 1 ? '' : 's'}, yours included.`
+          : (detail ?? '');
+    if (status === 'closed') leftMeetup();
+  },
+  onJoined: () => void meetupAnnounce(),
+  onMessage: (m: RoomMessage, r: SigningRoom) => {
+    meetupQueue = meetupQueue.then(() => handleMeetup(m, r)).catch(() => undefined);
+  },
+};
+
+/** Who we are: proven by our key, with the county we work for and any contact details. */
+async function meetupAnnounce() {
+  if (!meetup?.ws || !state.signer || !meetupKeys) return;
+  await meetup.hello(state.signer);
+  const profile: MeetupProfile = {
+    fpr: myFpr(),
+    userID: describeKey(state.signer),
+    county: jurisdictionLabel(BRAND.county, BRAND.state),
+    contact: safeText(input('meetup-contact').value).trim().slice(0, 120),
+    epk: meetupKeys.pub,
+    ts: Date.now(),
+  };
+  const data = JSON.stringify(profile);
+  await meetup.send({ t: 'profile', data, sig: await meetup.signBlob(state.signer, 'MEETUP PROFILE', data) });
+}
+
+async function handleMeetup(m: RoomMessage, r: SigningRoom) {
+  const me = myFpr();
+  if (m.t === 'hello') {
+    const p = await r.checkHello(m);
+    if (p.fingerprint === me) return;
+    const was = people.get(p.fingerprint);
+    people.set(p.fingerprint, { key: p.key, userID: p.userID, proven: p.proven, profile: was?.profile, seen: Date.now() });
+  } else if (m.t === 'profile') {
+    const prof = JSON.parse(m.data) as MeetupProfile;
+    const who = people.get(String(prof.fpr).toUpperCase());
+    // Only a listing signed by the key that proved itself in this room counts.
+    if (!who?.proven || !(await r.verifyBlob(who.key, 'MEETUP PROFILE', m.data, m.sig))) return;
+    who.profile = { ...prof, fpr: prof.fpr.toUpperCase(), contact: safeText(prof.contact ?? '').slice(0, 120), county: safeText(prof.county ?? '') };
+    who.seen = Date.now();
+  } else if (m.t === 'bye') {
+    const who = people.get(m.from);
+    if (who && (await r.verifyBlob(who.key, 'MEETUP BYE', `${m.from}|${m.ts}`, m.sig))) {
+      people.delete(m.from);
+      selected.delete(m.from);
+    }
+  } else if (m.t === 'invite') {
+    if (m.to !== me || !meetupKeys) return;
+    const who = people.get(m.from);
+    if (!who?.proven || !who.profile?.epk || !(await r.verifyBlob(who.key, 'MEETUP INVITE', `${m.to}|${m.iv}|${m.ct}`, m.sig))) return;
+    const inv = (await openFrom(meetupKeys.pair, who.profile.epk, m.iv, m.ct)) as { secret: string; county: string };
+    if (!/^[A-Za-z0-9_-]{43}$/.test(inv.secret)) return;
+    const name = identityFromUserID(who.userID).name || who.userID;
+    pendingInvite = { from: m.from, name, secret: inv.secret, county: safeText(inv.county) };
+    const differs = !sameJurisdiction(inv.county, jurisdictionLabel(BRAND.county, BRAND.state));
+    $('meetup-invite-text').textContent =
+      `${name} (key ${formatFingerprint(m.from).slice(-24)}) invites you to sign together, for ${pendingInvite.county}. ` +
+      `Accepting agrees to that county for what you sign together` +
+      (differs ? `: this page switches from ${jurisdictionLabel(BRAND.county, BRAND.state)} to ${pendingInvite.county} (with its seal) while you are in the room.` : '.');
+    $('meetup-invite').hidden = false;
+    $('meetup-invite').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else if (m.t === 'invite-reply') {
+    if (m.to !== me) return;
+    const name = identityFromUserID(people.get(m.from)?.userID ?? '').name || 'Someone';
+    $('meetup-status').textContent = m.ok ? `${name} accepted and is joining your signing room.` : `${name} declined the invitation.`;
+  }
+  renderPeople();
+}
+
+function renderPeople() {
+  const ul = $('meetup-people');
+  ul.innerHTML = '';
+  const q = input('meetup-search').value.trim().toLowerCase();
+  const mine = jurisdictionLabel(BRAND.county, BRAND.state);
+  const list = [...people.entries()].filter(([fpr, p]) => {
+    if (!p.proven || !p.profile) return false;
+    if (input('meetup-mine').checked && !sameJurisdiction(p.profile.county, mine)) return false;
+    return !q || `${p.userID} ${fpr} ${p.profile.county} ${p.profile.contact}`.toLowerCase().includes(q);
+  });
+  for (const [fpr, p] of list) {
+    const li = document.createElement('li');
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', checked: selected.has(fpr) });
+    box.setAttribute('aria-label', `Select ${p.userID}`);
+    box.addEventListener('change', () => {
+      if (box.checked) selected.add(fpr);
+      else selected.delete(fpr);
+      renderInviteButton();
+    });
+    li.append(
+      box,
+      ' ',
+      Object.assign(document.createElement('strong'), { textContent: identityFromUserID(p.userID).name || p.userID }),
+      ` ${formatFingerprint(fpr).slice(-24)}  |  ${p.profile!.county}${p.profile!.contact ? `  |  ${p.profile!.contact}` : ''} `,
+      Object.assign(document.createElement('span'), { className: 'proven', textContent: 'proven by their key' }),
+    );
+    ul.append(li);
+  }
+  if (!list.length) {
+    ul.append(
+      Object.assign(document.createElement('li'), {
+        className: 'hint',
+        textContent: people.size ? 'Nobody matches.' : 'Nobody else is in the meetup room yet. Send someone the program’s address and ask them to join too.',
+      }),
+    );
+  }
+  renderInviteButton();
+}
+
+function renderInviteButton() {
+  let btn = document.getElementById('meetup-invite-selected') as HTMLButtonElement | null;
+  if (!btn) {
+    btn = Object.assign(document.createElement('button'), { type: 'button', id: 'meetup-invite-selected', className: 'primary' });
+    $('meetup-tools').append(Object.assign(document.createElement('div'), { className: 'actions' }), btn);
+    btn.addEventListener('click', () => void inviteSelected().catch((e) => ($('meetup-status').textContent = (e as Error).message)));
+  }
+  const n = [...selected].filter((f) => people.get(f)?.profile).length;
+  btn.textContent = n ? `Invite ${n === 1 ? 'the selected person' : `the ${n} selected people`} to sign together (for ${jurisdictionLabel(BRAND.county, BRAND.state)})` : 'Select people above to invite them';
+  btn.disabled = !n;
+}
+
+/** One private signing room for the group, with this page's county and seal; each person invited privately. */
+async function inviteSelected() {
+  if (!meetup?.ws || !state.signer || !meetupKeys) throw new UserError('Join the meetup room first.');
+  const targets = [...selected].map((f) => [f, people.get(f)] as const).filter(([, p]) => p?.profile?.epk);
+  if (!targets.length) return;
+  const county = jurisdictionLabel(BRAND.county, BRAND.state);
+  // We start the room, so it uses our settings (county, office, names, seal).
+  const r = await SigningRoom.create(roomEvents);
+  await enterRoom(r);
+  for (const [to, p] of targets) {
+    const sealed = await sealFor(meetupKeys.pair, p!.profile!.epk, { secret: r.secret, county });
+    const sig = await meetup.signBlob(state.signer, 'MEETUP INVITE', `${to}|${sealed.iv}|${sealed.ct}`);
+    await meetup.send({ t: 'invite', from: myFpr(), to, iv: sealed.iv, ct: sealed.ct, sig });
+  }
+  selected.clear();
+  renderPeople();
+  $('meetup-status').textContent = `Invited ${targets.length === 1 ? identityFromUserID(targets[0][1]!.userID).name || 'them' : `${targets.length} people`} to a private signing room for ${county}. They appear below the room when they accept.`;
+}
+
+action('meetup-join', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`The meetup room works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  meetupKeys = await newMeetupKeys();
+  meetup = await SigningRoom.meetup(meetupEvents);
+  meetup.connect();
+  $('meetup-join').hidden = true;
+  $('meetup-leave').hidden = false;
+  $('meetup-tools').hidden = false;
+  renderPeople();
+});
+
+/** Leaving removes our entry from everyone's list at once (a signed goodbye), then disconnects. */
+action('meetup-leave', async () => {
+  const m = meetup;
+  if (m?.ws && state.signer) {
+    const ts = Date.now();
+    await m.send({ t: 'bye', from: myFpr(), ts, sig: await m.signBlob(state.signer, 'MEETUP BYE', `${myFpr()}|${ts}`) });
+  }
+  meetup = null;
+  m?.leave();
+  leftMeetup();
+  $('meetup-status').textContent = 'You left the meetup room; your entry is gone from everyone\u2019s list.';
+});
+
+function leftMeetup() {
+  if (meetup?.ws) return;
+  meetup = null;
+  meetupKeys = null;
+  people.clear();
+  selected.clear();
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  $('meetup-join').hidden = false;
+  $('meetup-leave').hidden = true;
+  $('meetup-tools').hidden = true;
+  showRoomConsent();
+}
+
+action('meetup-accept', async () => {
+  const inv = pendingInvite;
+  if (!inv) return;
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  await meetup?.send({ t: 'invite-reply', from: myFpr(), to: inv.from, ok: true });
+  // The room's starter sends the county's settings and seal; this page takes them while in the room.
+  await enterRoom(await SigningRoom.open(inv.secret, roomEvents));
+  $('meetup-status').textContent = `Joined ${inv.name}\u2019s signing room, for ${inv.county}.`;
+});
+action('meetup-decline', async () => {
+  const inv = pendingInvite;
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  if (inv) await meetup?.send({ t: 'invite-reply', from: myFpr(), to: inv.from, ok: false });
+});
+
+input('meetup-search').addEventListener('input', renderPeople);
+input('meetup-mine').addEventListener('change', renderPeople);
+let contactTimer: ReturnType<typeof setTimeout> | null = null;
+input('meetup-contact').addEventListener('input', () => {
+  if (contactTimer) clearTimeout(contactTimer);
+  contactTimer = setTimeout(() => void meetupAnnounce(), 800);
+});
+// Listings refresh every minute; anyone not heard from in two and a half minutes is gone.
+setInterval(() => {
+  if (!meetup?.ws) return;
+  void meetupAnnounce();
+  const cutoff = Date.now() - 150_000;
+  for (const [f, p] of people) if (p.seen < cutoff) people.delete(f);
+  renderPeople();
+}, 60_000);
+
 action('room-leave', () => {
   room?.leave();
   room = null;

@@ -103,6 +103,15 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **Meetup room.** In the Sign together card, "Join the meetup room" lists everyone there
+  with the name in their key, its fingerprint (proven by their key), the county they work
+  for and any contact details they add; search it, or tick "My county only". Select one
+  or more people and invite them to a private signing room: each invitation is encrypted
+  for that person alone and signed by the inviter, and names the county. Accepting agrees
+  to it: an invitee set to another county switches to it, with the inviter's seal, while
+  in the room. Leaving removes your entry from everyone's list at once (a signed goodbye);
+  listings refresh every minute and expire. The meetup room is public by design and
+  stores nothing.
 - **User guide.** A step-by-step guide with screenshots (make a key, register a parcel,
   sign and check documents, sign together, adoption, checking the program file) is built
   into the program: "Download the user guide (PDF)" on the About tab. `npm run

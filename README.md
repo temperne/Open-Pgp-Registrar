@@ -187,7 +187,9 @@ computer), unlock their key, and choose **Prove my buyer key**.
 ![A sale deed naming the buyers' keys](docs/images/10-sale-buyer-keys.png)
 
 **Signing together, live.** Owners (and buyers) can sign the same registration, document
-or file at the same time, each on their own computer, on the program's own site (a saved
+or file at the same time, each on their own computer (find each other in the **meetup
+room**: everyone there is listed with their key's name, fingerprint, county and contact,
+and you invite a group to a private room for one county), on the program's own site (a saved
 copy can't): unlock your key, turn on **Sign together** on the Register or Sign tab, start
 a room and send the link. Any number of people can join (up to 16 tabs; tested with four). Everyone appears with the key they proved they
 hold, and every signature shows up in every tab. The document is encrypted in each tab

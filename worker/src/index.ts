@@ -64,6 +64,12 @@ export default {
 
 /** At most this many tabs in one room, and this much per message. */
 const MAX_TABS = 16;
+/**
+ * The public meetup room (its name is fixed in the page: the hash of a public key, so
+ * anyone can join it) holds more people; they invite each other to private rooms.
+ */
+const MEETUP_ROOM = '29ub2ZWPUlBCk_wLQwgRfj';
+const MAX_MEETUP_TABS = 500;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 
 /**
@@ -75,7 +81,8 @@ export class Room {
 
   async fetch(request: Request): Promise<Response> {
     const tabs = this.state.getWebSockets();
-    if (tabs.length >= MAX_TABS) return new Response('This signing room is full.', { status: 429 });
+    const meetup = new URL(request.url).pathname.endsWith(`/${MEETUP_ROOM}`);
+    if (tabs.length >= (meetup ? MAX_MEETUP_TABS : MAX_TABS)) return new Response('This signing room is full.', { status: 429 });
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.state.acceptWebSocket(server);

@@ -40,6 +40,15 @@ gives counter staff a way to check a filing.
   later updates carry signatures only, and a late joiner asks with
   `need-file` naming the first signer, who answers at once; the others wait 3-5 s and
   stand down when it arrives.
+  **Meetup room** (the owner's decision, Nov 2026): one public room for everyone
+  (`SigningRoom.meetup`, fixed `MEETUP_SECRET`, relays allow 500 tabs for its name). Each
+  tab sends `hello` and a `profile` signed with its key (name from the key, county,
+  optional contact, a fresh P-256 ECDH public key); unsigned or unproven listings are
+  ignored. `invite` is encrypted for the invitee alone (`sealFor`/`openFrom`) and signed
+  by the inviter; it carries a new private room's key and the county. Accepting joins that
+  room, whose settings (and seal: `roomSettings` sends any seal that isn't a built-in
+  state seal) come from the inviter. `bye` (signed) removes an entry at once; listings
+  refresh every 60 s and expire after 150 s. "My county only" filters by county.
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
   relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check), the
   master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the
@@ -428,6 +437,9 @@ Every build that is released, or pushed for a pull request, must be proven:
      for), and a file signed together in a room (the file crosses the relay once while
      both sign, and once more for someone who joins afterwards)
    - a 6.9 MB file through a room in parts (each message under 1 MB), checked GOOD
+   - the meetup room: three people listed (proven, county, contact), "My county only",
+     a group invitation for one county that switches the invitee from another county,
+     and leaving removing an entry at once
    - failover: the project's server refuses, and two tabs (one on each official address)
      move to Cloudflare's relay on their own, sign together and check GOOD
    - the update check: nothing until Sign together is turned on, then one request to the

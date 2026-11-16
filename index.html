@@ -740,6 +740,37 @@
               </div>
               <p id="room-settings-note" class="hint" hidden></p>
               <ul id="room-peers" class="keylist"></ul>
+              <div id="meetup" class="meetup">
+                <h4>Meetup room <span class="opt">(find the people you sign with)</span></h4>
+                <p class="hint">Everyone in the meetup room is listed with the name in their key, its fingerprint (proven
+                  by their key), the county they are working for, and any contact details they add. Invite someone to a
+                  private signing room: the invitation names the county you will sign for, and accepting it agrees to
+                  that county. <strong>Anyone in the meetup room can see who is there</strong>, and names in keys are
+                  self-declared: compare fingerprints by phone or in person before signing anything. Leaving removes
+                  your entry at once; nothing is stored.</p>
+                <label for="meetup-contact">Contact details to show <span class="opt">(optional: a phone number or email)</span></label>
+                <input id="meetup-contact" autocomplete="off" />
+                <div class="actions">
+                  <button type="button" id="meetup-join" disabled>Join the meetup room</button>
+                  <button type="button" id="meetup-leave" hidden>Leave the meetup room (removes your entry)</button>
+                </div>
+                <p id="meetup-status" class="hint" role="status"></p>
+                <div id="meetup-tools" hidden>
+                  <div class="inline-row">
+                    <input id="meetup-search" placeholder="Search by name, fingerprint, county or contact" autocomplete="off" />
+                    <label class="checkline"><input type="checkbox" id="meetup-mine" /> My county only</label>
+                  </div>
+                  <ul id="meetup-people" class="keylist"></ul>
+                </div>
+                <div id="meetup-invite" class="callout" hidden>
+                  <p id="meetup-invite-text"></p>
+                  <div class="actions">
+                    <button type="button" id="meetup-accept" class="primary">Accept and join</button>
+                    <button type="button" id="meetup-decline">Decline</button>
+                  </div>
+                </div>
+                <p class="error" data-error role="alert"></p>
+              </div>
               <p class="error" data-error role="alert"></p>
             </div></div>
             <div class="subcard">

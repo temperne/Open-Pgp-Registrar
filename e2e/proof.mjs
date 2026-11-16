@@ -868,6 +868,61 @@ try {
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 
+  // ---- 12m. The meetup room: find people, invite a group, agree on the county, leave ----
+  {
+    const join = async (id, query = '') => {
+      const p = await roomTab();
+      await p.goto(`${OFFICIAL_URL}${query}`);
+      await loadKey(p, keys[id].priv);
+      await p.click('#tab-sign');
+      await p.check('#room-agree');
+      await p.check('#room-enable');
+      await p.fill('#meetup-contact', `${id}@example.com`);
+      await p.click('#meetup-join');
+      await p.waitForFunction(() => /In the meetup room/.test(document.getElementById('meetup-status').textContent), null, { timeout: 30000 });
+      return p;
+    };
+    const a = await join('ann');
+    const b = await join('bob-carol', `?${new URLSearchParams({ county: 'Maricopa County' })}`);
+    const c = await join('dan-eve');
+    const listed = (p, n) => p.waitForFunction((n) => document.querySelectorAll('#meetup-people input[type=checkbox]').length === n, n, { timeout: 30000 });
+    await listed(a, 2);
+    const aList = flat(await a.textContent('#meetup-people'));
+    await a.check('#meetup-mine');
+    await listed(a, 1);
+    const mineOnly = flat(await a.textContent('#meetup-people'));
+    await a.uncheck('#meetup-mine');
+    await listed(a, 2);
+    // Ann invites both to one signing room, for Pima County.
+    for (const box of await a.$$('#meetup-people input[type=checkbox]')) await box.check();
+    await a.click('#meetup-invite-selected');
+    for (const p of [b, c]) await p.waitForSelector('#meetup-invite:not([hidden])', { timeout: 30000 });
+    const bInvite = flat(await b.textContent('#meetup-invite-text'));
+    for (const p of [b, c]) await p.click('#meetup-accept');
+    await a.waitForFunction(() => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length >= 2, null, { timeout: 30000 });
+    await b.waitForFunction(() => /Settings from/.test(document.getElementById('room-settings-note').textContent), null, { timeout: 30000 });
+    const bBar = flat(await b.textContent('.jbar'));
+    // Dan and Eve leave the meetup room: their entry disappears from Ann's list at once.
+    await c.click('#meetup-leave');
+    await listed(a, 1);
+    const afterLeave = flat(await a.textContent('#meetup-people'));
+    for (const p of [a, b, c]) await p.close();
+    check(
+      '12m. Meetup room',
+      /Bob Jones and Carol Jones/.test(aList) &&
+        /Maricopa County, Arizona/.test(aList) &&
+        /bob-carol@example\.com/.test(aList) &&
+        /Dan Lee and Eve Lee/.test(mineOnly) &&
+        !/Bob Jones/.test(mineOnly) &&
+        /invites you to sign together, for Pima County, Arizona/.test(bInvite) &&
+        /switches from Maricopa County, Arizona to Pima County, Arizona/.test(bInvite) &&
+        /Pima County, Arizona/.test(bBar) &&
+        !/Dan Lee/.test(afterLeave) &&
+        /Bob Jones/.test(afterLeave),
+      `three people in the meetup room, each listed with their key's name, county and contact, proven by their keys; "My county only" hid the Maricopa County couple; Ann invited both to one private room for Pima County, and the Maricopa County invitee was told their page would switch, accepted, and took Pima County ("${bBar}"); leaving removed Dan and Eve from Ann's list at once`,
+    );
+  }
+
   // ---- 12e. A large file (several MB) goes through the room in parts, each under 1 MB ----
   {
     const file = join(WORK, 'survey-scan.png');

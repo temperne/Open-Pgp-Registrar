@@ -25,6 +25,11 @@ export type RoomMessage =
   | { t: 'reg'; reg: unknown }
   | { t: 'need-file'; hash: string; to?: string }
   | { t: 'file-part'; hash: string; i: number; n: number; data: string }
+  // The meetup room: who is there (signed), private invitations, and goodbyes.
+  | { t: 'profile'; data: string; sig: string }
+  | { t: 'invite'; from: string; to: string; iv: string; ct: string; sig: string }
+  | { t: 'invite-reply'; from: string; to: string; ok: boolean }
+  | { t: 'bye'; from: string; ts: number; sig: string }
   | { t: 'settings'; settings: string; key: string; sig: string }
   | { t: 'ask' };
 
@@ -53,6 +58,33 @@ export interface RoomEvents {
  * Every address where this site's signing rooms work, in the order they are tried: its
  * own, then (when it relays through the master site) the master's backup server.
  */
+/** The meetup room's key: public on purpose (anyone may join), so its name is fixed too. */
+export const MEETUP_SECRET = 'TMyTXDYH0G3X4ZXC2eYJOfYkjwp-MsgFeqxJ9nMDqlA';
+
+/**
+ * Private invitations in the public meetup room: each tab brings a fresh ECDH key pair
+ * (P-256) and shows its public half in its signed profile; an invitation is encrypted
+ * with the key both sides derive, so only the invitee can read it.
+ */
+export async function newMeetupKeys() {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+  const pub = b64(new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)));
+  return { pair, pub };
+}
+async function sharedKey(mine: CryptoKeyPair, theirPub: string) {
+  const pub = await crypto.subtle.importKey('raw', fromB64(theirPub) as BufferSource, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  return crypto.subtle.deriveKey({ name: 'ECDH', public: pub }, mine.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+export async function sealFor(mine: CryptoKeyPair, theirPub: string, data: unknown) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await sharedKey(mine, theirPub), new TextEncoder().encode(JSON.stringify(data))));
+  return { iv: b64(iv), ct: b64(ct) };
+}
+export async function openFrom(mine: CryptoKeyPair, theirPub: string, iv: string, ct: string): Promise<unknown> {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) as BufferSource }, await sharedKey(mine, theirPub), fromB64(ct) as BufferSource);
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
 export function officialOrigins(): string[] {
   const own = officialOrigin();
   if (!own) return [];
@@ -151,6 +183,41 @@ export class SigningRoom {
     const id = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`stop-room:${secret}`)))).slice(0, 22);
     const key = await crypto.subtle.importKey('raw', raw as BufferSource, 'AES-GCM', false, ['encrypt', 'decrypt']);
     return new SigningRoom(secret, id, key, events);
+  }
+
+  /** The public meetup room: everyone who joins uses this same, public key. */
+  static async meetup(events: RoomEvents) {
+    const r = await SigningRoom.open(MEETUP_SECRET, events);
+    r.isMeetup = true;
+    return r;
+  }
+
+  isMeetup = false;
+
+  /** A detached OpenPGP signature over a labelled text, as base64. */
+  async signBlob(key: openpgp.PrivateKey, label: string, data: string) {
+    const sig = (await openpgp.sign({
+      message: await openpgp.createMessage({ text: `S.T.O.P. ${label} ${this.id}\n${data}` }),
+      signingKeys: key,
+      detached: true,
+      format: 'binary',
+    })) as Uint8Array;
+    return b64(sig);
+  }
+
+  /** Whether a blob was signed by this key. */
+  async verifyBlob(key: openpgp.PublicKey, label: string, data: string, sig: string) {
+    try {
+      const r = await openpgp.verify({
+        message: await openpgp.createMessage({ text: `S.T.O.P. ${label} ${this.id}\n${data}` }),
+        signature: await openpgp.readSignature({ binarySignature: fromB64(sig) }),
+        verificationKeys: key,
+      });
+      await r.signatures[0].verified;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** The link that invites others: this page, with the room key after "#". */

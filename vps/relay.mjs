@@ -22,6 +22,9 @@ const HOST = process.env.HOST ?? '127.0.0.1';
 const PAGE = process.env.PAGE ?? '/opt/stop/public/index.html';
 /** At most this many tabs in one room, and this much per message (as the Worker). */
 const MAX_TABS = 16;
+/** The public meetup room (a fixed name, the hash of a public key) holds more people. */
+const MEETUP_ROOM = '29ub2ZWPUlBCk_wLQwgRfj';
+const MAX_MEETUP_TABS = 500;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** Room names are derived in the browser from the room key (a hash); 22 base64url characters. */
 const ROOM_RE = /^\/relay\/([A-Za-z0-9_-]{22})$/;
@@ -82,7 +85,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   const name = m[1];
   const tabs = rooms.get(name) ?? new Set();
-  if (tabs.size >= MAX_TABS) {
+  if (tabs.size >= (name === MEETUP_ROOM ? MAX_MEETUP_TABS : MAX_TABS)) {
     socket.end('HTTP/1.1 429 Too Many Requests\r\n\r\nThis signing room is full.');
     return;
   }
