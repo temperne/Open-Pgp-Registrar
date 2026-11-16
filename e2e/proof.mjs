@@ -868,6 +868,38 @@ try {
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 
+  // ---- 12s. A sale in a signing room: the sellers sign, the buyer proves their key from their own tab ----
+  {
+    const { tabs } = await openRoom(['ann', 'bob-carol', 'ivy']);
+    const [a, b, buyer] = tabs;
+    await loadSignRegistration(a, R0);
+    await a.selectOption('#tpl', 'warranty');
+    // The buyer is in the room: the seller adds them from it, no key file needed.
+    await a.waitForSelector('#buyer-room:not([hidden]) button', { timeout: 30000 });
+    const offer = flat(await a.textContent('#buyer-room'));
+    await a.click('#buyer-room button');
+    await a.waitForFunction(() => /from the signing room/.test(document.getElementById('buyer-status').textContent), null, { timeout: 30000 });
+    const grantee = await a.inputValue('#f-grantee');
+    await a.fill('#f-legal', 'Lot 9, Example Tract.');
+    await a.fill('#f-consideration', '$10 and other value');
+    await a.waitForTimeout(1500);
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', '1 of 2');
+    await b.click('#text-sign-btn');
+    await status(a, 'tr-status', 'every owner');
+    await buyer.waitForTimeout(2000);
+    const label = flat(await buyer.textContent('#text-sign-btn'));
+    await buyer.click('#text-sign-btn', { timeout: 15000 });
+    for (const p of tabs) await status(p, 'tr-status', 'buyer key proven|Complete');
+    const done = flat(await a.textContent('#tr-status'));
+    for (const p of tabs) await p.close();
+    check(
+      '12s. A sale in a signing room',
+      /Add Ivy Chen as a buyer/.test(offer) && /Ivy Chen/.test(grantee) && /Prove my buyer key/.test(label) && /Complete/.test(done),
+      `the seller added the buyer from the room ("${offer}", no key file; grantee "${grantee}"), both sellers signed, the buyer's tab showed "${label}", and the deed ends "${done}"`,
+    );
+  }
+
   // ---- 12p. Live editing in a room: the registration, the template and fields, both ways ----
   {
     const { tabs } = await openRoom(['ann', 'bob-carol']);

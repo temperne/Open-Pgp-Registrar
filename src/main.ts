@@ -1112,6 +1112,29 @@ function renderBuyerKeys() {
     list.append(keyItem(k, state.draft ? undefined : remove));
   }
   input('buyer-file').disabled = !!state.draft || !state.signReg;
+  // People in the signing room, proven by their keys, who aren't sellers or buyers yet: one click each.
+  const roomBox = $('buyer-room');
+  roomBox.innerHTML = '';
+  const listed = new Set([...(state.signReg?.keys ?? []), ...buyerKeys].map((k) => k.getFingerprint().toUpperCase()));
+  const fromRoom = room?.ws && show && state.signReg ? [...peers.values()].filter((p) => p.proven && !listed.has(p.fingerprint)) : [];
+  roomBox.hidden = !fromRoom.length;
+  for (const p of fromRoom) {
+    const b = Object.assign(document.createElement('button'), {
+      type: 'button',
+      textContent: `Add ${identityFromUserID(p.userID).name || p.userID} as a buyer (from the signing room)`,
+      title: `Key ${formatFingerprint(p.fingerprint)}, proven in the signing room`,
+    });
+    b.addEventListener('click', () => {
+      if (buyerKeys.some((k) => k.getFingerprint().toUpperCase() === p.fingerprint)) return;
+      buyerKeys.push(p.key);
+      fillGrantee();
+      renderBuyerKeys();
+      syncTemplate();
+      $('buyer-status').className = 'hint ok';
+      $('buyer-status').textContent = `Added ${describeKey(p.key)} from the signing room (proven by their key). Check the fingerprint with the buyer.`;
+    });
+    roomBox.append(b);
+  }
   $('buyer-status').className = 'hint';
   if (!state.signReg && !state.draft) $('buyer-status').textContent = 'Load the parcel registration (above) first: the sellers’ registered keys hand the protection over.';
   else if ($('buyer-status').textContent?.startsWith('Load the parcel')) $('buyer-status').textContent = '';
@@ -1802,6 +1825,7 @@ const peers = new Map<string, Peer>();
 
 function renderPeers() {
   showRoomKeys();
+  renderBuyerKeys();
   const ul = $('room-peers');
   ul.innerHTML = '';
   const me = state.signer ?? state.key;

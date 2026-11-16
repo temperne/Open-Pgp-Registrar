@@ -103,6 +103,10 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **Add buyers from the signing room.** On a sale deed, everyone in the signing room who
+  isn't a seller gets an "Add ... as a buyer (from the signing room)" button: their key,
+  already proven in the room, goes on the deed with no key file. The buyer then proves
+  their key from their own tab.
 - **Live editing in a signing room.** Before anyone signs, everything people do on the
   Sign and Register forms reaches the others in the room as they do it: loading the parcel
   registration, the template, every field, the title and text, the buyers' and co-owners'
