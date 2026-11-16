@@ -18,7 +18,7 @@ the **first-choice signing-room relay**.
 |---|---|
 | `relay.mjs` | Serves the page and relays rooms (Node.js + `ws`), on 127.0.0.1:8787 |
 | `stop-relay.service` | Runs it as a throwaway user with no write access (systemd) |
-| `Caddyfile` | https in front of it; Caddy gets and renews the certificate |
+| `Caddyfile` | https in front of it: a Let's Encrypt certificate, renewed automatically, http redirected to https, HSTS |
 | `firewall.nft` | Lets in only SSH (22), http (80) and https (443) |
 | `update-page.sh` | Downloads the page from the master site and installs it only if its SHA-256 matches the proven build in the repository's README |
 | `setup.sh` | Installs and starts everything (safe to run again) |
@@ -43,6 +43,17 @@ cd /root/Open-Pgp-Registrar && git pull && sh vps/setup.sh
 
 (`sh vps/update-page.sh` alone is enough when only the page changed. The relay picks up
 the new page without a restart.)
+
+## The certificate
+
+Caddy gets the certificate from Let's Encrypt the first time it starts and renews it about
+30 days before it expires; nothing to do by hand. To see it:
+
+```sh
+echo | openssl s_client -connect 84-46-239-112.sslip.io:443 -servername 84-46-239-112.sslip.io 2>/dev/null | openssl x509 -noout -issuer -dates
+```
+
+The issuer should be Let's Encrypt (`O = Let's Encrypt`).
 
 ## Check it
 

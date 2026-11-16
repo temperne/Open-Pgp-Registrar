@@ -1,11 +1,21 @@
-# The S.T.O.P. backup server. Caddy gets and renews the https certificate itself.
+# The S.T.O.P. project server. Caddy gets the https certificate from Let's Encrypt and
+# renews it on its own (about 30 days before it expires); http redirects to https.
 # sslip.io resolves 84-46-239-112.sslip.io to 84.46.239.112, so no domain is needed;
 # to use your own domain, point it at the server and put it here (and in src/brand.ts,
 # MASTER_FALLBACK_URL), then rebuild the page.
 # Caddy writes no access log unless a site asks for one, so no record of visitors is kept.
+{
+	# Let's Encrypt only (Caddy would otherwise also try ZeroSSL).
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
 84-46-239-112.sslip.io {
 	encode zstd gzip
-	header -Server
+	header {
+		-Server
+		# Browsers use https for this address from now on.
+		Strict-Transport-Security "max-age=31536000"
+	}
 	# The app and the signing-room relay (WebSockets pass straight through).
 	reverse_proxy 127.0.0.1:8787
 }
