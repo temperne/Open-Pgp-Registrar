@@ -17,6 +17,12 @@ import {
   PDFImage,
   decodePDFRawStream,
   type RGB,
+  rectangle,
+  fill,
+  pushGraphicsState,
+  popGraphicsState,
+  setFillingRgbColor,
+  type PDFOperator,
 } from 'pdf-lib';
 import { bestQr, code128Bits, codeMapText, pdf417Path, type CodeMapEntry, type QrMatrix } from './codes';
 import {
@@ -179,11 +185,33 @@ const MAP_MAX_THICKNESS = 22;
  * Draws a code map on every page that has QR codes, then saves. The map lists
  * each QR code's position relative to the map itself, in map modules.
  */
+/**
+ * Progress for long documents (thousands of codes): the page shows it, and the work
+ * pauses briefly every so often so the page stays responsive.
+ */
+let progressFn: ((message: string) => void) | null = null;
+let lastYield = 0;
+export function onPdfProgress(fn: ((message: string) => void) | null) {
+  progressFn = fn;
+}
+async function progress(message: string) {
+  if (!progressFn) return;
+  const now = Date.now();
+  if (now - lastYield < 120) return;
+  lastYield = now;
+  progressFn(message);
+  await new Promise((r) => setTimeout(r, 0));
+}
+
 async function finish(doc: PDFDocument): Promise<Uint8Array> {
   // Code pages that continue a document (more codes than fit on one page) carry
   // the document ID of the page they follow.
   let lastId = '';
-  for (const page of doc.getPages()) {
+  const all = doc.getPages();
+  let at = 0;
+  for (const page of all) {
+    at++;
+    await progress(`Adding the code maps: page ${at} of ${all.length}...`);
     const qrs = QR_ON_PAGE.get(page);
     const id = DOC_ID_ON_PAGE.get(page);
     if (NO_DOC_ID.has(page)) DOC_ID_ON_PAGE.delete(page);
@@ -206,7 +234,11 @@ async function finish(doc: PDFDocument): Promise<Uint8Array> {
     // SVG units are half a module. Rotated a quarter turn: the symbol's width runs up the page.
     page.drawSvgPath(sym.path, { x: MAP_X, y: MAP_Y, scale: MAP_MODULE / 2, rotate: degrees(90), color: rgb(0, 0, 0), borderWidth: 0 });
   }
-  return doc.save();
+  if (progressFn) {
+    progressFn(`Saving the PDF (${all.length} pages)...`);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  return doc.save({ objectsPerTick: 200 });
 }
 
 /** Every QR code drawn, by page, for the page's code map. */
@@ -219,6 +251,7 @@ const NO_DOC_ID = new WeakSet<PDFPage>();
 function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: number) {
   QR_ON_PAGE.set(page, [...(QR_ON_PAGE.get(page) ?? []), { x, yTop, size }]);
   const cell = size / m.size;
+  const ops: PDFOperator[] = [];
   for (let r = 0; r < m.size; r++) {
     let c = 0;
     while (c < m.size) {
@@ -229,9 +262,12 @@ function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: numbe
       const start = c;
       while (c < m.size && m.dark(r, c)) c++;
       // Slight overlap avoids hairline gaps between modules in some viewers.
-      page.drawRectangle({ x: x + start * cell, y: yTop - (r + 1) * cell, width: (c - start) * cell + 0.05, height: cell + 0.05, color: rgb(0, 0, 0) });
+      ops.push(rectangle(x + start * cell, yTop - (r + 1) * cell, (c - start) * cell + 0.05, cell + 0.05));
     }
   }
+  // One filled path for the whole code: far fewer operators than a rectangle per run,
+  // which matters for documents with thousands of codes.
+  page.pushOperators(pushGraphicsState(), setFillingRgbColor(0, 0, 0), ...ops, fill(), popGraphicsState());
 }
 
 /** Draws a Code 128 barcode; returns its drawn width. */
@@ -1676,6 +1712,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       }
     }
     const x = M + col * (size + gap);
+    await progress(`Drawing the signature codes: ${i + 1} of ${n} (${Math.round(((i + 1) / n) * 100)}%)...`);
     const qr = bestQr(info.codes[i])!;
     drawQr(sp, qr, x, y, size);
     const label = `Code ${i + 1} of ${n}`;
@@ -2403,7 +2440,8 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
-  info.codes.forEach((code, i) => {
+  for (let i = 0; i < info.codes.length; i++) {
+    const code = info.codes[i];
     const col = i % perRow;
     if (col === 0 && y - size - 24 < 64) {
       cover = doc.addPage([PAGE_W, PAGE_H]);
@@ -2411,12 +2449,13 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
       y = header(cover, fonts, 'Signed file  |  Cover page (continued)', 'Signature Codes');
     }
     const x = M + col * (size + gap);
+    await progress(`Drawing the signature codes: ${i + 1} of ${info.codes.length} (${Math.round(((i + 1) / info.codes.length) * 100)}%)...`);
     const qr = bestQr(code);
     if (qr) drawQr(cover, qr, x, y, size);
     const label = `Code ${i + 1} of ${info.codes.length}`;
     cover.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
     if (col === perRow - 1 || i === info.codes.length - 1) y -= size + 50;
-  });
+  }
 
   // ---- 2. The file ----
   const filePages: PDFPage[] = [];

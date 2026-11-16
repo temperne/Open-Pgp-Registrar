@@ -895,3 +895,8 @@ details.jurisdiction {
   letter-spacing: 0.08em;
   pointer-events: none;
 }
+
+.warn-text {
+  color: var(--warn, #8a4b00);
+  font-weight: 600;
+}

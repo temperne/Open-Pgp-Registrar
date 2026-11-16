@@ -103,6 +103,13 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **Large documents: progress and speed.** Building a PDF now shows its progress on the
+  button ("Drawing the signature codes: 152 of 1565 (10%)", "Adding the code maps",
+  "Saving the PDF (854 pages)") and keeps the page responsive. Each QR code is drawn as one
+  path, far fewer drawing operations, so large PDFs build faster and are smaller. A 3 MB
+  HTML file: loaded in 1.5 s, signed in 1.2 s, its 854-page package built in 17 s. Loading
+  a large file now says how many codes and pages it will need, and suggests a PDF or a
+  binary file signature instead.
 - **The footer's program line wraps** instead of cutting off the demonstration notice.
 - **Demonstration until adopted; the adoption list.** Adoption is now a list built into
   the program (`src/adoptions.json`), kept by the project owner: a state entry adopts every

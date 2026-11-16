@@ -60,6 +60,7 @@ import {
 import {
   registrationPdf,
   signaturePagePdf,
+  onPdfProgress,
   releaseStatementPdf,
   pdfAttachments as releaseAttachments,
   RELEASE_KEY_ATTACHMENT,
@@ -198,6 +199,8 @@ function action(buttonId: string, handler: (btn: HTMLButtonElement) => Promise<v
     const old = btn.textContent;
     btn.disabled = true;
     btn.textContent = busyLabel;
+    // Long PDFs report their progress on the button.
+    onPdfProgress((m) => (btn.textContent = m));
     try {
       await handler(btn);
     } catch (err) {
@@ -210,6 +213,7 @@ function action(buttonId: string, handler: (btn: HTMLButtonElement) => Promise<v
       }
       if (!(err instanceof UserError)) console.error(err);
     } finally {
+      onPdfProgress(null);
       btn.disabled = false;
       btn.textContent = old;
     }
@@ -1564,6 +1568,21 @@ function showSource() {
   $('doc-return-wrap').hidden = true;
   lockDraft();
   updateCount();
+  // A large file's text is signed whole and carried in the codes: say what that means first.
+  const chars = needsDescription(src) ? 0 : canonicalText(src.pages.join('\n\n')).length;
+  if (chars > LONG_TEXT) {
+    const note = Object.assign(document.createElement('span'), {
+      className: 'warn-text',
+      textContent: ` This file has ${chars.toLocaleString()} characters of text, all of which is signed and carried in the QR codes. Working out how many...`,
+    });
+    info.append(note);
+    void estimateCodes(canonicalText(src.pages.join('\n\n')), Math.max(1, state.signReg?.keys.length ?? 1)).then((codes) => {
+      note.textContent =
+        ` This file has ${chars.toLocaleString()} characters of text, all of which is signed and carried in about ${codes.toLocaleString()} QR codes ` +
+        `(about ${Math.ceil(codes / 15).toLocaleString()} printed pages of codes). It works, but building the PDF takes a while and the package is large: ` +
+        'for a file this size, consider signing a PDF of it, or a binary file signature (advanced) if it is only for third parties.';
+    });
+  }
 }
 
 function clearSource() {
