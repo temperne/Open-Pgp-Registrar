@@ -54,7 +54,7 @@ gives counter staff a way to check a filing.
   master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the
   analytics endpoint **only**. Do not loosen it further.
 - **The project's server** (`vps/`, the owner's decision, Nov 2026): `MASTER_FALLBACK_URL`
-  (https://84-46-239-112.sslip.io) is a second official address for pages that relay
+  (https://securerecorder.csproject.org) is a second official address for pages that relay
   through the master site (`officialOrigins`), and their **first** relay:
   `SigningRoom.connect` tries `relayBases()` in order (the project's server, then the
   master's Cloudflare relay as the backup) and moves on if one doesn't welcome the tab

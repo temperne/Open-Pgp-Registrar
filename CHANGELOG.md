@@ -103,6 +103,9 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **The project's server has its own domain: https://securerecorder.csproject.org**, with
+  a Let's Encrypt certificate (renewed automatically) and HSTS. Its earlier address,
+  https://84-46-239-112.sslip.io, redirects there, room links included.
 - **Meetup room.** In the Sign together card, "Join the meetup room" lists everyone there
   with the name in their key, its fingerprint (proven by their key), the county they work
   for and any contact details they add; search it, or tick "My county only". Select one

@@ -959,7 +959,7 @@ try {
 
   // ---- 16. Failover: the project's server can't be reached; rooms move to Cloudflare ----
   {
-    const BACKUP_URL = 'https://84-46-239-112.sslip.io/';
+    const BACKUP_URL = 'https://securerecorder.csproject.org/';
     const seen = [];
     const sockets = new Map();
     let refused = 0;

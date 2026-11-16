@@ -1,7 +1,7 @@
 # The S.T.O.P. project server
 
 The master site's page runs on Cloudflare (`worker/`). This folder sets up the project's
-own server (a small Debian VPS) at **https://84-46-239-112.sslip.io/**: the same page, and
+own server (a small Debian VPS) at **https://securerecorder.csproject.org/**: the same page, and
 the **first-choice signing-room relay**.
 
 - Signing rooms use this server first (no per-message cost, so files up to 50 MB and live
@@ -33,7 +33,8 @@ sh vps/setup.sh
 
 It installs Node.js, npm, Caddy and nftables from Debian, turns on the firewall, installs
 the relay in `/opt/stop`, installs the proven page, and starts the services. In a minute or
-two https://84-46-239-112.sslip.io/ answers.
+two https://securerecorder.csproject.org/ answers. (Its earlier address,
+https://84-46-239-112.sslip.io, redirects there.)
 
 ## Update it (after each new version)
 
@@ -50,7 +51,7 @@ Caddy gets the certificate from Let's Encrypt the first time it starts and renew
 30 days before it expires; nothing to do by hand. To see it:
 
 ```sh
-echo | openssl s_client -connect 84-46-239-112.sslip.io:443 -servername 84-46-239-112.sslip.io 2>/dev/null | openssl x509 -noout -issuer -dates
+echo | openssl s_client -connect securerecorder.csproject.org:443 -servername securerecorder.csproject.org 2>/dev/null | openssl x509 -noout -issuer -dates
 ```
 
 The issuer should be Let's Encrypt (`O = Let's Encrypt`).
@@ -63,8 +64,8 @@ journalctl -u stop-relay -n 20     # start-up and errors only; no visitors are l
 nft list ruleset
 ```
 
-## Using a domain instead of sslip.io
+## Using another domain
 
-Point the domain at the server, put it in `Caddyfile` and in `MASTER_FALLBACK_URL` in
-`src/brand.ts`, rebuild and prove the page (the address is in its security policy), deploy
-it to the master site, then run `setup.sh` here again.
+Point the domain at the server (an A record), put it in `Caddyfile` and in
+`MASTER_FALLBACK_URL` in `src/brand.ts`, rebuild and prove the page (the address is in
+its security policy), deploy it to the master site, then run `setup.sh` here again.

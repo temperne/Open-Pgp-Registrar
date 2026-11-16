@@ -37,4 +37,4 @@ echo "== Check"
 sleep 2
 node -e 'fetch("http://127.0.0.1:8787/healthz").then((r) => r.text()).then((t) => console.log("relay:", t)).catch((e) => { console.error("relay not answering:", e.message); process.exit(1); })'
 systemctl is-active stop-relay caddy nftables
-echo "Done. In a minute or two Caddy has its certificate: https://84-46-239-112.sslip.io/"
+echo "Done. In a minute or two Caddy has its certificate: https://securerecorder.csproject.org/"

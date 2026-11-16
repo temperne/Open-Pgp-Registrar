@@ -201,7 +201,7 @@ Cloudflare Web Analytics (no cookies); it loads only if they allow it. Set your 
 `MASTER_ANALYTICS_TOKEN` (`src/brand.ts`).
 
 **The project's server.** Signing rooms run on the project's own server,
-https://84-46-239-112.sslip.io, and move to the master site's Cloudflare relay on their own
+https://securerecorder.csproject.org, and move to the master site's Cloudflare relay on their own
 if it can't be reached. Files up to 50 MB go through a room in encrypted parts. See
 [`vps/README.md`](vps/README.md) to set it up or update it.
 
@@ -397,7 +397,7 @@ counts, enable **Workers Analytics Engine** once in the Cloudflare dashboard. Se
 
 ### 4. Your own server (VPS)
 
-The project's own server (https://84-46-239-112.sslip.io) runs this way, and is the
+The project's own server (https://securerecorder.csproject.org) runs this way, and is the
 **first-choice relay** for signing rooms (no per-message cost, files up to 50 MB), with
 Cloudflare as the backup. On Debian 13, as root:
 
@@ -412,7 +412,7 @@ sh vps/setup.sh
 http and https only), installs the relay as a locked-down service, downloads the page from
 the master site **only if its SHA-256 matches the proven build in this README**, and starts
 everything. Caddy gets the https certificate itself. To update after a new release:
-`git pull && sh vps/setup.sh`. To use your own domain instead of sslip.io, see
+`git pull && sh vps/setup.sh`. To use another domain, see
 [`vps/README.md`](vps/README.md).
 
 ### 5. A county's own copy

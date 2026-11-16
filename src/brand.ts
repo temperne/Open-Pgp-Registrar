@@ -93,7 +93,7 @@ export const MASTER_URL = 'https://pimastopinitiative.jasonajensen.workers.dev';
  * that relay through the master site, rooms use this server first and fall back to the
  * master site's Cloudflare relay; the page works when loaded from here too.
  */
-export const MASTER_FALLBACK_URL = 'https://84-46-239-112.sslip.io';
+export const MASTER_FALLBACK_URL = 'https://securerecorder.csproject.org';
 
 /** The values as built, so an override can be undone. */
 export const BRAND_DEFAULTS = { ...BRAND };
