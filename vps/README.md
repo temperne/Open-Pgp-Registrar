@@ -1,13 +1,13 @@
-# The S.T.O.P. backup server
+# The S.T.O.P. project server
 
-The master site runs on Cloudflare (`worker/`). This folder sets up a backup on the
-project's own server (a small Debian VPS): the same page and the same signing-room relay,
-at **https://84-46-239-112.sslip.io/**.
+The master site's page runs on Cloudflare (`worker/`). This folder sets up the project's
+own server (a small Debian VPS) at **https://84-46-239-112.sslip.io/**: the same page, and
+the **first-choice signing-room relay**.
 
-- When the master site's relay can't be reached (or its free quota is used up), signing
-  rooms move here on their own: every tab tries the master first, then this server, with
-  the same room key, so a room meets on one of them. The page says "through the
-  program's backup server" when that happens.
+- Signing rooms use this server first (no per-message cost, so files up to 50 MB and live
+  updates go through rooms freely) and move to the master site's Cloudflare relay on
+  their own if it can't be reached. Everyone tries them in the same order with the same
+  room key, so a room meets on one of them.
 - The page also works when loaded from this address (it is a second official address).
 - Like the Worker, it forwards only end-to-end encrypted messages and stores nothing. It
   keeps no access log.

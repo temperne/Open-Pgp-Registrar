@@ -853,7 +853,41 @@ try {
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 
-  // ---- 16. Failover: the master site's relay can't be reached; rooms move to the backup server ----
+  // ---- 12e. A large file (several MB) goes through the room in parts, each under 1 MB ----
+  {
+    const file = join(WORK, 'survey-scan.png');
+    execFileSync('convert', ['-size', '1100x1100', 'xc:', '+noise', 'Random', file]);
+    const size = readFileSync(file).length;
+    const before = roomSeen.length;
+    const { tabs } = await openRoom(['ann', 'bob-carol'], async (p, i) => {
+      if (i === 0) await loadSignRegistration(p, R0);
+    });
+    const [a, b] = tabs;
+    await a.click('#tab-sign');
+    await a.setInputFiles('#src-file', file);
+    await a.waitForSelector('#src-clear:not([hidden])', { timeout: 60000 });
+    await a.fill('#doc-text', 'Scan of the boundary survey for the parcel, one page, signed by the owners of record.');
+    await a.check('#parcel-ready');
+    await a.click('#text-sign-btn');
+    await b.waitForFunction(() => /Not complete: 1 of 2/.test(document.getElementById('tr-status').textContent), null, { timeout: 120000 });
+    const gotFile = flat(await b.textContent('#src-info'));
+    await b.click('#text-sign-btn');
+    for (const p of tabs) await status(p, 'tr-status', 'Complete');
+    const pkgPdf = await save(b, '#dl-instrument', '12e-large-file-signed-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    const msgs = roomSeen.slice(before);
+    const largest = Math.max(...msgs.map((m) => m.length));
+    const parts = msgs.filter((m) => m.length > 400_000).length;
+    const c = await checkDocument(R0, pkgPdf, null);
+    check(
+      '12e. A large file through a room, in parts',
+      /survey-scan/.test(gotFile) && parts >= 3 && largest < 1_048_576 && /GOOD/.test(c.verdict),
+      `a ${(size / 1024 / 1024).toFixed(1)} MB scan went through the room in ${parts} encrypted parts (largest message ${(largest / 1024).toFixed(0)} KB, under Cloudflare's 1 MB), arrived whole (checked against its SHA-256), both signed, and the package checks ${c.verdict}`,
+      [pkgPdf],
+    );
+  }
+
+  // ---- 16. Failover: the project's server can't be reached; rooms move to Cloudflare ----
   {
     const BACKUP_URL = 'https://84-46-239-112.sslip.io/';
     const seen = [];
@@ -866,8 +900,8 @@ try {
       for (const u of [OFFICIAL_URL, BACKUP_URL]) await page.route(`${u}**`, (r) => r.fulfill({ body: distHtml, contentType: 'text/html' }));
       await page.routeWebSocket(/\/relay\//, (ws) => {
         const u = new URL(ws.url());
-        // Cloudflare is down (or out of its free quota): it refuses at once.
-        if (u.host === new URL(OFFICIAL_URL).host) {
+        // The project's server is down: it refuses at once.
+        if (u.host === new URL(BACKUP_URL).host) {
           refused++;
           ws.close({ code: 1011, reason: 'unavailable' });
           return;
@@ -894,7 +928,7 @@ try {
     await a.check('#room-agree');
     await a.check('#room-enable');
     await a.click('#room-start');
-    await a.waitForFunction(() => /backup server/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    await a.waitForFunction(() => /backup relay/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
     const link = await a.inputValue('#room-link');
     const b = await failTab(BACKUP_URL);
     await loadKey(b, keys['bob-carol'].priv);
@@ -908,20 +942,20 @@ try {
     const bStatus = flat(await b.textContent('#room-status'));
     await a.selectOption('#tpl', 'ownership');
     await a.fill('#f-grantor', 'Ann Smith, Bob Jones and Carol Jones');
-    await a.fill('#f-terms', 'Signed through the backup server.');
+    await a.fill('#f-terms', 'Signed through the backup relay.');
     await a.click('#text-sign-btn');
     await status(b, 'tr-status', 'Not complete: 1 of 2');
     await b.click('#text-sign-btn');
     for (const p of [a, b]) await status(p, 'tr-status', 'Complete');
-    const doc = await save(a, '#dl-instrument', '16-signed-through-the-backup-server.pdf');
+    const doc = await save(a, '#dl-instrument', '16-signed-through-the-backup-relay.pdf');
     await a.close();
     await b.close();
     const c = await checkDocument(R0, doc, null);
-    const leaked = seen.some((m) => /OWNERSHIP|BACKUP SERVER|BEGIN PGP/i.test(m));
+    const leaked = seen.some((m) => /OWNERSHIP|BACKUP RELAY|BEGIN PGP/i.test(m));
     check(
-      '16. Failover to the backup server',
-      refused >= 2 && /backup address/.test(where) && /backup server/.test(bStatus) && !leaked && /GOOD/.test(c.verdict),
-      `the master site's relay refused ${refused} connections; both tabs moved to the backup server on their own (one loaded from the program's address, one from the backup address: "${where.slice(0, 70)}..."), signed together through it (${seen.length} messages, all encrypted), and the result checks ${c.verdict}`,
+      '16. Failover to the backup relay',
+      refused >= 2 && /program\u2019s server/.test(where) && /backup relay/.test(bStatus) && !leaked && /GOOD/.test(c.verdict),
+      `the project's server refused ${refused} connections; both tabs moved to Cloudflare's relay on their own (one loaded from the program's address, one from the project's server: "${where.slice(0, 70)}..."), signed together through it (${seen.length} messages, all encrypted), and the result checks ${c.verdict}`,
       [doc],
     );
   }

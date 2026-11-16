@@ -1,5 +1,6 @@
 /**
- * The S.T.O.P. backup server: serves the single-file app and relays signing rooms, with
+ * The S.T.O.P. project server: serves the single-file app and relays signing rooms (the
+ * first-choice relay; Cloudflare is the backup), with
  * the same protocol as the Cloudflare Worker (worker/src/index.ts). It sits behind Caddy
  * (https) on 127.0.0.1.
  *

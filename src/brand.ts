@@ -86,9 +86,9 @@ export const BRAND = {
 export const MASTER_URL = 'https://pimastopinitiative.jasonajensen.workers.dev';
 
 /**
- * The master site's backup (the project's own server, `vps/`): the same page and the
- * same signing-room relay. When the master site can't be reached (or its free quota is
- * used up), signing rooms move here, and the page works when loaded from here too.
+ * The project's own server (`vps/`): the same page and the signing-room relay. For pages
+ * that relay through the master site, rooms use this server first and fall back to the
+ * master site's Cloudflare relay; the page works when loaded from here too.
  */
 export const MASTER_FALLBACK_URL = 'https://84-46-239-112.sslip.io';
 

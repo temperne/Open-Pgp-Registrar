@@ -34,18 +34,21 @@ gives counter staff a way to check a filing.
   the room (`settingsLockedByRoom`). Joiners can also paste a room link or code
   (`#room-code`) to join without reloading. A registration in a room offers the proven
   peers' keys (`#co-room`, and a question before the first signature). A signed file's
-  original goes through the room **once per file hash** (`roomFileSent`, at most
-  `ROOM_FILE_LIMIT`); later updates carry signatures only, and a late joiner asks with
+  original (up to `ROOM_FILE_LIMIT`, 50 MB) goes through the room **once per file hash**
+  (`roomFileSent`) as `file-part` messages of `ROOM_FILE_PART` (512 KB, under 1 MB each so
+  Cloudflare takes them too), checked against the hash on arrival (`receiveFilePart`);
+  later updates carry signatures only, and a late joiner asks with
   `need-file` naming the first signer, who answers at once; the others wait 3-5 s and
   stand down when it arrives.
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
   relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check), the
   master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the
   analytics endpoint **only**. Do not loosen it further.
-- **Backup server** (`vps/`, the owner's decision, Nov 2026): `MASTER_FALLBACK_URL`
+- **The project's server** (`vps/`, the owner's decision, Nov 2026): `MASTER_FALLBACK_URL`
   (https://84-46-239-112.sslip.io) is a second official address for pages that relay
-  through the master site (`officialOrigins`). `SigningRoom.connect` tries the relays in
-  order (`relayBases`: master, then backup) and moves on if one doesn't welcome the tab
+  through the master site (`officialOrigins`), and their **first** relay:
+  `SigningRoom.connect` tries `relayBases()` in order (the project's server, then the
+  master's Cloudflare relay as the backup) and moves on if one doesn't welcome the tab
   within 8 s or closes first. `vps/relay.mjs` speaks the Worker's protocol; it serves
   only the proven page (`update-page.sh` checks the README's SHA-256) and logs nothing.
   Set up with `sh vps/setup.sh` (Debian 13, as root).
@@ -288,7 +291,7 @@ storage, at most 16 tabs and 4 MB per message) and counts usage (`stop_usage` da
 Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`). See
 `worker/README.md`. `npx wrangler dev` runs it locally (the relay and the page together).
 
-## Backup server (`vps/`)
+## The project's server (`vps/`)
 
 The project's VPS (Debian 13): Caddy (https, no access log) in front of `relay.mjs` (Node,
 `ws`) on 127.0.0.1:8787, run by systemd as a throwaway user, behind an nftables firewall
@@ -391,8 +394,9 @@ Every build that is released, or pushed for a pull request, must be proven:
      have open, takes the starter's county, and the room's keys are offered and asked
      for), and a file signed together in a room (the file crosses the relay once while
      both sign, and once more for someone who joins afterwards)
-   - failover: the master's relay refuses, and two tabs (one on each official address)
-     move to the backup server on their own, sign together and check GOOD
+   - a 6.9 MB file through a room in parts (each message under 1 MB), checked GOOD
+   - failover: the project's server refuses, and two tabs (one on each official address)
+     move to Cloudflare's relay on their own, sign together and check GOOD
    - the update check: nothing until Sign together is turned on, then one request to the
      master site; a newer version is offered with the same settings, an older one isn't
    - two owners signing together in a signing room through a test relay, with the app

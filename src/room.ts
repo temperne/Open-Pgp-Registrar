@@ -24,6 +24,7 @@ export type RoomMessage =
   | { t: 'state'; draft: unknown }
   | { t: 'reg'; reg: unknown }
   | { t: 'need-file'; hash: string; to?: string }
+  | { t: 'file-part'; hash: string; i: number; n: number; data: string }
   | { t: 'settings'; settings: string; key: string; sig: string }
   | { t: 'ask' };
 
@@ -62,9 +63,15 @@ export function officialOrigins(): string[] {
   }
 }
 
-/** The relays to try, in order (the same order for everyone, so a room meets on one of them). */
+/**
+ * The relays to try, in order (the same order for everyone, so a room meets on one of
+ * them). With the master site, the project's own server comes first (no per-message
+ * cost, no size limit), then Cloudflare as the backup.
+ */
 export function relayBases(): string[] {
-  return roomsAvailableHere() ? officialOrigins().map((o) => `wss://${new URL(o).host}`) : [];
+  if (!roomsAvailableHere()) return [];
+  const o = officialOrigins();
+  return (o.length > 1 ? [o[1], o[0]] : o).map((x) => `wss://${new URL(x).host}`);
 }
 
 /** @deprecated The first relay; see relayBases. */
@@ -151,7 +158,7 @@ export class SigningRoom {
     return `${location.href.split('#')[0]}#room=${this.secret}`;
   }
 
-  /** Which relay the room is on: 0 is the program's own, 1 its backup server. */
+  /** Which relay the room is on, by its place in relayBases (0: the first choice; 1: the backup). */
   via = 0;
 
   connect(attempt = 0) {
