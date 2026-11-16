@@ -33,7 +33,10 @@ gives counter staff a way to check a filing.
   joiners (`applyRoomSettings`, first proven sender wins), and locked for joiners while in
   the room (`settingsLockedByRoom`). Joiners can also paste a room link or code
   (`#room-code`) to join without reloading. A registration in a room offers the proven
-  peers' keys (`#co-room`, and a question before the first signature).
+  peers' keys (`#co-room`, and a question before the first signature). A signed file's
+  original goes through the room **once per file hash** (`roomFileSent`, at most
+  `ROOM_FILE_LIMIT`); later updates carry signatures only, and a late joiner asks with
+  `need-file` (one tab answers after a random delay; the others stand down).
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
   relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check) and
   the analytics endpoint **only**. Do not loosen it further.
@@ -369,7 +372,8 @@ Every build that is released, or pushed for a pull request, must be proven:
    - four signers in one room (two signing at the same moment; gpg verifies all four), a
      registration signed together in a room (the joiner pastes the link into the page they
      have open, takes the starter's county, and the room's keys are offered and asked
-     for), and a file signed together in a room
+     for), and a file signed together in a room (the file crosses the relay once while
+     both sign, and once more for someone who joins afterwards)
    - the update check: nothing until Sign together is turned on, then one request to the
      master site; a newer version is offered with the same settings, an older one isn't
    - two owners signing together in a signing room through a test relay, with the app

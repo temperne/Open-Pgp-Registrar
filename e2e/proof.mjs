@@ -807,8 +807,11 @@ try {
 
   // ---- 12d. A file signed together in a room ----
   {
-    const file = join(WORK, 'lease-addendum.txt');
-    writeFileSync(file, 'Lease addendum. The tenant may keep one small dog. Signed by the owners of record.\n');
+    // A photo of about 200 KB, so its messages can be told apart by size even though encrypted.
+    const file = join(WORK, 'pet-addendum-photo.png');
+    execFileSync('convert', ['-size', '260x260', 'xc:', '+noise', 'Random', file]);
+    const big = () => roomSeen.filter((m) => m.length > 150_000).length;
+    const bigBefore = big();
     const { tabs } = await openRoom(['ann', 'bob-carol'], async (p, i) => {
       if (i === 0) await loadSignRegistration(p, R0);
     });
@@ -816,6 +819,7 @@ try {
     await a.click('#tab-sign');
     await a.setInputFiles('#src-file', file);
     await a.waitForSelector('#src-clear:not([hidden])', { timeout: 60000 });
+    await a.fill('#doc-text', 'Photo of the pet addendum page: the tenant may keep one small dog. Signed by the owners of record.');
     await a.check('#parcel-ready');
     await a.click('#text-sign-btn');
     await status(b, 'tr-status', 'Not complete: 1 of 2');
@@ -823,15 +827,29 @@ try {
     await b.click('#text-sign-btn');
     for (const p of tabs) await status(p, 'tr-status', 'Complete');
     const pkgPdf = await save(b, '#dl-instrument', '12d-file-signed-in-a-room.pdf');
-    for (const p of tabs) await p.close();
+    await a.waitForTimeout(1500);
+    const bigWhileSigning = big() - bigBefore;
+    // Someone joins afterwards: they ask for the file once, and one tab sends it.
+    const late = await roomTab();
+    await late.goto(OFFICIAL_URL);
+    await loadKey(late, keys.ivy.priv);
+    await late.click('#tab-sign');
+    await late.check('#room-agree');
+    await late.check('#room-enable');
+    await late.fill('#room-code', await a.inputValue('#room-link'));
+    await late.click('#room-code-join');
+    await late.waitForFunction(() => /pet-addendum-photo/.test(document.getElementById('src-info').textContent), null, { timeout: 30000 });
+    await late.waitForTimeout(2500);
+    const bigAfterJoin = big() - bigBefore - bigWhileSigning;
+    for (const p of [...tabs, late]) await p.close();
     const c = await checkDocument(R0, pkgPdf, null);
     check(
       '12d. A file signed together in a room',
-      /lease-addendum/.test(gotFile) && /GOOD/.test(c.verdict),
-      `the second owner's tab received the file itself ("${gotFile.slice(0, 60)}") and the first signature, added theirs, and the package checks ${c.verdict}`,
+      /pet-addendum-photo/.test(gotFile) && /GOOD/.test(c.verdict) && bigWhileSigning === 1 && bigAfterJoin === 1,
+      `the second owner's tab received the file itself ("${gotFile.slice(0, 50)}") and the first signature, added theirs, and the package checks ${c.verdict}; the ~200 KB file crossed the relay ${bigWhileSigning} time while both signed (then signatures only), and ${bigAfterJoin} more time for someone who joined afterwards and asked for it`,
       [pkgPdf],
     );
-    const leaked = roomSeen.some((m) => /LEASE ADDENDUM|small dog|OWNERSHIP|444-55-6666|BEGIN PGP/i.test(m));
+    const leaked = roomSeen.some((m) => /PET ADDENDUM|small dog|OWNERSHIP|444-55-6666|BEGIN PGP/i.test(m));
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 

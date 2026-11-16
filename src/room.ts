@@ -23,6 +23,7 @@ export type RoomMessage =
   | { t: 'hello'; key: string; ts: number; sig: string }
   | { t: 'state'; draft: unknown }
   | { t: 'reg'; reg: unknown }
+  | { t: 'need-file'; hash: string }
   | { t: 'settings'; settings: string; key: string; sig: string }
   | { t: 'ask' };
 

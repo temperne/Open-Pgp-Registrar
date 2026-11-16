@@ -95,7 +95,10 @@ last part is the date the version was tagged.
 - **Sign together for registrations and files.** A signing room now carries a
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included (up to
-  2.8 MB; larger files go by PDF). Tested with four signers in four tabs.
+  700 KB, which keeps each message under Cloudflare's WebSocket limit; larger files go by
+  PDF). The file goes through the room once per file (by its SHA-256): after that only
+  signatures travel, and someone who joins later asks for it once and one tab answers.
+  Tested with four signers in four tabs.
 - **A signing room uses the settings of the person who started it.** County, state,
   recording office, program name, business office and logo are shared with everyone who
   joins, signed with the starter's key, so every tab prints the same forms. Joiners see

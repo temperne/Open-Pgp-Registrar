@@ -1794,7 +1794,7 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
 }
 
 /** Sends who we are (proven by our key) and the document so far. */
-async function roomShare() {
+async function roomShare(force = '') {
   if (!room?.ws) return;
   if (state.signer) await room.hello(state.signer);
   if (room.host && state.signer) await room.shareSettings(state.signer, roomSettings());
@@ -1803,18 +1803,35 @@ async function roomShare() {
   const d = draftForPdf();
   if (!d) return;
   if (d.source) {
-    // A signed file: the next signer needs the original to recreate the same package.
-    const src = state.source;
-    const size = (src?.pdf?.length ?? 0) + (src?.images ?? []).reduce((n, i) => n + i.bytes.length, 0);
-    const files =
-      src && size <= ROOM_FILE_LIMIT
-        ? { pdf: src.pdf ? toBase64(src.pdf) : undefined, images: src.images?.map((i) => ({ name: i.name, format: i.format, b64: toBase64(i.bytes) })) }
-        : null;
-    await room.send({ t: 'state', draft: { ...d, files } });
-    if (!files) $('room-status').textContent = 'This file is too large to pass through the room: send the others the PDF ("Sign exactly as others"). Signatures still go through the room.';
+    // A signed file: the others need the original to recreate the same package. It goes through
+    // the room once per file (by its SHA-256); after that only signatures travel. Someone who
+    // joins later asks for it ("need-file").
+    const hash = fileHashOf(d.source);
+    const tooLarge = roomFileSize() > ROOM_FILE_LIMIT;
+    const files = force === hash || (!tooLarge && roomFileSent !== hash) ? roomFiles() : null;
+    if (files) roomFileSent = hash;
+    await room.send({ t: 'state', draft: { ...d, files, fileHash: hash, fileTooLarge: tooLarge } });
+    if (tooLarge) $('room-status').textContent = 'This file is too large to pass through the room: send the others the PDF ("Sign exactly as others"). Signatures still go through the room.';
     return;
   }
   await room.send({ t: 'state', draft: d });
+}
+
+/** The SHA-256 of the file(s) being signed: the file goes through the room again only if this changes. */
+const fileHashOf = (src: { sha256: string[] }) => src.sha256.join(',');
+/** The file this tab last sent or received through the room (by hash). */
+let roomFileSent = '';
+/** A reply to someone asking for the file, waiting a moment in case another tab answers first. */
+let fileReply: ReturnType<typeof setTimeout> | null = null;
+
+function roomFileSize() {
+  const src = state.source;
+  return (src?.pdf?.length ?? 0) + (src?.images ?? []).reduce((n, i) => n + i.bytes.length, 0);
+}
+function roomFiles(): RoomFiles {
+  const src = state.source;
+  if (!src || roomFileSize() > ROOM_FILE_LIMIT) return null;
+  return { pdf: src.pdf ? toBase64(src.pdf) : undefined, images: src.images?.map((i) => ({ name: i.name, format: i.format, b64: toBase64(i.bytes) })) };
 }
 
 /** This page's settings, as the room's host shares them (the same fields as a settings link). */
@@ -1862,8 +1879,10 @@ function showRoomSettings() {
       : 'Waiting for the settings of the person who started this room.';
 }
 
-/** The largest original file a room passes on (the relay takes 4 MB per message, after encryption and base64). */
-const ROOM_FILE_LIMIT = 2_800_000;
+/** The largest original file a room passes on. */
+// Kept under 1 MB per message after base64 and encryption, the WebSocket limit Cloudflare is
+// known to accept. Larger files go by PDF ("Sign exactly as others").
+const ROOM_FILE_LIMIT = 700_000;
 type RoomFiles = { pdf?: string; images?: { name: string; format: 'png' | 'jpg'; b64: string }[] } | null;
 
 /** The same signatures, merged: everyone's signatures over the same text. */
@@ -1876,19 +1895,36 @@ async function mergeSigned(a: SignedText | undefined, b: SignedText | undefined)
 }
 
 /** A document from another tab in the room: adopt it, or add its signatures to ours. */
-async function applyRoomDraft(remote: DocumentDraft & { files?: RoomFiles }) {
+async function applyRoomDraft(remote: DocumentDraft & { files?: RoomFiles; fileHash?: string; fileTooLarge?: boolean }) {
   const status = $('room-status');
-  if (remote.source && !state.draft) {
-    if (!remote.files) {
-      status.textContent = 'Another tab is signing a file too large to pass through the room. Ask them for the PDF and load it under "Sign exactly as others".';
-      return;
+  if (remote.source) {
+    const hash = remote.fileHash ?? fileHashOf(remote.source);
+    // Someone else sent the file: no need for this tab to answer a request for it.
+    if (remote.files && fileReply) {
+      clearTimeout(fileReply);
+      fileReply = null;
     }
-    state.source = {
-      ...remote.source,
-      pdf: remote.files.pdf ? fromBase64(remote.files.pdf) : undefined,
-      images: remote.files.images?.map((i) => ({ name: i.name, format: i.format, bytes: fromBase64(i.b64) })),
-    };
-    showSource();
+    const have = !!state.source && fileHashOf(state.source) === hash;
+    if (!state.draft && !have) {
+      if (remote.fileTooLarge) {
+        status.textContent = 'Another tab is signing a file too large to pass through the room. Ask them for the PDF and load it under "Sign exactly as others".';
+        return;
+      }
+      if (!remote.files) {
+        // We joined after the file went round: ask for it once.
+        status.textContent = 'Getting the file from the room...';
+        await room?.send({ t: 'need-file', hash });
+        return;
+      }
+      state.source = {
+        ...remote.source,
+        pdf: remote.files.pdf ? fromBase64(remote.files.pdf) : undefined,
+        images: remote.files.images?.map((i) => ({ name: i.name, format: i.format, bytes: fromBase64(i.b64) })),
+      };
+      showSource();
+    }
+    // The room has this file now: don't send it again unless it changes.
+    roomFileSent = hash;
   }
   const canonical = canonicalText(fullText(remote.title, remote.text));
   const signed = await assembleSigned(
@@ -1947,6 +1983,16 @@ async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
       } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft & { files?: RoomFiles });
       else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
       else if (m.t === 'settings') await applyRoomSettings(m, r);
+      else if (m.t === 'need-file') {
+        // Someone joined after the file went round. One tab answers: wait a moment, and stand
+        // down if another tab sends it first.
+        if (state.source && fileHashOf(state.source) === m.hash && !fileReply) {
+          fileReply = setTimeout(() => {
+            fileReply = null;
+            void roomShare(m.hash);
+          }, 200 + Math.random() * 1500);
+        }
+      }
     } catch (err) {
       $('room-status').textContent = `A message from the room could not be used: ${(err as Error).message}`;
     }
@@ -1957,6 +2003,7 @@ async function enterRoom(r: SigningRoom) {
   room?.leave();
   room = r;
   peers.clear();
+  roomFileSent = '';
   input('room-link').value = r.link();
   // The link as a QR code, for a phone in the same room.
   const qr = bestQr(r.link());
