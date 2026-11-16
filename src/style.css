@@ -863,3 +863,11 @@ details.jurisdiction {
   flex: 1 1 16rem;
   min-width: 0;
 }
+
+/* Long web addresses (the program's site, room links) wrap instead of running off narrow screens. */
+#room-where,
+#room-host,
+#room-master,
+#room-status {
+  overflow-wrap: anywhere;
+}
