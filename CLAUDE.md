@@ -248,9 +248,18 @@ gives counter staff a way to check a filing.
 - The seal image is embedded in `index.html` (`<img id="brand-seal">`, base64), with
   a comment explaining how to replace it. The PDFs read the seal from there, so
   there is one copy.
-- While `status` is `'proposed'`, the site and every PDF say "Proposed program: not
-  yet adopted by Pima County. Not an official county form." Switch it to `'adopted'`
-  only once the county has adopted the program and approved use of its seal.
+- **Adoption list** (`src/adoptions.json`, `src/adoption.ts`; the owner's decision, Nov
+  2026): only the project owner adds entries, in this way: an entry, a proven build, a
+  deploy. A **state** entry (no county) adopts every county in that state; a **county**
+  entry adopts one county; `seal: true` also approves the seal. `refreshStatus()` sets
+  `BRAND.status` ('demo' or 'adopted') and `BRAND.sealApproved` for the current county.
+  Everywhere not adopted, the site and every PDF say "Demonstration system: not adopted
+  by <county>, <state>. Not an official county form." and the seal carries a DEMO band
+  (`demoBand` in pdf.ts, `#seal-wrap[data-band]` on the page; "SEAL NOT APPROVED" when
+  adopted without the seal). Never mark a place adopted any other way. The About tab
+  (`#adoption`) lists adoptions by state and county and, where not adopted, how to ask:
+  the county's recording office and board, a letter, and for a state, Open States links
+  (find your legislators; `openstates.org/<state>/`) with steps and a letter.
 - The 2-inch recording margin on deed page 1 stays free of branding.
 
 ## Code maps (PDF417)
@@ -403,6 +412,8 @@ Every build that is released, or pushed for a pull request, must be proven:
      served at the program's exact address (and a saved copy refused): off until a
      key is unlocked and it is turned on, the link asks first, peers proven by their
      keys, every relay message encrypted, and the result checks GOOD
+   - demonstration until adopted: the notice and the DEMO band on the page and the PDFs,
+     and the About tab's status, letter and state legislature link
    - usage analytics: asked first on the web, never in a saved copy; nothing loaded
      before an answer or after "No thanks"; only the beacon after "Allow"
    - no page errors and no network requests

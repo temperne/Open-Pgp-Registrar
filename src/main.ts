@@ -89,7 +89,8 @@ import {
   combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
-import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, type Jurisdiction } from './brand';
+import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, refreshStatus, type Jurisdiction } from './brand';
+import { adoptionFor, adoptionsByState } from './adoption';
 import { SigningRoom, officialOrigin, officialOrigins, roomsAvailableHere, type Peer, type RoomMessage } from './room';
 import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
 import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
@@ -3089,8 +3090,9 @@ $('frame-note').hidden = !framed;
       }
     }
     // A copy can never claim the county adopted it: that takes the county's own source build.
-    BRAND.status = BRAND_DEFAULTS.status = 'proposed';
-    BRAND.proposedNotice = BRAND_DEFAULTS.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
+    // Adopted or a demonstration, from the adoption list built into this copy.
+    refreshStatus();
+    Object.assign(BRAND_DEFAULTS, { status: BRAND.status, sealApproved: BRAND.sealApproved, proposedNotice: BRAND.proposedNotice });
     document.querySelectorAll<HTMLElement>('[data-copy-of]').forEach((el) => (el.hidden = false));
     $('copy-of').textContent = `${BRAND.county}, ${BRAND.state} (a copy made from ${cfg.madeFrom ?? 'the S.T.O.P. tool'})`;
     if (typeof cfg.publisher === 'string' && cfg.publisher.trim()) {
@@ -3133,7 +3135,11 @@ function applyBrandToPage() {
     const v = BRAND[el.dataset.brand as keyof typeof BRAND];
     if (typeof v === 'string') el.textContent = v;
   });
-  $('proposed-note').hidden = BRAND.status !== 'proposed';
+  $('proposed-note').hidden = BRAND.status !== 'demo';
+  const band = BRAND.sealApproved ? '' : BRAND.status === 'adopted' ? 'SEAL NOT APPROVED' : 'DEMO';
+  if (band) $('seal-wrap').dataset.band = band;
+  else delete $('seal-wrap').dataset.band;
+  showAdoption();
   const holder = $('project-url');
   holder.textContent = '';
   if (/^https?:\/\//.test(BRAND.projectUrl)) {
@@ -3562,6 +3568,90 @@ function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLog
     void roomShare();
     showRoomSettings();
   }
+}
+
+/** The About tab's adoption section: the list, this county's status, and how to ask for it. */
+function showAdoption() {
+  const a = adoptionFor(BRAND.state, BRAND.county);
+  const status = $('adopt-status');
+  status.className = a ? 'callout ok' : 'callout warn';
+  status.textContent = a
+    ? `${BRAND.county}, ${BRAND.state}: adopted${a.county ? '' : ` (statewide, by ${BRAND.state})`} since ${a.since}${a.authority ? ` (${a.authority})` : ''}.${a.seal ? '' : ' Use of the seal is not approved yet.'}`
+    : `${BRAND.county}, ${BRAND.state}: not adopted. This is a demonstration: the forms are not official, and the seal carries a DEMO band.`;
+  const list = $('adopt-list');
+  list.innerHTML = '';
+  const by = adoptionsByState();
+  if (!by.length) {
+    list.append(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'No state or county has adopted the program yet. Everywhere, it runs as a demonstration.' }));
+  } else {
+    const ul = document.createElement('ul');
+    for (const [st, e] of by) {
+      const li = document.createElement('li');
+      const parts = [e.state ? `the whole state, since ${e.state.since}` : '', ...e.counties.map((c) => `${c.county} (since ${c.since})`)].filter(Boolean);
+      li.append(Object.assign(document.createElement('strong'), { textContent: st }), `: ${parts.join('; ')}`);
+      ul.append(li);
+    }
+    list.append(ul);
+  }
+  $('adopt-ask').hidden = !!a;
+  if (a) return;
+  const site = BRAND.projectUrl || MASTER_URL;
+  $('adopt-county-h').textContent = `Ask ${BRAND.county} to adopt it`;
+  $('adopt-county-who').textContent = `In ${BRAND.county}, deeds are recorded by the ${BRAND.recorderOffice}.`;
+  ($('adopt-county-find') as HTMLAnchorElement).href = `https://duckduckgo.com/?q=${encodeURIComponent(`${BRAND.recorderOffice} ${BRAND.state} contact`)}`;
+  textarea('adopt-county-letter').value = [
+    `To the ${BRAND.recorderOffice}`,
+    `and the governing board of ${BRAND.county}, ${BRAND.state}`,
+    '',
+    'I am writing to ask the county to adopt the S.T.O.P. (Stop Theft of Property) program, a free, voluntary safeguard against forged deeds.',
+    '',
+    'An owner who joins registers an OpenPGP public signing key for their parcel on a paper form, with a notary. After that, a deed or other instrument filed against the parcel should carry the registered owners’ digital signatures, printed on the paper as QR codes. A filing that is unsigned, or signed by a key that is not registered, is held and investigated instead of being recorded.',
+    '',
+    'It costs the county nothing, needs no change to the recording software (the signatures are checked from the paper or the scan), and is voluntary for owners. Signatures can be checked with standard, free software (GnuPG).',
+    '',
+    `The program, its forms and its source code are at ${site}`,
+    '',
+    'Deed fraud costs owners years and thousands of dollars in quiet-title actions. I would welcome the chance to discuss it.',
+    '',
+    'Sincerely,',
+    '',
+    '[Your name]',
+    '[Your address]',
+    '[Your phone or email]',
+  ].join('\n');
+  $('adopt-state-h').textContent = `Ask ${BRAND.state} to adopt it statewide`;
+  const code = stateCode(BRAND.state).toLowerCase();
+  ($('adopt-state-legislature') as HTMLAnchorElement).href = code ? `https://openstates.org/${code}/` : 'https://openstates.org/';
+  ($('adopt-state-legislature') as HTMLAnchorElement).textContent = `the ${BRAND.state} legislature`;
+  textarea('adopt-state-letter').value = [
+    `Dear Senator / Representative [name],`,
+    '',
+    `I am a constituent in ${BRAND.county}, ${BRAND.state}. I am asking you to sponsor legislation that lets county recording offices in ${BRAND.state} protect owners from forged deeds through a free, voluntary program like S.T.O.P. (Stop Theft of Property).`,
+    '',
+    'Under it, an owner who joins registers an OpenPGP public signing key for their parcel on a notarized paper form. Any deed or instrument later filed against that parcel must carry the registered owners’ digital signatures (printed on the paper as QR codes); a filing that is unsigned, or signed by a key that is not registered, is held and investigated instead of being recorded.',
+    '',
+    'The bill would need to: (1) allow recording offices to accept these registrations; (2) let them hold, rather than record, a filing against a registered parcel that lacks the registered signatures, pending investigation; and (3) keep participation voluntary and free for owners. It needs no change to recording software: signatures are checked from the paper or the scan, with standard, free software.',
+    '',
+    `The program, its forms and its source code are at ${site}`,
+    '',
+    'Deed fraud costs owners years and thousands of dollars in quiet-title actions. I would welcome the chance to meet with you or your staff about it.',
+    '',
+    'Sincerely,',
+    '',
+    '[Your name]',
+    '[Your address]',
+    '[Your phone or email]',
+  ].join('\n');
+}
+for (const id of ['county', 'state'] as const) {
+  action(`adopt-${id}-copy`, async () => {
+    const t = textarea(`adopt-${id}-letter`);
+    try {
+      await navigator.clipboard.writeText(t.value);
+    } catch {
+      t.select();
+    }
+  });
 }
 
 /** In someone else's room, the settings are theirs. */

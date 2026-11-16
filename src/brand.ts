@@ -1,3 +1,4 @@
+import { adoptionFor } from './adoption';
 /*
  * ===========================================================================
  * BRANDING: edit this file to rename the program or change its web address.
@@ -54,12 +55,14 @@ export const BRAND = {
    */
   entityAuthority: 'Pima County Business Licensing Authority',
   /**
-   * 'proposed' prints the notice below on the site and every PDF, so nobody
-   * mistakes these documents for official county forms before the program is
-   * adopted. Change to 'adopted' only once the county has approved the program
-   * (and the use of its seal).
+   * 'demo' until this county (or its whole state) is in src/adoptions.json, which only
+   * the project owner changes, through a proven build. A demonstration prints the notice
+   * below on the site and every PDF, and a DEMO band across the seal. Set by
+   * refreshStatus(); don't set it by hand.
    */
-  status: 'proposed' as 'proposed' | 'adopted',
+  status: 'demo' as 'demo' | 'adopted',
+  /** The adoption also approves showing the seal without the DEMO band. */
+  sealApproved: false,
   /**
    * Signing rooms: the relay that passes encrypted messages between co-owners'
    * tabs (worker/ in this repository, deployed with Cloudflare). The page may
@@ -75,7 +78,7 @@ export const BRAND = {
    * adding the site. County copies use this one unless they give their own.
    */
   analyticsToken: MASTER_ANALYTICS_TOKEN,
-  proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
+  proposedNotice: 'Demonstration system: not adopted by Pima County, Arizona. Not an official county form.',
 };
 
 /**
@@ -120,16 +123,26 @@ export function applyJurisdiction(j: Partial<Jurisdiction> | null) {
     const v = j[k]?.trim();
     if (v) BRAND[k] = v;
   }
-  const changed = (['name', 'county', 'state'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
-  if (changed) {
-    BRAND.status = 'proposed';
-    BRAND.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
-  }
+  refreshStatus();
 }
+
+/**
+ * Adopted or a demonstration, from the adoption list (src/adoptions.json): this county's
+ * own entry, or its state's.
+ */
+export function refreshStatus() {
+  const a = adoptionFor(BRAND.state, BRAND.county);
+  BRAND.status = a ? 'adopted' : 'demo';
+  BRAND.sealApproved = !!a?.seal;
+  BRAND.proposedNotice = a
+    ? ''
+    : `Demonstration system: not adopted by ${BRAND.county}, ${BRAND.state}. Not an official county form.`;
+}
+refreshStatus();
 
 /** Text for the PDF footers. */
 export function brandLine() {
   const parts = [`${BRAND.name} (${BRAND.expansion})`, BRAND.projectUrl];
-  if (BRAND.status === 'proposed') parts.push(BRAND.proposedNotice);
+  if (BRAND.status === 'demo') parts.push(BRAND.proposedNotice);
   return parts.filter(Boolean).join('  |  ');
 }

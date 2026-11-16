@@ -1,0 +1,5 @@
+{
+  "format": "stop-adoptions-1",
+  "about": "Where the program is adopted. Only the project owner adds entries, through a proven build. A state entry (no county) adopts every county in that state; a county entry adopts one county. seal: true approves showing that government's seal without the DEMO band. Everywhere else runs as a demonstration.",
+  "adoptions": []
+}

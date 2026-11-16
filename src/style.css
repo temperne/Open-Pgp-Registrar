@@ -871,3 +871,27 @@ details.jurisdiction {
 #room-status {
   overflow-wrap: anywhere;
 }
+
+/* Until the adoption approves the seal (src/adoptions.json), the seal carries a band. */
+.seal-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  flex: none;
+}
+.seal-wrap[data-band]::after {
+  content: attr(data-band);
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 38%;
+  height: 24%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(184, 18, 18, 0.92);
+  color: #fff;
+  font: 700 clamp(9px, 1.6vw, 15px) / 1 system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}

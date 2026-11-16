@@ -255,16 +255,33 @@ function footer(page: PDFPage, fonts: Fonts, left: string, pageNo: number, pages
   page.drawText(safeText(left), { x: M, y: 35, size: 7.5, font: fonts.reg, color: MUTED });
   const right = `Page ${pageNo} of ${pages}`;
   page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 35, size: 7.5, font: fonts.reg, color: MUTED });
-  // Program line: name, web address, and the "proposed" notice while it applies.
+  // Program line: name, web address, and the demonstration notice while it applies.
   const brand = wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)[0];
-  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'proposed' ? WARN : MUTED });
+  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'demo' ? WARN : MUTED });
 }
 
 /** Seal at the top-right corner of a page. Returns the width it takes. */
 function sealCorner(page: PDFPage, fonts: Fonts, size = 58) {
   if (!fonts.seal) return 0;
-  page.drawImage(fonts.seal, { x: PAGE_W - M - size, y: PAGE_H - M - size + 10, width: size, height: size });
+  const x = PAGE_W - M - size;
+  const y = PAGE_H - M - size + 10;
+  page.drawImage(fonts.seal, { x, y, width: size, height: size });
+  demoBand(page, fonts, x, y, size);
   return size + 12;
+}
+
+/**
+ * Until the program's adoption here approves the seal (src/adoptions.json), every seal
+ * carries a DEMO band, so nobody takes a demonstration for an official form.
+ */
+function demoBand(page: PDFPage, fonts: Fonts, x: number, y: number, size: number) {
+  if (BRAND.sealApproved) return;
+  const h = size * 0.24;
+  const label = BRAND.status === 'adopted' ? 'SEAL NOT APPROVED' : 'DEMO';
+  const fs = Math.min(h * 0.72, (size * 0.95) / (fonts.bold.widthOfTextAtSize(label, 1) || 1));
+  page.drawRectangle({ x, y: y + (size - h) / 2, width: size, height: h, color: rgb(0.72, 0.07, 0.07), opacity: 0.92 });
+  const w = fonts.bold.widthOfTextAtSize(label, fs);
+  page.drawText(label, { x: x + (size - w) / 2, y: y + (size - h) / 2 + (h - fs * 0.7) / 2, size: fs, font: fonts.bold, color: rgb(1, 1, 1) });
 }
 
 function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string) {

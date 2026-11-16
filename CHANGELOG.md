@@ -96,6 +96,15 @@ last part is the date the version was tagged.
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included. Tested with
   four signers in four tabs.
+- **Demonstration until adopted; the adoption list.** Adoption is now a list built into
+  the program (`src/adoptions.json`), kept by the project owner: a state entry adopts every
+  county in that state, a county entry adopts one county. Everywhere else the page and
+  every PDF say "Demonstration system: not adopted by ... Not an official county form."
+  and the seal carries a DEMO band (until the adoption also approves the seal). The About
+  tab shows the list by state and county, and, where it isn't adopted, how to ask: the
+  county's recording office and governing board, a letter to send, and for a statewide
+  adoption, links to find your legislators and your state legislature (Open States) with
+  the steps and a letter.
 - **Signing rooms run on the project's own server, with Cloudflare as the backup.** Rooms
   use https://84-46-239-112.sslip.io first (no per-message cost) and move to the master
   site's Cloudflare relay on their own if it can't be reached; everyone tries them in the

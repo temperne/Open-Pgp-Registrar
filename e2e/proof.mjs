@@ -347,7 +347,7 @@ try {
   await p.close();
   check(
     '10. Change county from the header (Sign tab)',
-    heading === 'Maricopa County S.T.O.P. Initiative' && office === 'Maricopa County Recorder' && /Working for Maricopa County, Arizona/.test(bar) && /not yet adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
+    heading === 'Maricopa County S.T.O.P. Initiative' && office === 'Maricopa County Recorder' && /Working for Maricopa County, Arizona/.test(bar) && /not adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
     `chosen from the list; office "${office}"; heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
     [card],
   );
@@ -403,7 +403,7 @@ try {
     await again.close();
     check(
       '11. Settings from the link (with an embedded seal)',
-      heading === 'Yavapai County S.T.O.P. Program' && sealSrc === seal && /not yet adopted by Yavapai County/.test(cardText) && heading2 === heading,
+      heading === 'Yavapai County S.T.O.P. Program' && sealSrc === seal && /not adopted by Yavapai County/.test(cardText) && heading2 === heading,
       `heading "${heading}"; seal from the link; PDF names Yavapai County; "Copy a link" round-trips`,
       [card],
     );
@@ -483,7 +483,7 @@ try {
         copyHeading === 'Harris County S.T.O.P. Initiative' &&
         copyOffice === 'Harris County Clerk' &&
         copySeal === sealNow &&
-        /not yet adopted by Harris County/.test(cardText) &&
+        /not adopted by Harris County/.test(cardText) &&
         /harris-county-stop\.example\.workers\.dev/.test(cardText),
       `zip: ${files.join(', ')}; the copy opens as "${copyHeading}", office "${copyOffice}", Texas seal; its rooms connect only to its own address (the master site only over https, for the update check); its PDFs name Harris County and its address`,
       [zip, card],
@@ -1010,6 +1010,30 @@ try {
         newer.masterLink.startsWith(`${MASTER}/?`) &&
         /county=Harris\+County/.test(newer.masterLink),
       `the version is on line ${versionLine} of index.html; a county copy asks nothing until Sign together is turned on, then makes one request to the master site; a newer version is offered with the same settings (${newer.link.slice(0, 90)}...); an older one is not; the copy always offers signing together on the master site with its settings`,
+    );
+  }
+
+  // ---- 17. Demonstration until adopted: notice, DEMO band, and how to ask for adoption ----
+  {
+    const pg = await newPage();
+    const band = await pg.getAttribute('#seal-wrap', 'data-band');
+    const note = flat(await pg.textContent('#proposed-note'));
+    const adoptStatus = flat(await pg.textContent('#adopt-status'));
+    const countyLetter = await pg.inputValue('#adopt-county-letter');
+    const legislature = (await pg.getAttribute('#adopt-state-legislature', 'href')) ?? '';
+    await pg.close();
+    const cardText = flat(execFileSync('pdftotext', [keys.ann.card, '-']).toString());
+    check(
+      '17. Demonstration until adopted',
+      band === 'DEMO' &&
+        /Demonstration system: not adopted by Pima County, Arizona/.test(note) &&
+        /not adopted/.test(adoptStatus) &&
+        /Pima County Recorder/.test(countyLetter) &&
+        legislature === 'https://openstates.org/az/' &&
+        /\bDEMO\b/.test(cardText) &&
+        /Demonstration system: not adopted by Pima County/.test(cardText),
+      `no county is in the adoption list yet, so the page and its PDFs say "${note.slice(0, 70)}..." and the seal carries a DEMO band (also on the PDFs); the About tab shows the status and a letter to the Pima County Recorder, and links to the Arizona legislature (Open States)`,
+      [keys.ann.card],
     );
   }
 
