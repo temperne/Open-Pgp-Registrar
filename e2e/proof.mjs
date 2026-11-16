@@ -13,7 +13,8 @@
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -52,14 +53,14 @@ const flat = (s) => (s ?? '').replace(/\s+/g, ' ').trim();
 
 const browser = await chromium.launch();
 const errors = [];
-async function newPage() {
+async function newPage(url = APP) {
   const p = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
   p.on('pageerror', (e) => errors.push(e.message));
   p.on('dialog', (d) => d.accept());
   p.on('request', (r) => {
     if (!/^(file|blob|data):/.test(r.url())) errors.push(`network request: ${r.url()}`);
   });
-  await p.goto(APP);
+  await p.goto(url);
   return p;
 }
 async function save(p, selector, name) {
@@ -89,8 +90,8 @@ async function signUntilComplete(p) {
 }
 
 // Checks a document against a registration file; optionally downloads the filing.
-async function checkDocument(regFile, docFile, filing) {
-  const r = await newPage();
+async function checkDocument(regFile, docFile, filing, url = APP) {
+  const r = await newPage(url);
   await r.click('#tab-verify');
   await r.setInputFiles('#v-reg-file', regFile);
   await r.waitForFunction(() => /Proof of key possession(: every|: by sale| NOT)|error|not a registration/i.test(document.getElementById('v-reg-info').textContent), null, {
@@ -225,6 +226,17 @@ try {
 
   let c = await checkDocument(R0, D1, { name: '03-sale-1-filing-original-and-certificate.pdf', original: true });
   check('3. Recorder checks sale 1', /GOOD/.test(c.verdict), c.verdict, [c.filed]);
+  {
+    // The same registration and deed, on a site set to another county: refused.
+    const d1Text = flat(execFileSync('pdftotext', [D1, '-']).toString());
+    const r0Text = flat(execFileSync('pdftotext', ['-f', '2', R0, '-']).toString());
+    const other = await checkDocument(R0, D1, null, `${APP}?${new URLSearchParams({ county: 'Maricopa County' })}`);
+    check(
+      '3b. Another county\u2019s site refuses them',
+      /DOES NOT VERIFY/.test(other.verdict) && /JURISDICTION: Pima County, Arizona/i.test(d1Text) && /COUNTY/.test(d1Text) && /Pima County, Arizona/.test(r0Text),
+      `the registration and the deed name Pima County, Arizona in their signed text (and as a COUNTY barcode); a site set to Maricopa County says ${other.verdict}`,
+    );
+  }
   const F1 = c.filed;
   const F1both = (await checkDocument(R0, D1, { name: '03b-sale-1-filing-original-checked-copy-certificate.pdf', original: true, checked: true })).filed;
   const F1cert = (await checkDocument(R0, D1, { name: '03c-sale-1-filing-certificate-only.pdf' })).filed;
@@ -334,7 +346,8 @@ try {
   await loadKey(p, keys.ivy.priv);
   await p.click('#tab-sign');
   await p.click('#j-open');
-  await p.fill('#j-county', 'Maricopa County');
+  await p.selectOption('#j-county', 'Maricopa County');
+  const office = await p.inputValue('#j-recorder');
   await p.click('#j-apply');
   await p.waitForTimeout(300);
   const heading = flat(await p.textContent('h1'));
@@ -345,10 +358,34 @@ try {
   await p.close();
   check(
     '10. Change county from the header (Sign tab)',
-    heading === 'Maricopa County S.T.O.P. Initiative' && /Working for Maricopa County, Arizona/.test(bar) && /not yet adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
-    `heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
+    heading === 'Maricopa County S.T.O.P. Initiative' && office === 'Maricopa County Recorder' && /Working for Maricopa County, Arizona/.test(bar) && /not adopted by Maricopa County/.test(cardText) && !/Pima/.test(cardText),
+    `chosen from the list; office "${office}"; heading "${heading}"; PDF footer names Maricopa County, no "Pima"`,
     [card],
   );
+
+  // ---- 10b. Other states: the recording office and the county's own kind of name ----
+  {
+    const sp = await newPage();
+    await loadKey(sp, keys.ivy.priv);
+    await sp.click('#j-open');
+    await sp.selectOption('#j-state', 'Texas');
+    await sp.selectOption('#j-county', 'Harris County');
+    const tx = await sp.inputValue('#j-recorder');
+    await sp.selectOption('#j-state', 'Louisiana');
+    await sp.selectOption('#j-county', 'Orleans Parish');
+    const la = await sp.inputValue('#j-recorder');
+    await sp.click('#j-apply');
+    await sp.click('#tab-sign');
+    await sp.selectOption('#tpl', 'warranty');
+    const deedText = await sp.inputValue('#doc-text');
+    const progName = flat(await sp.textContent('h1'));
+    await sp.close();
+    check(
+      '10b. Recording offices and county names by state',
+      tx === 'Harris County Clerk' && la === 'Orleans Parish Clerk of Court' && /Orleans Parish, Louisiana/.test(deedText) && !/Parish County/.test(deedText) && progName === 'Orleans Parish S.T.O.P. Initiative',
+      `Texas: "${tx}"; Louisiana: "${la}"; the deed says "Orleans Parish, Louisiana"; program "${progName}"`,
+    );
+  }
 
   // ---- 11. Settings from the link, including a seal embedded in it ----
   {
@@ -377,7 +414,7 @@ try {
     await again.close();
     check(
       '11. Settings from the link (with an embedded seal)',
-      heading === 'Yavapai County S.T.O.P. Program' && sealSrc === seal && /not yet adopted by Yavapai County/.test(cardText) && heading2 === heading,
+      heading === 'Yavapai County S.T.O.P. Program' && sealSrc === seal && /not adopted by Yavapai County/.test(cardText) && heading2 === heading,
       `heading "${heading}"; seal from the link; PDF names Yavapai County; "Copy a link" round-trips`,
       [card],
     );
@@ -391,6 +428,795 @@ try {
     const msg = flat(await bad.textContent('#boot'));
     await bad.close();
     check('11. A seal at a web address is refused', /never loads images from other servers/.test(msg) && badRequests.length === 0, `"${msg.slice(0, 90)}"; requests: ${badRequests.length}`);
+  }
+
+  // ---- 13. Link builder, state seals, and "Download this county's program" ----
+  {
+    const pg = await newPage();
+    const pimaSeal = await pg.getAttribute('#brand-seal', 'src');
+    await pg.click('#j-open');
+    await pg.selectOption('#j-state', 'Texas');
+    await pg.selectOption('#j-county', 'Harris County');
+    const preview = await pg.getAttribute('#j-seal-preview', 'src');
+    await pg.click('#link-api summary');
+    await pg.selectOption('#lb-tab', 'register');
+    await pg.waitForTimeout(100);
+    const built = await pg.inputValue('#lb-out');
+    await pg.fill('#lb-host', 'https://harris-county-stop.example.workers.dev');
+    await pg.check('#lb-rooms');
+    const zip = await save(pg, '#lb-package', '13-harris-county-program.zip');
+    await pg.click('#j-apply');
+    const sealNow = await pg.getAttribute('#brand-seal', 'src');
+    await pg.close();
+    // The link it built opens with the same settings.
+    const lp = await browser.newPage();
+    await lp.goto(`${APP}${built.slice(built.indexOf('?'))}`);
+    const linkHeading = flat(await lp.textContent('h1'));
+    await lp.close();
+    // The package: unzip it and open its HTML.
+    const unz = join(WORK, 'pkg');
+    mkdirSync(unz);
+    execFileSync('unzip', ['-q', zip, '-d', unz]);
+    const dir = join(unz, readdirSync(unz)[0]);
+    const files = ['public/index.html', 'src/index.ts', 'wrangler.toml', 'package.json', 'README.md'].filter((f) => {
+      try {
+        readFileSync(join(dir, f));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const html = readFileSync(join(dir, 'public/index.html'), 'utf8');
+    const csp = /connect-src [^;"]*/.exec(html)?.[0] ?? '';
+    const cp = await browser.newPage({ acceptDownloads: true });
+    cp.on('pageerror', (e) => errors.push(e.message));
+    await cp.goto(pathToFileURL(join(dir, 'public/index.html')).href);
+    const copyHeading = flat(await cp.textContent('h1'));
+    const copySeal = await cp.getAttribute('#brand-seal', 'src');
+    await cp.click('#j-open');
+    const copyOffice = await cp.inputValue('#j-recorder');
+    await loadKey(cp, keys.ivy.priv);
+    const card = await save(cp, '#dl-card', '13-harris-county-copy-key-card.pdf');
+    await cp.close();
+    const cardText = flat(execFileSync('pdftotext', [card, '-']).toString());
+    check(
+      '13. State seal switches with the state',
+      preview !== pimaSeal && sealNow === preview && /^data:image\/png/.test(sealNow ?? ''),
+      'choosing a Texas county shows the Texas seal in the preview and the header',
+    );
+    check('13. Link builder', /county=Harris\+County|county=Harris%20County/.test(built) && built.endsWith('#register') && linkHeading === 'Harris County S.T.O.P. Initiative', `"${built.slice(0, 120)}..." opens as "${linkHeading}"`);
+    check(
+      '13. Download this county\u2019s program',
+      files.length === 5 &&
+        csp.includes('harris-county-stop.example.workers.dev') &&
+        csp.includes('wss://harris-county-stop.example.workers.dev') &&
+        !csp.includes('wss://pimastopinitiative') &&
+        copyHeading === 'Harris County S.T.O.P. Initiative' &&
+        copyOffice === 'Harris County Clerk' &&
+        copySeal === sealNow &&
+        /not adopted by Harris County/.test(cardText) &&
+        /harris-county-stop\.example\.workers\.dev/.test(cardText),
+      `zip: ${files.join(', ')}; the copy opens as "${copyHeading}", office "${copyOffice}", Texas seal; its rooms connect only to its own address (the master site only over https, for the update check); its PDFs name Harris County and its address`,
+      [zip, card],
+    );
+  }
+
+  // ---- 13b. A signed release: the maker names themselves, signs the program file, and posts a statement ----
+  {
+    const pg = await newPage();
+    await loadKey(pg, keys.ivy.priv);
+    await pg.click('#j-open');
+    await pg.selectOption('#j-state', 'Texas');
+    await pg.selectOption('#j-county', 'Harris County');
+    await pg.click('#link-api summary');
+    await pg.fill('#lb-host', 'https://harris-county-stop.example.workers.dev');
+    await pg.fill('#lb-pub-name', 'Harris County Clerk Office');
+    await pg.fill('#lb-pub-title', 'Chief Deputy Clerk');
+    await pg.fill('#lb-pub-site', 'https://clerk.example.gov/stop');
+    await pg.check('#lb-sign');
+    const zip = await save(pg, '#lb-package', '13b-signed-program.zip');
+    const statement = await save(pg, '#lb-statement', '13b-release-statement.pdf');
+    await pg.close();
+    const unz = join(WORK, 'pkg-signed');
+    mkdirSync(unz);
+    execFileSync('unzip', ['-q', zip, '-d', unz]);
+    const dir = join(unz, readdirSync(unz)[0]);
+    const htmlPath = join(dir, 'public/index.html');
+    const sha = createHash('sha256').update(readFileSync(htmlPath)).digest('hex');
+    const zipSha = createHash('sha256').update(readFileSync(zip)).digest('hex');
+    const stText = flat(execFileSync('pdftotext', [statement, '-']).toString()).replace(/\s+/g, '');
+    // Stock GnuPG, with the files in the zip.
+    const home = join(WORK, 'gnupg-release');
+    mkdirSync(home, { mode: 0o700 });
+    const gpg = (...a) => execFileSync('gpg', ['--homedir', home, '--batch', ...a], { stdio: ['ignore', 'pipe', 'pipe'] });
+    gpg('--import', join(dir, 'publisher-key.asc'));
+    let gpgOk = false;
+    try {
+      gpg('--verify', join(dir, 'index.html.sig'), htmlPath);
+      gpgOk = true;
+    } catch {
+      gpgOk = false;
+    }
+    // The program's own check, with only the file and the statement (its key is attached).
+    const tampered = join(WORK, 'index-tampered.html');
+    writeFileSync(tampered, readFileSync(htmlPath, 'utf8').replace('Harris County', 'Harris  County'));
+    const binCheck = async (file) => {
+      const r = await newPage();
+      await r.click('#tab-verify');
+      await r.click('#bin-check summary');
+      await r.setInputFiles('#bin-v-file', file);
+      await r.setInputFiles('#bin-v-sig', statement);
+      await r.click('#bin-v-btn');
+      await r.waitForSelector('#vr-banner strong', { timeout: 60000 });
+      const v = flat(await r.textContent('#vr-banner strong'));
+      const shown = flat(await r.textContent('#verify-result').catch(() => ''));
+      await r.close();
+      return { v, shown };
+    };
+    const good = await binCheck(htmlPath);
+    const bad = await binCheck(tampered);
+    const copy = await browser.newPage();
+    await copy.goto(pathToFileURL(htmlPath).href);
+    const pub = flat(await copy.textContent('#copy-publisher'));
+    await copy.close();
+    check(
+      '13b. Signed release statement',
+      gpgOk &&
+        stText.includes(sha) &&
+        stText.includes(zipSha) &&
+        stText.includes('HarrisCountyClerkOffice') &&
+        stText.includes('ChiefDeputyClerk') &&
+        /HarrisCountyClerkOffice,ChiefDeputyClerkreleasestheHarrisCountyS\.T\.O\.P\.Initiative/.test(stText) &&
+        /Howtouseit/.test(stText) &&
+        /UserGuide/.test(stText) &&
+        pages(statement) >= 15 &&
+        /GOOD/.test(good.v) &&
+        /DOES NOT VERIFY/.test(bad.v) &&
+        /Harris County Clerk Office/.test(pub),
+      `the statement says who releases which version for which county, what's new and how to use it, then the file's SHA-256 (${sha.slice(0, 16)}...) and the zip's, then the user guide (${pages(statement)} pages in all); gpg --verify index.html.sig passes; the program's check with only the file and the statement: ${good.v}; a changed file: ${bad.v}; the copy names its publisher`,
+      [zip, statement],
+    );
+  }
+
+  // ---- 12. Sign together, live: two owners in a signing room, through a test relay ----
+  {
+    const sockets = new Map(); // room -> Set of server-side routes
+    const seen = [];
+    const relay = async (page) => {
+      await page.routeWebSocket(/\/relay\//, (ws) => {
+        const id = new URL(ws.url()).pathname.split('/').pop();
+        const set = sockets.get(id) ?? new Set();
+        sockets.set(id, set);
+        for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+        set.add(ws);
+        ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+        ws.onMessage((m) => {
+          seen.push(String(m));
+          for (const other of set) if (other !== ws) other.send(m);
+        });
+        ws.onClose(() => set.delete(ws));
+      });
+    };
+    // Sign together works only on the program's exact address: serve the built file there
+    // (answered locally by the test; nothing goes to the internet).
+    const OFFICIAL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+    const html = readFileSync(DIST);
+    const atOfficial = async (page) => {
+      await page.route(`${OFFICIAL}**`, (r) => r.fulfill({ body: html, contentType: 'text/html' }));
+      await relay(page);
+      page.on('pageerror', (e) => errors.push(e.message));
+    };
+    // A saved copy (file://) can't sign together, even with a key unlocked.
+    const local = await newPage();
+    await loadKey(local, keys.ann.priv);
+    await local.click('#tab-sign');
+    const localBlocked = (await local.isDisabled('#room-enable')) && /works only on the program/.test(await local.textContent('#room-where'));
+    await local.close();
+    const a = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    await atOfficial(a);
+    await a.goto(OFFICIAL);
+    await loadKey(a, keys.ann.priv);
+    await loadSignRegistration(a, R0);
+    // Off until the terms are accepted and it is turned on.
+    const offFirst = (await a.isDisabled('#room-start')) && (await a.isDisabled('#room-enable'));
+    await a.check('#room-agree');
+    const agreedNotOn = (await a.isEnabled('#room-enable')) && (await a.isDisabled('#room-start'));
+    await a.check('#room-enable');
+    await a.click('#room-start');
+    await a.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const link = await a.inputValue('#room-link');
+    const b = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    await atOfficial(b);
+    await b.goto(link);
+    // Asked first, and not possible without an unlocked key.
+    const invited = (await b.isVisible('#room-invite-top')) && (await b.isDisabled('#room-enable'));
+    await loadKey(b, keys['bob-carol'].priv);
+    await b.click('#tab-sign');
+    await b.check('#room-agree');
+    await b.check('#room-enable');
+    await b.click('#room-join');
+    await b.waitForFunction(() => /2 tabs/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    await a.waitForFunction(() => /proven by their key/.test(document.getElementById('room-peers').textContent), null, { timeout: 30000 });
+    // Ann writes and signs; Bob and Carol's tab receives it and adds their signature.
+    await a.click('#tab-sign');
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#f-terms', 'For the bank.');
+    await a.click('#text-sign-btn');
+    await b.waitForFunction(() => /Not complete: 1 of 2/.test(document.getElementById('tr-status').textContent), null, { timeout: 30000 });
+    await b.click('#text-sign-btn');
+    await a.waitForFunction(() => /Complete/.test(document.getElementById('tr-status').textContent), null, { timeout: 30000 });
+    const roomDoc = await save(a, '#dl-instrument', '12-signed-together-in-a-room.pdf');
+    await a.close();
+    await b.close();
+    const leaked = seen.some((m) => /OWNERSHIP|222-33-4444|BEGIN PGP/i.test(m));
+    const c = await checkDocument(R0, roomDoc, null);
+    check(
+      '12. Sign together in a signing room',
+      localBlocked && link.startsWith(`${OFFICIAL}#room=`) && offFirst && agreedNotOn && invited && !leaked && /GOOD/.test(c.verdict),
+      `unavailable in a saved copy; on ${OFFICIAL} off until the terms of service and waiver are accepted and it is turned on, and only with an unlocked key; the link asks before joining; peers proven by their keys; ${seen.length} relay messages, all encrypted; the result checks ${c.verdict}`,
+      [roomDoc],
+    );
+  }
+
+  // ---- Signing rooms with more people, registrations and files (12b-12d), through a test relay ----
+  const OFFICIAL_URL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+  const roomSeen = [];
+  const roomSockets = new Map();
+  const distHtml = readFileSync(DIST);
+  async function roomTab() {
+    const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('dialog', (d) => d.accept());
+    await page.route(`${OFFICIAL_URL}**`, (r) => r.fulfill({ body: distHtml, contentType: 'text/html' }));
+    await page.routeWebSocket(/\/relay\//, (ws) => {
+      const id = new URL(ws.url()).pathname.split('/').pop();
+      const set = roomSockets.get(id) ?? new Set();
+      roomSockets.set(id, set);
+      for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+      set.add(ws);
+      ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+      ws.onMessage((m) => {
+        roomSeen.push(String(m));
+        for (const other of set) if (other !== ws) other.send(m);
+      });
+      ws.onClose(() => set.delete(ws));
+    });
+    return page;
+  }
+  /** Opens one tab per key, all in one room, each seeing the others proven by their keys. */
+  async function openRoom(ids, prepare, paste = false) {
+    const tabs = [];
+    let link = '';
+    for (const [i, id] of ids.entries()) {
+      const p = await roomTab();
+      // Joiners open the link, or (paste) already have the page open and paste the link in.
+      await p.goto(i && !paste ? link : OFFICIAL_URL);
+      await loadKey(p, keys[id].priv);
+      if (prepare) await prepare(p, i);
+      await p.click('#tab-sign');
+      await p.check('#room-agree');
+      await p.check('#room-enable');
+      if (i === 0) {
+        await p.click('#room-start');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+        link = await p.inputValue('#room-link');
+      } else if (paste) {
+        // The key is already unlocked, and stays: no reload.
+        await p.fill('#room-code', link);
+        await p.click('#room-code-join');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+      } else {
+        await p.click('#room-join');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+      }
+      tabs.push(p);
+    }
+    for (const p of tabs) {
+      await p.waitForFunction((n) => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length >= n, ids.length - 1, { timeout: 30000 });
+    }
+    const peerCounts = await Promise.all(tabs.map((p) => p.evaluate(() => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length)));
+    return { tabs, peerCounts };
+  }
+  const status = (p, id, re) => p.waitForFunction(([id, re]) => new RegExp(re).test(document.getElementById(id).textContent), [id, re], { timeout: 60000 });
+
+  // ---- 12b. Four signers, each in their own tab; two sign at the same moment ----
+  {
+    const ids = ['ann', 'bob-carol', 'dan-eve', 'acme'];
+    const { tabs, peerCounts } = await openRoom(ids);
+    const [a, b, c, d] = tabs;
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones, Carol Jones, Dan Lee, Eve Lee and Acme Holdings LLC');
+    await a.fill('#f-terms', 'A four-key agreement for the bank.');
+    await a.fill('#f-parcels', '333-44-5555');
+    await a.click('#text-sign-btn');
+    for (const p of [b, c, d]) await status(p, 'tr-status', '^1 signed');
+    await b.click('#text-sign-btn');
+    for (const p of [c, d]) await status(p, 'tr-status', '^2 signed');
+    // The third and fourth sign at the same moment: every tab must still end with all four.
+    await Promise.all([c.click('#text-sign-btn'), d.click('#text-sign-btn')]);
+    for (const p of tabs) await status(p, 'tr-status', '^4 signed');
+    await a.click('summary:has-text("For GnuPG users: signed text")');
+    const txt = await save(a, '#dl-text-txt', '12b-four-signers.txt');
+    const sig = await save(a, '#dl-text-sig', '12b-four-signers.txt.sig');
+    const roomDoc = await save(b, '#dl-instrument', '12b-four-signers-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    // Stock GnuPG: each of the four signatures verifies.
+    // A short home directory: gpg's agent socket path has a length limit.
+    const home = mkdtempSync(join(tmpdir(), 'stop-gpg-'));
+    for (const id of ids) {
+      const out = join(WORK, `card-${id}`);
+      mkdirSync(out);
+      execFileSync('pdfdetach', ['-saveall', '-o', out, keys[id].card]);
+      for (const f of readdirSync(out)) if (f.endsWith('.asc')) execFileSync('gpg', ['--homedir', home, '--batch', '--import', join(out, f)], { stdio: 'ignore' });
+    }
+    let out = '';
+    try {
+      out = execFileSync('gpg', ['--homedir', home, '--batch', '--status-fd', '1', '--verify', sig, txt], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+    } catch (e) {
+      out = String(e.stdout ?? '');
+    }
+    const good = (out.match(/^\[GNUPG:\] GOODSIG/gm) ?? []).length;
+    check(
+      '12b. Sign together with four signers',
+      peerCounts.every((n) => n === 3) && good === 4,
+      `four tabs (an individual, two groups, a company position) in one room, each seeing the other three proven by their keys; two signed at the same moment and every tab still ended with all 4 signatures; gpg --verify: ${good} good signatures`,
+      [roomDoc, txt, sig],
+    );
+  }
+
+  // ---- 12c. A registration signed together in a room ----
+  {
+    // The second key holder already has the page open with their key unlocked: they paste the room link.
+    // The person who starts the room works for Maricopa County: the room uses their settings.
+    const { tabs } = await openRoom(
+      ['ann', 'bob-carol'],
+      async (p, i) => {
+        if (i) return;
+        await p.click('#j-open');
+        await p.selectOption('#j-county', 'Maricopa County');
+        await p.click('#j-apply');
+        await p.waitForTimeout(300);
+      },
+      true,
+    );
+    const [a, b] = tabs;
+    const keptKey = /Unlocked/.test(await b.textContent('#key-status'));
+    await b.waitForFunction(() => /Settings from/.test(document.getElementById('room-settings-note').textContent), null, { timeout: 30000 });
+    const joinerBar = flat(await b.textContent('.jbar'));
+    const joinerNote = flat(await b.textContent('#room-settings-note'));
+    await b.click('#j-open');
+    const locked = !(await b.evaluate(() => document.getElementById('jurisdiction').open)) && /signing room/.test(await b.textContent('#boot'));
+    await a.click('#tab-register');
+    await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#reg-parcels', '444-55-6666');
+    // Nobody adds the other key by hand: the room offers it, and signing asks to add it (the test says yes).
+    const offer = flat(await a.textContent('#co-room'));
+    const offered = (await a.isVisible('#co-room')) && /Bob Jones/.test(offer);
+    const asked = [];
+    a.on('dialog', (dlg) => asked.push(dlg.message()));
+    await a.click('#reg-btn');
+    await status(a, 'reg-status', 'Not complete: 1 of 2');
+    await status(b, 'reg-status', 'Not complete: 1 of 2');
+    await b.click('#tab-register');
+    const owner = await b.inputValue('#reg-owner');
+    const cardMoved = await b.evaluate(() => !!document.querySelector('[data-room-slot="register"] #room-card'));
+    await b.click('#reg-btn');
+    for (const p of tabs) await status(p, 'reg-status', 'Complete');
+    const reg = await save(a, '#dl-reg', '12c-registration-signed-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    const r = await newPage();
+    await r.click('#tab-verify');
+    await r.setInputFiles('#v-reg-file', reg);
+    await r.waitForFunction(() => /Proof of key possession|error|not a registration/i.test(document.getElementById('v-reg-info').textContent), null, { timeout: 240000 });
+    const info = flat(await r.textContent('#v-reg-info'));
+    await r.close();
+    check(
+      '12c. A registration signed together in a room',
+      keptKey && /Maricopa County/.test(joinerBar) && /Ann Smith/.test(joinerNote) && locked && offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
+        owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
+      `the second key holder joined by pasting the room link into the page they had open (key still unlocked) and took the starter's settings ("${joinerBar}"; "${joinerNote.slice(0, 60)}..."), which they can't change while in the room; the room offered their proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
+      [reg],
+    );
+  }
+
+  // ---- 12d. A file signed together in a room ----
+  {
+    // A photo of about 200 KB, so its messages can be told apart by size even though encrypted.
+    const file = join(WORK, 'pet-addendum-photo.png');
+    execFileSync('convert', ['-size', '260x260', 'xc:', '+noise', 'Random', file]);
+    const big = () => roomSeen.filter((m) => m.length > 150_000).length;
+    const bigBefore = big();
+    const { tabs } = await openRoom(['ann', 'bob-carol'], async (p, i) => {
+      if (i === 0) await loadSignRegistration(p, R0);
+    });
+    const [a, b] = tabs;
+    await a.click('#tab-sign');
+    await a.setInputFiles('#src-file', file);
+    await a.waitForSelector('#src-clear:not([hidden])', { timeout: 60000 });
+    await a.fill('#doc-text', 'Photo of the pet addendum page: the tenant may keep one small dog. Signed by the owners of record.');
+    await a.check('#parcel-ready');
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', 'Not complete: 1 of 2');
+    const gotFile = flat(await b.textContent('#src-info'));
+    await b.click('#text-sign-btn');
+    for (const p of tabs) await status(p, 'tr-status', 'Complete');
+    const pkgPdf = await save(b, '#dl-instrument', '12d-file-signed-in-a-room.pdf');
+    await a.waitForTimeout(1500);
+    const bigWhileSigning = big() - bigBefore;
+    // Someone joins afterwards: they ask for the file once, and one tab sends it.
+    const late = await roomTab();
+    await late.goto(OFFICIAL_URL);
+    await loadKey(late, keys.ivy.priv);
+    await late.click('#tab-sign');
+    await late.check('#room-agree');
+    await late.check('#room-enable');
+    await late.fill('#room-code', await a.inputValue('#room-link'));
+    await late.click('#room-code-join');
+    await late.waitForFunction(() => /pet-addendum-photo/.test(document.getElementById('src-info').textContent), null, { timeout: 30000 });
+    await late.waitForTimeout(2500);
+    const bigAfterJoin = big() - bigBefore - bigWhileSigning;
+    for (const p of [...tabs, late]) await p.close();
+    const c = await checkDocument(R0, pkgPdf, null);
+    check(
+      '12d. A file signed together in a room',
+      /pet-addendum-photo/.test(gotFile) && /GOOD/.test(c.verdict) && bigWhileSigning === 1 && bigAfterJoin === 1,
+      `the second owner's tab received the file itself ("${gotFile.slice(0, 50)}") and the first signature, added theirs, and the package checks ${c.verdict}; the ~200 KB file crossed the relay ${bigWhileSigning} time while both signed (then signatures only), and ${bigAfterJoin} more time for someone who joined afterwards and asked for it`,
+      [pkgPdf],
+    );
+    const leaked = roomSeen.some((m) => /PET ADDENDUM|small dog|OWNERSHIP|444-55-6666|BEGIN PGP/i.test(m));
+    check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
+  }
+
+  // ---- 12s. A sale in a signing room: the sellers sign, the buyer proves their key from their own tab ----
+  {
+    const { tabs } = await openRoom(['ann', 'bob-carol', 'ivy']);
+    const [a, b, buyer] = tabs;
+    await loadSignRegistration(a, R0);
+    await a.selectOption('#tpl', 'warranty');
+    // The buyer is in the room: the seller adds them from it, no key file needed.
+    await a.waitForSelector('#buyer-room:not([hidden]) button', { timeout: 30000 });
+    const offer = flat(await a.textContent('#buyer-room'));
+    await a.click('#buyer-room button');
+    await a.waitForFunction(() => /from the signing room/.test(document.getElementById('buyer-status').textContent), null, { timeout: 30000 });
+    const grantee = await a.inputValue('#f-grantee');
+    await a.fill('#f-legal', 'Lot 9, Example Tract.');
+    await a.fill('#f-consideration', '$10 and other value');
+    await a.waitForTimeout(1500);
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', '1 of 2');
+    await b.click('#text-sign-btn');
+    await status(a, 'tr-status', 'every owner');
+    await buyer.waitForTimeout(2000);
+    const label = flat(await buyer.textContent('#text-sign-btn'));
+    await buyer.click('#text-sign-btn', { timeout: 15000 });
+    for (const p of tabs) await status(p, 'tr-status', 'buyer key proven|Complete');
+    const done = flat(await a.textContent('#tr-status'));
+    for (const p of tabs) await p.close();
+    check(
+      '12s. A sale in a signing room',
+      /Add Ivy Chen as a buyer/.test(offer) && /Ivy Chen/.test(grantee) && /Prove my buyer key/.test(label) && /Complete/.test(done),
+      `the seller added the buyer from the room ("${offer}", no key file; grantee "${grantee}"), both sellers signed, the buyer's tab showed "${label}", and the deed ends "${done}"`,
+    );
+  }
+
+  // ---- 12p. Live editing in a room: the registration, the template and fields, both ways ----
+  {
+    const { tabs } = await openRoom(['ann', 'bob-carol']);
+    const [a, b] = tabs;
+    // Ann loads the parcel registration: it appears in Bob and Carol's tab.
+    await loadSignRegistration(a, R0);
+    await b.waitForFunction(() => /222-33-4444/.test(document.getElementById('s-reg-info').textContent), null, { timeout: 30000 });
+    const bReg = flat(await b.textContent('#s-reg-info'));
+    // Ann picks the template and a field; Bob and Carol fill in another; each sees the other's.
+    await a.selectOption('#tpl', 'warranty');
+    await a.fill('#f-grantee', 'Zed Buyer, a single man');
+    await b.waitForFunction(() => document.getElementById('tpl').value === 'warranty' && document.getElementById('f-grantee').value === 'Zed Buyer, a single man', null, { timeout: 30000 });
+    await b.fill('#f-consideration', 'One hundred dollars');
+    await a.waitForFunction(() => document.getElementById('f-consideration').value === 'One hundred dollars', null, { timeout: 30000 });
+    const aText = await a.inputValue('#doc-text');
+    const bText = await b.inputValue('#doc-text');
+    // The Register tab too.
+    await a.click('#tab-register');
+    await b.click('#tab-register');
+    await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
+    await b.waitForFunction(() => document.getElementById('reg-owner').value === 'Ann Smith, Bob Jones and Carol Jones', null, { timeout: 30000 });
+    for (const p of tabs) await p.close();
+    check(
+      '12p. Live editing in a room',
+      /222-33-4444/.test(bReg) && /Zed Buyer/.test(aText) && /One hundred dollars/.test(aText) && aText === bText,
+      'one owner loaded the parcel registration and it appeared in the other’s tab; the template, a field typed in each tab, and the registration form’s owner field reached the other tab; both ended with the same deed text',
+    );
+  }
+
+  // ---- 12m. The meetup room: find people, invite a group, agree on the county, leave ----
+  {
+    const join = async (id, query = '') => {
+      const p = await roomTab();
+      await p.goto(`${OFFICIAL_URL}${query}`);
+      await loadKey(p, keys[id].priv);
+      await p.click('#tab-sign');
+      await p.check('#room-agree');
+      await p.check('#room-enable');
+      await p.fill('#meetup-contact', `${id}@example.com`);
+      await p.click('#meetup-join');
+      await p.waitForFunction(() => /In the meetup room/.test(document.getElementById('meetup-status').textContent), null, { timeout: 30000 });
+      return p;
+    };
+    const a = await join('ann');
+    const b = await join('bob-carol', `?${new URLSearchParams({ county: 'Maricopa County' })}`);
+    const c = await join('dan-eve');
+    const listed = (p, n) => p.waitForFunction((n) => document.querySelectorAll('#meetup-people input[type=checkbox]').length === n, n, { timeout: 30000 });
+    await listed(a, 2);
+    const aList = flat(await a.textContent('#meetup-people'));
+    await a.check('#meetup-mine');
+    await listed(a, 1);
+    const mineOnly = flat(await a.textContent('#meetup-people'));
+    await a.uncheck('#meetup-mine');
+    await listed(a, 2);
+    // Ann invites both to one signing room, for Pima County.
+    for (const box of await a.$$('#meetup-people input[type=checkbox]')) await box.check();
+    await a.click('#meetup-invite-selected');
+    for (const p of [b, c]) await p.waitForSelector('#meetup-invite:not([hidden])', { timeout: 30000 });
+    const bInvite = flat(await b.textContent('#meetup-invite-text'));
+    for (const p of [b, c]) await p.click('#meetup-accept');
+    await a.waitForFunction(() => (document.getElementById('room-peers').textContent.match(/proven by their key/g) ?? []).length >= 2, null, { timeout: 30000 });
+    await b.waitForFunction(() => /Settings from/.test(document.getElementById('room-settings-note').textContent), null, { timeout: 30000 });
+    const bBar = flat(await b.textContent('.jbar'));
+    // Dan and Eve leave the meetup room: their entry disappears from Ann's list at once.
+    await c.click('#meetup-leave');
+    await listed(a, 1);
+    const afterLeave = flat(await a.textContent('#meetup-people'));
+    for (const p of [a, b, c]) await p.close();
+    check(
+      '12m. Meetup room',
+      /Bob Jones and Carol Jones/.test(aList) &&
+        /Maricopa County, Arizona/.test(aList) &&
+        /bob-carol@example\.com/.test(aList) &&
+        /Dan Lee and Eve Lee/.test(mineOnly) &&
+        !/Bob Jones/.test(mineOnly) &&
+        /invites you to sign together, for Pima County, Arizona/.test(bInvite) &&
+        /switches from Maricopa County, Arizona to Pima County, Arizona/.test(bInvite) &&
+        /Pima County, Arizona/.test(bBar) &&
+        !/Dan Lee/.test(afterLeave) &&
+        /Bob Jones/.test(afterLeave),
+      `three people in the meetup room, each listed with their key's name, county and contact, proven by their keys; "My county only" hid the Maricopa County couple; Ann invited both to one private room for Pima County, and the Maricopa County invitee was told their page would switch, accepted, and took Pima County ("${bBar}"); leaving removed Dan and Eve from Ann's list at once`,
+    );
+  }
+
+  // ---- 12e. A large file (several MB) goes through the room in parts, each under 1 MB ----
+  {
+    const file = join(WORK, 'survey-scan.png');
+    execFileSync('convert', ['-size', '1100x1100', 'xc:', '+noise', 'Random', file]);
+    const size = readFileSync(file).length;
+    const before = roomSeen.length;
+    const { tabs } = await openRoom(['ann', 'bob-carol'], async (p, i) => {
+      if (i === 0) await loadSignRegistration(p, R0);
+    });
+    const [a, b] = tabs;
+    await a.click('#tab-sign');
+    await a.setInputFiles('#src-file', file);
+    await a.waitForSelector('#src-clear:not([hidden])', { timeout: 60000 });
+    await a.fill('#doc-text', 'Scan of the boundary survey for the parcel, one page, signed by the owners of record.');
+    await a.check('#parcel-ready');
+    await a.click('#text-sign-btn');
+    await b.waitForFunction(() => /Not complete: 1 of 2/.test(document.getElementById('tr-status').textContent), null, { timeout: 120000 });
+    const gotFile = flat(await b.textContent('#src-info'));
+    await b.click('#text-sign-btn');
+    for (const p of tabs) await status(p, 'tr-status', 'Complete');
+    const pkgPdf = await save(b, '#dl-instrument', '12e-large-file-signed-in-a-room.pdf');
+    for (const p of tabs) await p.close();
+    const msgs = roomSeen.slice(before);
+    const largest = Math.max(...msgs.map((m) => m.length));
+    const parts = msgs.filter((m) => m.length > 400_000).length;
+    const c = await checkDocument(R0, pkgPdf, null);
+    check(
+      '12e. A large file through a room, in parts',
+      /survey-scan/.test(gotFile) && parts >= 3 && largest < 1_048_576 && /GOOD/.test(c.verdict),
+      `a ${(size / 1024 / 1024).toFixed(1)} MB scan went through the room in ${parts} encrypted parts (largest message ${(largest / 1024).toFixed(0)} KB, under Cloudflare's 1 MB), arrived whole (checked against its SHA-256), both signed, and the package checks ${c.verdict}`,
+      [pkgPdf],
+    );
+  }
+
+  // ---- 16. Failover: the project's server can't be reached; rooms move to Cloudflare ----
+  {
+    const BACKUP_URL = 'https://securerecorder.csproject.org/';
+    const seen = [];
+    const sockets = new Map();
+    let refused = 0;
+    const failTab = async (url) => {
+      const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('dialog', (d) => d.accept());
+      for (const u of [OFFICIAL_URL, BACKUP_URL]) await page.route(`${u}**`, (r) => r.fulfill({ body: distHtml, contentType: 'text/html' }));
+      await page.routeWebSocket(/\/relay\//, (ws) => {
+        const u = new URL(ws.url());
+        // The project's server is down: it refuses at once.
+        if (u.host === new URL(BACKUP_URL).host) {
+          refused++;
+          ws.close({ code: 1011, reason: 'unavailable' });
+          return;
+        }
+        const id = u.pathname.split('/').pop();
+        const set = sockets.get(id) ?? new Set();
+        sockets.set(id, set);
+        for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+        set.add(ws);
+        ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+        ws.onMessage((m) => {
+          seen.push(String(m));
+          for (const other of set) if (other !== ws) other.send(m);
+        });
+        ws.onClose(() => set.delete(ws));
+      });
+      await page.goto(url);
+      return page;
+    };
+    // Ann is on the program's address, Bob and Carol on the backup address.
+    const a = await failTab(OFFICIAL_URL);
+    await loadKey(a, keys.ann.priv);
+    await loadSignRegistration(a, R0);
+    await a.check('#room-agree');
+    await a.check('#room-enable');
+    await a.click('#room-start');
+    await a.waitForFunction(() => /backup relay/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const link = await a.inputValue('#room-link');
+    const b = await failTab(BACKUP_URL);
+    await loadKey(b, keys['bob-carol'].priv);
+    await b.click('#tab-sign');
+    const where = flat(await b.textContent('#room-where'));
+    await b.check('#room-agree');
+    await b.check('#room-enable');
+    await b.fill('#room-code', link);
+    await b.click('#room-code-join');
+    await b.waitForFunction(() => /2 tabs/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const bStatus = flat(await b.textContent('#room-status'));
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#f-terms', 'Signed through the backup relay.');
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', 'Not complete: 1 of 2');
+    await b.click('#text-sign-btn');
+    for (const p of [a, b]) await status(p, 'tr-status', 'Complete');
+    const doc = await save(a, '#dl-instrument', '16-signed-through-the-backup-relay.pdf');
+    await a.close();
+    await b.close();
+    const c = await checkDocument(R0, doc, null);
+    const leaked = seen.some((m) => /OWNERSHIP|BACKUP RELAY|BEGIN PGP/i.test(m));
+    check(
+      '16. Failover to the backup relay',
+      refused >= 2 && /program\u2019s server/.test(where) && /backup relay/.test(bStatus) && !leaked && /GOOD/.test(c.verdict),
+      `the project's server refused ${refused} connections; both tabs moved to Cloudflare's relay on their own (one loaded from the program's address, one from the project's server: "${where.slice(0, 70)}..."), signed together through it (${seen.length} messages, all encrypted), and the result checks ${c.verdict}`,
+      [doc],
+    );
+  }
+
+  // ---- 15. Update check: only once the person connects; offers the newest version with the same settings ----
+  {
+    const COPY = 'https://harris-county-stop.example.workers.dev/';
+    const MASTER = 'https://pimastopinitiative.jasonajensen.workers.dev';
+    const dist = readFileSync(DIST, 'utf8');
+    const end = dist.lastIndexOf('</head>');
+    const cfg = { name: 'Harris County S.T.O.P. Initiative', county: 'Harris County', state: 'Texas', recorderOffice: 'Harris County Clerk', projectUrl: COPY, relayUrl: COPY.slice(0, -1) };
+    const copyHtml = `${dist.slice(0, end)}<script type="application/json" id="stop-config">${JSON.stringify(cfg)}</script>${dist.slice(end)}`;
+    const visit = async (built) => {
+      const pg = await browser.newPage({ acceptDownloads: true });
+      pg.on('pageerror', (e) => errors.push(e.message));
+      const toMaster = [];
+      pg.on('request', (r) => {
+        if (r.url().startsWith(MASTER)) toMaster.push(r.url());
+      });
+      await pg.route(`${COPY}**`, (r) => r.fulfill({ body: copyHtml, contentType: 'text/html' }));
+      await pg.route(
+        (u) => u.href.startsWith(`${MASTER}/?check`),
+        (r) => r.fulfill({ body: `<!doctype html>\n<html lang="en">\n<head>\n    <!-- S.T.O.P. stop-version=v0.1.99999999 built=${built} -->\n`, contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' } }),
+      );
+      await pg.goto(COPY);
+      await loadKey(pg, keys.ivy.priv);
+      await pg.click('#tab-sign');
+      const masterLink = (await pg.getAttribute('#room-master-link', 'href')) ?? '';
+      const before = toMaster.length;
+      await pg.check('#room-agree');
+      await pg.check('#room-enable');
+      await pg.waitForTimeout(1500);
+      const offered = await pg.isVisible('#update-offer');
+      const link = offered ? ((await pg.getAttribute('#update-link', 'href')) ?? '') : '';
+      await pg.close();
+      return { before, after: toMaster.length, offered, link, masterLink };
+    };
+    const newer = await visit('2099-01-01T00:00:00Z');
+    const older = await visit('2000-01-01T00:00:00Z');
+    const versionLine = dist.split('\n').findIndex((l) => /stop-version=v/.test(l)) + 1;
+    check(
+      '15. Update check',
+      versionLine > 0 &&
+        versionLine <= 5 &&
+        newer.before === 0 &&
+        newer.after === 1 &&
+        newer.offered &&
+        newer.link.startsWith(`${MASTER}/?`) &&
+        /county=Harris\+County/.test(newer.link) &&
+        /recorder=Harris\+County\+Clerk/.test(newer.link) &&
+        !older.offered &&
+        newer.masterLink.startsWith(`${MASTER}/?`) &&
+        /county=Harris\+County/.test(newer.masterLink),
+      `the version is on line ${versionLine} of index.html; a county copy asks nothing until Sign together is turned on, then makes one request to the master site; a newer version is offered with the same settings (${newer.link.slice(0, 90)}...); an older one is not; the copy always offers signing together on the master site with its settings`,
+    );
+  }
+
+  // ---- 18. The user guide: a download on the About tab ----
+  {
+    const pg = await newPage();
+    const guide = await save(pg, '#dl-guide', '18-user-guide.pdf');
+    await pg.close();
+    const gText = flat(execFileSync('pdftotext', [guide, '-']).toString());
+    check(
+      '18. User guide',
+      pages(guide) >= 12 && /User Guide/.test(gText) && /Register your parcel/.test(gText) && /Check a document/.test(gText) && /Sign together/.test(gText),
+      `the About tab's "Download the user guide" gives a ${pages(guide)}-page guide with screenshots: key, registration, signing, signing together, checking, adoption, verifying the program`,
+      [guide],
+    );
+  }
+
+  // ---- 17. Demonstration until adopted: notice, DEMO band, and how to ask for adoption ----
+  {
+    const pg = await newPage();
+    const band = await pg.getAttribute('#seal-wrap', 'data-band');
+    const note = flat(await pg.textContent('#proposed-note'));
+    const adoptStatus = flat(await pg.textContent('#adopt-status'));
+    const countyLetter = await pg.inputValue('#adopt-county-letter');
+    const legislature = (await pg.getAttribute('#adopt-state-legislature', 'href')) ?? '';
+    await pg.close();
+    const cardText = flat(execFileSync('pdftotext', [keys.ann.card, '-']).toString());
+    check(
+      '17. Demonstration until adopted',
+      band === 'DEMO' &&
+        /Demonstration system: not adopted by Pima County, Arizona/.test(note) &&
+        /not adopted/.test(adoptStatus) &&
+        /Pima County Recorder/.test(countyLetter) &&
+        legislature === 'https://openstates.org/az/' &&
+        /\bDEMO\b/.test(cardText) &&
+        /Demonstration system: not adopted by Pima County/.test(cardText),
+      `no county is in the adoption list yet, so the page and its PDFs say "${note.slice(0, 70)}..." and the seal carries a DEMO band (also on the PDFs); the About tab shows the status and a letter to the Pima County Recorder, and links to the Arizona legislature (Open States)`,
+      [keys.ann.card],
+    );
+  }
+
+  // ---- 14. Usage analytics: asked first, loaded only if allowed ----
+  {
+    const OFFICIAL = 'https://pimastopinitiative.jasonajensen.workers.dev/';
+    const dist = readFileSync(DIST, 'utf8');
+    const end = dist.lastIndexOf('</head>');
+    // A test token, carried the way a county copy carries its settings.
+    const withToken = `${dist.slice(0, end)}<script type="application/json" id="stop-config">{"analyticsToken":"0123456789abcdef0123456789abcdef"}</script>${dist.slice(end)}`;
+    const visit = async (answer) => {
+      const pg = await browser.newPage();
+      const seen = [];
+      pg.on('request', (r) => {
+        if (!r.url().startsWith(OFFICIAL)) seen.push(r.url());
+      });
+      await pg.route(`${OFFICIAL}**`, (r) => r.fulfill({ body: withToken, contentType: 'text/html' }));
+      await pg.route('https://static.cloudflareinsights.com/**', (r) => r.fulfill({ body: '/* test beacon */', contentType: 'text/javascript' }));
+      await pg.goto(OFFICIAL);
+      await pg.waitForTimeout(500);
+      const asked = await pg.isVisible('#analytics-ask');
+      const before = seen.length;
+      if (answer) await pg.click(answer);
+      await pg.waitForTimeout(500);
+      const beacon = await pg.getAttribute('script[src*="cloudflareinsights"]', 'data-cf-beacon').catch(() => null);
+      await pg.close();
+      return { asked, before, after: [...seen], beacon };
+    };
+    const no = await visit('#analytics-no');
+    const yes = await visit('#analytics-yes');
+    const local = await newPage();
+    const localAsked = await local.isVisible('#analytics-ask');
+    await local.close();
+    check(
+      '14. Usage analytics asked first',
+      no.asked && no.before === 0 && no.after.length === 0 && yes.asked && yes.before === 0 && yes.after.every((u) => u.startsWith('https://static.cloudflareinsights.com/')) && yes.after.length >= 1 && /0123456789abcdef/.test(yes.beacon ?? '') && !localAsked,
+      `asked on the web, never in a saved copy; nothing loaded before an answer; "No thanks": no requests; "Allow": only ${yes.after.map((u) => new URL(u).host).join(', ') || 'none'}`,
+    );
   }
 
   check('No page errors or network requests', errors.length === 0, errors.length ? errors.slice(0, 3).join(' | ') : 'none');

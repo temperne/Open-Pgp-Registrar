@@ -1,3 +1,12 @@
+import { PRISTINE_HTML } from './pristine';
+/** A signing-room invitation in the link (#room=...), kept before tab changes rewrite the "#". */
+const INVITED_ROOM = (() => {
+  try {
+    return /^#room=([A-Za-z0-9_-]{20,})$/.exec(location.hash)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+})();
 import './style.css';
 import type * as openpgp from 'openpgp';
 import {
@@ -26,12 +35,17 @@ import {
   keyLabel,
   transferClause,
   describeKey,
+  sha256Hex,
   keyIdentity,
+  identityFromUserID,
   signRegistration,
   checkRegistrationProof,
   signHolderUpdate,
   checkHolderUpdate,
   registrationStatement,
+  jurisdictionLabel,
+  jurisdictionOf,
+  sameJurisdiction,
   toBase64,
   fromBase64,
   type Registration,
@@ -46,6 +60,11 @@ import {
 import {
   registrationPdf,
   signaturePagePdf,
+  onPdfProgress,
+  releaseStatementPdf,
+  pdfAttachments as releaseAttachments,
+  RELEASE_KEY_ATTACHMENT,
+  type ReleaseStatementInfo,
   printCopyPdf,
   privateKeyPdf,
   keyTextFromPdf,
@@ -62,6 +81,7 @@ import {
   holderUpdateFromPdf,
   proofFromSigs,
   type RegistrationDraft,
+  type DraftRegistration,
   publicKeyCardPdf,
   registrationsFromPdf,
   draftRegistration,
@@ -74,7 +94,13 @@ import {
   combinedFilingPdf,
   type CheckedFile,
 } from './pdf';
-import { BRAND, BRAND_DEFAULTS, applyJurisdiction, type Jurisdiction } from './brand';
+import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, refreshStatus, type Jurisdiction } from './brand';
+import { adoptionFor, adoptionsByState } from './adoption';
+import { SigningRoom, officialOrigin, officialOrigins, roomsAvailableHere, newMeetupKeys, sealFor, openFrom, type Peer, type RoomMessage } from './room';
+import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
+import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
+import { STATE_SEALS } from './seals';
+import { bestQr } from './codes';
 import { TEMPLATES, DISCLAIMER, type TemplateFields } from './templates';
 import { canonicalText, safeText } from './text';
 import { extractFile, extractImages, fileSignedText, parcelFilingStatement, needsDescription, looksImage, toPrintableImage, SUPPORTED_ALL, type ExtractedFile } from './extract';
@@ -126,6 +152,8 @@ interface State {
     proofs: Record<string, SignedText>;
     role?: RegistrationRole;
     interest?: string;
+    /** The county the registration is for, fixed when the first key holder signs. */
+    jurisdiction?: string;
   } | null;
 }
 /** Signature lines typed by hand (documents without a registration), instead of from the keys. */
@@ -172,6 +200,8 @@ function action(buttonId: string, handler: (btn: HTMLButtonElement) => Promise<v
     const old = btn.textContent;
     btn.disabled = true;
     btn.textContent = busyLabel;
+    // Long PDFs report their progress on the button.
+    onPdfProgress((m) => (btn.textContent = m));
     try {
       await handler(btn);
     } catch (err) {
@@ -184,6 +214,7 @@ function action(buttonId: string, handler: (btn: HTMLButtonElement) => Promise<v
       }
       if (!(err instanceof UserError)) console.error(err);
     } finally {
+      onPdfProgress(null);
       btn.disabled = false;
       btn.textContent = old;
     }
@@ -206,6 +237,10 @@ function need(value: string, message: string) {
 const TABS = ['about', 'key', 'register', 'sign', 'verify'] as const;
 type Tab = (typeof TABS)[number];
 
+function currentTab(): Tab {
+  return TABS.find((t) => !$(`panel-${t}`).hidden) ?? 'about';
+}
+
 function showTab(name: Tab, focus = false) {
   for (const t of TABS) {
     const on = t === name;
@@ -213,6 +248,8 @@ function showTab(name: Tab, focus = false) {
     $(`tab-${t}`).tabIndex = on ? 0 : -1;
     $(`panel-${t}`).hidden = !on;
   }
+  // Sign together works on the Register and Sign tabs: the room card goes with the tab.
+  document.querySelector(`[data-room-slot="${name}"]`)?.append($('room-card'));
   if (focus) $(`tab-${name}`).focus();
   try {
     if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
@@ -319,7 +356,12 @@ function isReplacement() {
 // ---------------------------------------------------------------------------
 function refresh() {
   showAutoSigners();
+  showRoomConsent();
   if (state.draft) renderDraft();
+  if (room?.ws) {
+    renderPeers();
+    void roomShare();
+  }
   const k = state.key;
   $('key-current').hidden = !k;
   $('key-choose').hidden = !!k;
@@ -582,6 +624,8 @@ function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
 }
 
 function renderCoOwners() {
+  setTimeout(schedulePrep);
+  if (room) showRoomKeys();
   const list = $('co-list');
   list.innerHTML = '';
   state.coOwners.forEach((k, i) => {
@@ -625,6 +669,28 @@ function regKeysFromForm(): openpgp.PublicKey[] {
   const mine = state.key!.toPublic();
   const others = state.coOwners.filter((c) => c.getFingerprint().toUpperCase() !== mine.getFingerprint().toUpperCase());
   return [mine, ...others];
+}
+
+/** Keys proven in the signing room that this registration doesn't list yet (before anyone signs). */
+function roomKeysMissing(): openpgp.PublicKey[] {
+  if (!room?.ws || !state.key || state.regDraft) return [];
+  const listed = new Set(regKeysFromForm().map((k) => k.getFingerprint().toUpperCase()));
+  return [...peers.values()].filter((p) => p.proven && !listed.has(p.fingerprint)).map((p) => p.key);
+}
+
+function showRoomKeys() {
+  const missing = roomKeysMissing();
+  const btn = $('co-room');
+  btn.hidden = !missing.length;
+  btn.textContent = `Add ${missing.length === 1 ? 'the key' : `the ${missing.length} keys`} of the signing room: ${missing.map((k) => describeKey(k)).join('; ')}`;
+}
+
+function addRoomKeys(keys: openpgp.PublicKey[]) {
+  state.coOwners.push(...keys);
+  renderCoOwners();
+  showRoomKeys();
+  $('co-status').className = 'hint ok';
+  $('co-status').textContent = `Added from the signing room (each proven by their key): ${keys.map((k) => describeKey(k)).join('; ')}. Each of them must sign.`;
 }
 
 function regRole(): RegistrationRole {
@@ -696,7 +762,16 @@ function renderRegDraft() {
   $('reg-next-hint').textContent = missing.length
     ? 'Give the PDF to the next key holder (they choose "Continue a registration" and load it), or let them sign on this computer.'
     : 'Print and file it. Every signer still signs in ink before a notary.';
+  // A tab whose key isn't on this registration (for example, from a signing room): say so plainly.
+  const mine = state.key?.getFingerprint().toUpperCase();
+  if (mine && !d.keys.some((k) => k.getFingerprint().toUpperCase() === mine)) {
+    $('reg-next-hint').textContent =
+      `Your key (${describeKey(state.key!)}) is not on this registration, so it doesn't need or take your signature. ` +
+      'If you are an owner, the person who started it must choose "Start over", add your key (in a signing room: "Add the keys of everyone in the signing room") and sign again.';
+  }
 }
+
+action('co-room', () => addRoomKeys(roomKeysMissing()));
 
 action(
   'reg-btn',
@@ -708,19 +783,30 @@ action(
     const role = regRole();
     need(input('reg-owner').value, role === 'lienholder' ? 'Enter the lien holder.' : 'Enter the owner(s) of record.');
     if (!state.regDraft) {
+      // People in the signing room aren't on the key list: being in the room doesn't make them owners, so ask.
+      const fromRoom = roomKeysMissing();
+      if (
+        fromRoom.length &&
+        confirm(
+          `${fromRoom.map((k) => describeKey(k)).join('; ')} ${fromRoom.length === 1 ? 'is' : 'are'} in the signing room but not on this registration. Add ${fromRoom.length === 1 ? 'that key' : 'their keys'}, so ${fromRoom.length === 1 ? 'they' : 'each of them'} must sign it too?\n\nOK: add and sign. Cancel: sign without them.`,
+        )
+      ) {
+        addRoomKeys(fromRoom);
+      }
       const parcels = splitParcels(need(textarea('reg-parcels').value, 'Enter the parcel number.'));
       const interest = role === 'lienholder' ? need(input('reg-interest').value, 'Describe the lien (its type and recording number).').trim() : undefined;
-      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest };
+      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest, jurisdiction: jurisdictionLabel(BRAND.county, BRAND.state) };
     }
     const d = state.regDraft;
     if (!d.keys.some((k) => k.getFingerprint().toUpperCase() === state.signer!.getFingerprint().toUpperCase())) {
       throw new UserError('Your key is not on this registration. Load one of its listed keys, or choose "Start over" above to begin a new registration.');
     }
     for (const parcel of d.parcels) {
-      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel], role: d.role, interest: d.interest });
+      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel], role: d.role, interest: d.interest, jurisdiction: d.jurisdiction });
     }
     lockRegistration();
     renderRegDraft();
+    void roomShare();
     $('reg-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
   'Signing...',
@@ -730,25 +816,10 @@ action(
   'dl-reg',
   async () => {
     const d = state.regDraft;
-    if (!d) return;
+    const draft = regDraftForPdf();
+    if (!d || !draft) return;
     const first = d.keys[0];
     const s = summarize(first);
-    const sigsOf = (p?: SignedText) =>
-      (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
-    const draft: RegistrationDraft = {
-      format: 'stop-registration-draft-1',
-      ownerName: input('reg-owner').value.trim(),
-      parcels: d.parcels.join('\n'),
-      propertyAddress: input('reg-property').value.trim(),
-      mailingAddress: input('reg-mailing').value.trim(),
-      county: input('reg-county').value.trim(),
-      replacement: isReplacement(),
-      previousFingerprint: input('reg-prev').value.trim(),
-      keys: d.keys.map((k) => k.armor()),
-      proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
-      role: d.role,
-      interest: d.interest,
-    };
     const pdf = await registrationPdf({
       ownerName: draft.ownerName,
       parcels: draft.parcels,
@@ -757,6 +828,7 @@ action(
       draft,
       role: d.role,
       interest: d.interest,
+      jurisdiction: d.jurisdiction,
       propertyAddress: draft.propertyAddress,
       mailingAddress: draft.mailingAddress,
       county: draft.county,
@@ -779,6 +851,103 @@ action(
   'Preparing PDF...',
 );
 
+/** The registration in progress, as the PDF embeds it (and a signing room shares it). */
+function regDraftForPdf(): RegistrationDraft | null {
+  const d = state.regDraft;
+  if (!d) return null;
+  const sigsOf = (p?: SignedText) =>
+    (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
+  return {
+    format: 'stop-registration-draft-1',
+    ownerName: input('reg-owner').value.trim(),
+    parcels: d.parcels.join('\n'),
+    propertyAddress: input('reg-property').value.trim(),
+    mailingAddress: input('reg-mailing').value.trim(),
+    county: input('reg-county').value.trim(),
+    replacement: isReplacement(),
+    previousFingerprint: input('reg-prev').value.trim(),
+    keys: d.keys.map((k) => k.armor()),
+    proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
+    role: d.role,
+    interest: d.interest,
+    jurisdiction: d.jurisdiction,
+  };
+}
+
+/** Takes up a registration in progress (from its PDF, or from another tab in a signing room). */
+async function loadRegDraft(draft: RegistrationDraft) {
+  // A registration for another county is signed for that county: refuse it here.
+  if (draft.jurisdiction && !sameJurisdiction(draft.jurisdiction, jurisdictionLabel(BRAND.county, BRAND.state))) {
+    throw new UserError(
+      `This registration is for ${draft.jurisdiction}, but this site is set to ${jurisdictionLabel(BRAND.county, BRAND.state)}. Change the county or state (top of the page) to ${draft.jurisdiction} to continue it.`,
+    );
+  }
+  const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+  const parcels = splitParcels(draft.parcels);
+  const proofs: Record<string, SignedText> = {};
+  const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
+  for (const p of parcels) {
+    const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest, jurisdiction: draft.jurisdiction }, draft.proofs[p] ?? []);
+    if (proof) proofs[p] = proof;
+  }
+  state.regDraft = { keys, parcels, proofs, role, interest: draft.interest, jurisdiction: draft.jurisdiction };
+  input('reg-role').value = role ?? 'owner';
+  input('reg-interest').value = draft.interest ?? '';
+  syncRegRole();
+  input('reg-owner').value = draft.ownerName;
+  textarea('reg-parcels').value = draft.parcels;
+  input('reg-property').value = draft.propertyAddress;
+  input('reg-mailing').value = draft.mailingAddress;
+  input('reg-county').value = draft.county;
+  input('reg-prev').value = draft.previousFingerprint;
+  document.querySelectorAll<HTMLInputElement>('input[name="reg-kind"]').forEach((r) => (r.checked = r.value === (draft.replacement ? 'replacement' : 'new')));
+  state.coOwners = keys.slice(1);
+  renderCoOwners();
+  lockRegistration();
+  renderRegDraft();
+  refresh();
+  return keys;
+}
+
+/** A registration from another tab in the room: take it up, or add its key holders' signatures to ours. */
+async function applyRoomReg(remote: RegistrationDraft) {
+  const status = $('room-status');
+  const d = state.regDraft;
+  if (!d) {
+    await loadRegDraft(remote);
+    const mine = state.key?.getFingerprint().toUpperCase();
+    const listed = !mine || state.regDraft!.keys.some((k) => k.getFingerprint().toUpperCase() === mine);
+    status.textContent = listed
+      ? `A registration from the room is open on the Register tab: signed by ${state.regDraft!.keys.length - regMissing().length} of ${state.regDraft!.keys.length} keys.`
+      : 'A registration from the room is open on the Register tab, but it doesn\u2019t list your key, so you can\u2019t sign it. The person who started it must choose "Start over" and add your key.';
+    return;
+  }
+  const keys = await Promise.all(remote.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
+  const parcels = splitParcels(remote.parcels);
+  const role = remote.role === 'lienholder' ? 'lienholder' : undefined;
+  const lien = (r?: string) => r === 'lienholder';
+  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || lien(role) !== lien(d.role) || (remote.interest ?? '') !== (d.interest ?? '') || (remote.jurisdiction ?? '') !== (d.jurisdiction ?? '')) {
+    status.textContent = 'Another tab in the room has a different registration open (other parcels or keys). Everyone must sign the same one: start over, or leave the room.';
+    return;
+  }
+  let changed = false;
+  for (const p of d.parcels) {
+    const theirs = await proofFromSigs({ parcel: p, keys: d.keys, role: d.role, interest: d.interest, jurisdiction: d.jurisdiction }, remote.proofs[p] ?? []);
+    const merged = await mergeSigned(d.proofs[p], theirs);
+    if (merged && merged !== d.proofs[p]) {
+      d.proofs[p] = merged;
+      changed = true;
+    }
+  }
+  if (changed) {
+    lockRegistration();
+    renderRegDraft();
+  }
+  const ours = d.parcels.reduce((n, p) => n + (d.proofs[p]?.signatures.length ?? 0), 0);
+  const theirs = d.parcels.reduce((n, p) => n + (remote.proofs[p]?.length ?? 0), 0);
+  if (ours > theirs) void roomShare();
+}
+
 $('reg-next').addEventListener('click', () => {
   state.key = null;
   state.signer = null;
@@ -798,30 +967,8 @@ input('reg-continue-file').addEventListener('change', async () => {
   try {
     const draft = await registrationDraftFromPdf(new Uint8Array(await f.arrayBuffer()));
     if (!draft) throw new Error('No registration in progress was found in that PDF. Load the registration PDF made by this tool.');
-    const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
-    const parcels = splitParcels(draft.parcels);
-    const proofs: Record<string, SignedText> = {};
-    const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
-    for (const p of parcels) {
-      const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest }, draft.proofs[p] ?? []);
-      if (proof) proofs[p] = proof;
-    }
-    state.regDraft = { keys, parcels, proofs, role, interest: draft.interest };
-    input('reg-role').value = role ?? 'owner';
-    input('reg-interest').value = draft.interest ?? '';
-    syncRegRole();
-    input('reg-owner').value = draft.ownerName;
-    textarea('reg-parcels').value = draft.parcels;
-    input('reg-property').value = draft.propertyAddress;
-    input('reg-mailing').value = draft.mailingAddress;
-    input('reg-county').value = draft.county;
-    input('reg-prev').value = draft.previousFingerprint;
-    document.querySelectorAll<HTMLInputElement>('input[name="reg-kind"]').forEach((r) => (r.checked = r.value === (draft.replacement ? 'replacement' : 'new')));
-    state.coOwners = keys.slice(1);
-    renderCoOwners();
-    lockRegistration();
-    renderRegDraft();
-    refresh();
+    const keys = await loadRegDraft(draft);
+    void roomShare();
     status.className = 'hint ok';
     status.textContent = `Loaded a registration signed by ${keys.length - regMissing().length} of ${keys.length} keys. Unlock your key and choose "Sign the registration with my key".`;
   } catch (err) {
@@ -948,6 +1095,7 @@ function sameKeys(a: openpgp.PublicKey[], b: openpgp.PublicKey[]) {
 
 /** The buyers' keys card: shown for sale deeds before anyone has signed. */
 function renderBuyerKeys() {
+  setTimeout(schedulePrep);
   const show = !!currentTemplate().buyerKeys && !state.draft && !state.source;
   $('buyer-keys').hidden = !show && !(state.draft && buyerKeys.length);
   const list = $('buyer-list');
@@ -964,6 +1112,29 @@ function renderBuyerKeys() {
     list.append(keyItem(k, state.draft ? undefined : remove));
   }
   input('buyer-file').disabled = !!state.draft || !state.signReg;
+  // People in the signing room, proven by their keys, who aren't sellers or buyers yet: one click each.
+  const roomBox = $('buyer-room');
+  roomBox.innerHTML = '';
+  const listed = new Set([...(state.signReg?.keys ?? []), ...buyerKeys].map((k) => k.getFingerprint().toUpperCase()));
+  const fromRoom = room?.ws && show && state.signReg ? [...peers.values()].filter((p) => p.proven && !listed.has(p.fingerprint)) : [];
+  roomBox.hidden = !fromRoom.length;
+  for (const p of fromRoom) {
+    const b = Object.assign(document.createElement('button'), {
+      type: 'button',
+      textContent: `Add ${identityFromUserID(p.userID).name || p.userID} as a buyer (from the signing room)`,
+      title: `Key ${formatFingerprint(p.fingerprint)}, proven in the signing room`,
+    });
+    b.addEventListener('click', () => {
+      if (buyerKeys.some((k) => k.getFingerprint().toUpperCase() === p.fingerprint)) return;
+      buyerKeys.push(p.key);
+      fillGrantee();
+      renderBuyerKeys();
+      syncTemplate();
+      $('buyer-status').className = 'hint ok';
+      $('buyer-status').textContent = `Added ${describeKey(p.key)} from the signing room (proven by their key). Check the fingerprint with the buyer.`;
+    });
+    roomBox.append(b);
+  }
   $('buyer-status').className = 'hint';
   if (!state.signReg && !state.draft) $('buyer-status').textContent = 'Load the parcel registration (above) first: the sellers’ registered keys hand the protection over.';
   else if ($('buyer-status').textContent?.startsWith('Load the parcel')) $('buyer-status').textContent = '';
@@ -1071,6 +1242,11 @@ syncTemplate();
 
 /** Locks the text once anyone has signed: every owner must sign exactly the same text. */
 /** The parcel filing statement, when "Ready this document for parcel filing" is ticked. */
+/** The signed line naming the county this document is for. */
+function jurisdictionLine() {
+  return `JURISDICTION: ${jurisdictionLabel(BRAND.county, BRAND.state)}.`;
+}
+
 function parcelStatement() {
   const parcel = state.signReg?.parcel;
   return parcel && input('parcel-ready').checked ? parcelFilingStatement(parcel, BRAND.county, BRAND.state) : '';
@@ -1129,7 +1305,8 @@ function lockDraft() {
 
 /** The registration a sale deed hands over: the parcel with the buyers' keys. */
 function buyerRegistration(): Registration | null {
-  return state.signReg?.parcel && buyerKeys.length ? { parcel: state.signReg.parcel, keys: buyerKeys } : null;
+  // The buyers' registration is for the same parcel in the same county as the sellers'.
+  return state.signReg?.parcel && buyerKeys.length ? { parcel: state.signReg.parcel, keys: buyerKeys, jurisdiction: state.signReg.jurisdiction } : null;
 }
 
 /** Buyers' keys that haven't proven possession yet (signed the new registration). */
@@ -1304,7 +1481,17 @@ input('s-holder-file').addEventListener('change', async () => {
   }
 });
 
+/** Refuses a registration or document made for another county than the one this site is set to. */
+function requireThisCounty(what: string, named: string | undefined) {
+  const site = jurisdictionLabel(BRAND.county, BRAND.state);
+  if (named && !sameJurisdiction(named, site)) {
+    throw new UserError(`This ${what} is for ${named}, but this site is set to ${site}. Change the county or state (top of the page) to ${named} to use it.`);
+  }
+}
+
 function useSignRegistration(regs: Registration[]) {
+  for (const r of regs) if (r.parcel) requireThisCounty('registration', r.jurisdiction);
+  setTimeout(schedulePrep);
   const sel = $<HTMLSelectElement>('s-reg-parcel');
   sel.innerHTML = '';
   const byParcel = new Map<string, Registration[]>();
@@ -1408,6 +1595,21 @@ function showSource() {
   $('doc-return-wrap').hidden = true;
   lockDraft();
   updateCount();
+  // A large file's text is signed whole and carried in the codes: say what that means first.
+  const chars = needsDescription(src) ? 0 : canonicalText(src.pages.join('\n\n')).length;
+  if (chars > LONG_TEXT) {
+    const note = Object.assign(document.createElement('span'), {
+      className: 'warn-text',
+      textContent: ` This file has ${chars.toLocaleString()} characters of text, all of which is signed and carried in the QR codes. Working out how many...`,
+    });
+    info.append(note);
+    void estimateCodes(canonicalText(src.pages.join('\n\n')), Math.max(1, state.signReg?.keys.length ?? 1)).then((codes) => {
+      note.textContent =
+        ` This file has ${chars.toLocaleString()} characters of text, all of which is signed and carried in about ${codes.toLocaleString()} QR codes ` +
+        `(about ${Math.ceil(codes / 15).toLocaleString()} printed pages of codes). It works, but building the PDF takes a while and the package is large: ` +
+        'for a file this size, consider signing a PDF of it, or a binary file signature (advanced) if it is only for third parties.';
+    });
+  }
 }
 
 function clearSource() {
@@ -1461,6 +1663,7 @@ input('continue-file').addEventListener('change', async () => {
         bytes: fromBase64(x.sig),
       }));
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
+      requireThisCounty('document', jurisdictionOf(signed.canonical));
       // The registration the document was started for: its owners are the ones who must sign.
       const embReg: Registration | null = embedded.registration ? await registrationFromDraft(embedded.registration) : null;
       const signedBy = new Set(embedded.signatures.map((x) => x.fingerprint.toUpperCase()));
@@ -1492,7 +1695,7 @@ input('continue-file').addEventListener('change', async () => {
       }
       buyerKeys = embBuyers;
       const buyerProof =
-        embReg?.parcel && embedded.buyerProof?.length ? await proofFromSigs({ parcel: embReg.parcel, keys: embBuyers }, embedded.buyerProof) : undefined;
+        embReg?.parcel && embedded.buyerProof?.length ? await proofFromSigs({ parcel: embReg.parcel, keys: embBuyers, jurisdiction: embReg.jurisdiction }, embedded.buyerProof) : undefined;
       setDraft({
         buyerProof,
         signed,
@@ -1511,8 +1714,10 @@ input('continue-file').addEventListener('change', async () => {
         return p.total > 0 && p.missing.length === 0;
       });
       const signed = await signedFromCodes(codes.join('\n'));
+      requireThisCounty('document', jurisdictionOf(signed.canonical));
       setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: true });
     }
+    void roomShare();
     const n = state.draft!.signed.signatures.length;
     status.className = 'hint ok';
     status.textContent =
@@ -1538,6 +1743,7 @@ action(
       if (d.buyerProof?.signatures.some((x) => x.fingerprint.toUpperCase() === me)) throw new UserError('This buyer key has already proven possession.');
       const buyerProof = await signRegistration(state.signer, { ...buyerReg, proof: d.buyerProof });
       setDraft({ ...d, buyerProof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+      void roomShare();
       $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
     }
@@ -1562,7 +1768,7 @@ action(
       // A file that does not name the parcel can still be signed: it is then for third
       // parties only (a tenant, buyer, bank), and the result says so.
       const statement = parcelStatement();
-      const full = fileSignedText(src, description, statement);
+      const full = fileSignedText(src, description, statement, jurisdictionLine());
       const signed = await signText(state.signer, full);
       setDraft({
         signed,
@@ -1581,7 +1787,8 @@ action(
         const flat = canonicalText(body).replace(/\s+/g, '');
         if (!buyerKeys.every((k) => flat.includes(k.getFingerprint().toUpperCase()))) body = `${body.trimEnd()}\n\n${transferClause(buyerKeys)}`;
       }
-      const text = statement ? `${statement}\n\n${body}` : body;
+      // The county it's for, signed with it: another county's site refuses it.
+      const text = [jurisdictionLine(), statement, body].filter(Boolean).join('\n\n');
       const title = input('doc-title').value.trim();
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
@@ -1595,10 +1802,884 @@ action(
       const signed = await signText(state.signer, fullText(title, text));
       setDraft({ signed, title, text, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: currentTemplate().recordable });
     }
+    void roomShare();
     $('text-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   },
   'Signing...',
 );
+
+// ---------------------------------------------------------------------------
+// Signing rooms (src/room.ts): sign together, live, through the encrypted relay
+// ---------------------------------------------------------------------------
+let room: SigningRoom | null = null;
+/** The public meetup room (see "The meetup room" below), kept apart from the signing room. */
+type MeetupProfile = { fpr: string; userID: string; county: string; contact: string; epk: string; ts: number };
+type MeetupPerson = { key: openpgp.PublicKey; userID: string; proven: boolean; profile?: MeetupProfile; seen: number };
+let meetup: SigningRoom | null = null;
+let meetupKeys: { pair: CryptoKeyPair; pub: string } | null = null;
+const people = new Map<string, MeetupPerson>();
+const selected = new Set<string>();
+let meetupQueue: Promise<void> = Promise.resolve();
+let pendingInvite: { from: string; name: string; secret: string; county: string } | null = null;
+const peers = new Map<string, Peer>();
+
+function renderPeers() {
+  showRoomKeys();
+  renderBuyerKeys();
+  const ul = $('room-peers');
+  ul.innerHTML = '';
+  const me = state.signer ?? state.key;
+  if (room?.ws && me) {
+    ul.append(
+      Object.assign(document.createElement('li'), {
+        textContent: `You: ${describeKey(me)} (${formatFingerprint(me.getFingerprint().toUpperCase()).slice(-24)})${state.signer ? '' : ', unlock your key to sign'}`,
+      }),
+    );
+  }
+  for (const p of peers.values()) {
+    const li = document.createElement('li');
+    li.append(
+      Object.assign(document.createElement('strong'), { textContent: identityFromUserID(p.userID).name || p.userID || '(no name)' }),
+      ` ${formatFingerprint(p.fingerprint).slice(-24)} `,
+      Object.assign(document.createElement('span'), {
+        className: p.proven ? 'proven' : 'error',
+        textContent: p.proven ? 'proven by their key' : 'NOT proven: could not show they hold this key',
+      }),
+    );
+    ul.append(li);
+  }
+}
+
+function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number, detail?: string) {
+  const el = $('room-status');
+  const connected = status === 'connected';
+  el.className = connected ? 'hint ok' : status === 'closed' && detail ? 'hint error' : 'hint';
+  el.textContent =
+    status === 'connecting'
+      ? 'Connecting to the signing room...'
+      : connected
+        ? `Connected (encrypted${room?.via ? ', through the backup relay' : ''}). ${tabs} tab${tabs === 1 ? '' : 's'} in the room, yours included.`
+        : (detail ?? (room ? 'Disconnected from the signing room.' : ''));
+  // Can't reach this copy's relay: fall back to the program's master site, same room
+  // (the room's key is in the link, so everyone who follows it meets there).
+  if (status === 'closed' && detail && room && officialOrigin() !== MASTER_URL) {
+    el.append(
+      ' Continue this room on the main site: ',
+      Object.assign(document.createElement('a'), { href: settingsLinkFor(MASTER_URL, `#room=${room.secret}`), textContent: `${MASTER_URL.replace(/^https:\/\//, '')} (same room)`, target: '_blank', rel: 'noopener' }),
+      '. Send that link to the others too.',
+    );
+  }
+  $('room-leave').hidden = !room || status === 'closed';
+  $('room-start').hidden = !!room && status !== 'closed';
+  $('room-share').hidden = !room || status === 'closed';
+  if (status === 'closed') {
+    peers.clear();
+    roomHost = null;
+  }
+  renderPeers();
+  showRoomConsent();
+  showRoomSettings();
+}
+
+/** Sends who we are (proven by our key) and the document so far. */
+async function roomShare(force = '', why: 'arrived' | 'someone-arrived' | 'update' = 'update') {
+  if (!room?.ws) return;
+  if (state.signer) await room.hello(state.signer);
+  if (room.host && state.signer) await room.shareSettings(state.signer, roomSettings());
+  // Before anyone signs, the forms as they are, for someone who just arrived.
+  if (why === 'someone-arrived' && (!state.draft || !state.regDraft)) await sendPrep(true);
+  // Having just arrived, what we have is already what the room has seen of us: nothing.
+  if (why === 'arrived') {
+    for (const el of prepFields()) prepSeen.set(el.id, fieldValue(el));
+    prepKeysSeen = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  }
+  const reg = regDraftForPdf();
+  if (reg) await room.send({ t: 'reg', reg });
+  const d = draftForPdf();
+  if (!d) return;
+  if (d.source) {
+    // A signed file: the others need the original to recreate the same package. It goes through
+    // the room once per file (by its SHA-256); after that only signatures travel. Someone who
+    // joins later asks for it ("need-file").
+    const hash = fileHashOf(d.source);
+    const size = roomFileSize();
+    const tooLarge = size > ROOM_FILE_LIMIT;
+    // The file itself follows in parts: when it's new to the room, or someone asked for it.
+    const sendNow = size > 0 && !tooLarge && (force === hash || roomFileSent !== hash);
+    await room.send({ t: 'state', draft: { ...d, fileHash: hash, fileSize: size, fileTooLarge: tooLarge, fileComing: sendNow } });
+    if (sendNow) {
+      roomFileSent = hash;
+      await sendFileParts(hash);
+    }
+    if (tooLarge) {
+      $('room-status').textContent = `This file is over ${ROOM_FILE_LIMIT / 1024 / 1024} MB, too large to pass through the room: send the others the PDF ("Sign exactly as others"). Signatures still go through the room.`;
+    }
+    return;
+  }
+  await room.send({ t: 'state', draft: d });
+}
+
+// ---- Live editing in a signing room, before anyone signs ----
+// Every change to the registration or document form reaches the others in the room: only
+// the fields that changed, so people editing different fields don't overwrite each other.
+// The field someone is typing in is never changed under them. Once anyone signs, the text
+// is settled and only signatures travel.
+
+/** The form fields that are shared (by id): the Sign and Register forms, minus files and the room's own. */
+function prepFields(): (HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)[] {
+  return [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('#text-form [id], #reg-form [id]')].filter(
+    (el) =>
+      /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) &&
+      (el as HTMLInputElement).type !== 'file' &&
+      !/^(room-|meetup-|long-ok|j-|lb-)/.test(el.id),
+  );
+}
+const fieldValue = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) =>
+  el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.value;
+/** What the room has already seen from us (or from them), field by field. */
+let prepSeen = new Map<string, string | boolean>();
+let prepKeysSeen = '';
+let applyingPrep = false;
+let prepTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Sends what changed (everything, with full = true, for someone who just joined). */
+async function sendPrep(full = false) {
+  if (!room?.ws || applyingPrep) return;
+  const fields: Record<string, string | boolean> = {};
+  for (const el of prepFields()) {
+    const v = fieldValue(el);
+    if (full || prepSeen.get(el.id) !== v) fields[el.id] = v;
+  }
+  const keysNow = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  const keysChanged = full || keysNow !== prepKeysSeen;
+  if (!Object.keys(fields).length && !keysChanged) return;
+  for (const [k, v] of Object.entries(fields)) prepSeen.set(k, v);
+  prepKeysSeen = keysNow;
+  await room.send({
+    t: 'prep',
+    fields,
+    ...(keysChanged
+      ? {
+          signReg: state.signReg ? draftRegistration(state.signReg) : null,
+          buyers: buyerKeys.map((k) => k.armor()),
+          coOwners: state.coOwners.map((k) => k.armor()),
+        }
+      : {}),
+  });
+}
+function schedulePrep() {
+  if (!room?.ws || applyingPrep) return;
+  if (prepTimer) clearTimeout(prepTimer);
+  prepTimer = setTimeout(() => void sendPrep(), 300);
+}
+for (const type of ['input', 'change']) {
+  document.addEventListener(type, (e) => {
+    const el = e.target as HTMLElement;
+    if (el?.id && el.closest('#text-form, #reg-form') && !/^(room-|meetup-|long-ok)/.test(el.id)) schedulePrep();
+  });
+}
+
+/** Someone else's changes, before anyone signs: applied as if typed here (the app reacts as usual). */
+async function applyPrep(m: Extract<RoomMessage, { t: 'prep' }>) {
+  applyingPrep = true;
+  try {
+    // The registration and keys first: the template and fields depend on them.
+    if (m.signReg !== undefined && !state.draft) {
+      const reg = m.signReg ? await registrationFromDraft(m.signReg as DraftRegistration) : null;
+      if (reg && !(state.signReg && sameKeys(reg.keys, state.signReg.keys) && parcelKey(reg.parcel) === parcelKey(state.signReg.parcel))) {
+        useSignRegistration([reg]);
+        $('s-reg-info').prepend(Object.assign(document.createElement('p'), { className: 'hint ok', textContent: 'Loaded from the signing room.' }));
+      }
+    }
+    if (m.buyers && !state.draft) {
+      buyerKeys = await Promise.all(m.buyers.map(async (a) => (await readAnyKey(a)).toPublic()));
+      renderBuyerKeys();
+    }
+    if (m.coOwners && !state.regDraft) {
+      state.coOwners = await Promise.all(m.coOwners.map(async (a) => (await readAnyKey(a)).toPublic()));
+      renderCoOwners();
+    }
+    // The template choice before its fields, then the rest.
+    const byId = new Map(prepFields().map((el) => [el.id, el]));
+    // The template first (it rebuilds the fields), the title and text last (so a template
+    // rebuild can't overwrite text someone edited by hand).
+    const rank = (id: string) => (id === 'tpl' ? 0 : id === 'doc-title' || id === 'doc-text' ? 2 : 1);
+    const ids = Object.keys(m.fields).sort((a, b) => rank(a) - rank(b));
+    for (const id of ids) {
+      const el = byId.get(id);
+      if (!el || el.disabled) continue;
+      const v = m.fields[id];
+      prepSeen.set(id, v);
+      if (document.activeElement === el) continue; // never under someone's cursor
+      if (el.closest('#text-form') && state.draft) continue; // signed: the text is settled
+      if (el.closest('#reg-form') && state.regDraft && /^(reg-parcels|reg-role|reg-interest)$/.test(id)) continue;
+      if (fieldValue(el) === v) continue;
+      if (typeof v === 'boolean') (el as HTMLInputElement).checked = v;
+      else el.value = v;
+      el.dispatchEvent(new Event(el.tagName === 'SELECT' || typeof v === 'boolean' ? 'change' : 'input', { bubbles: true }));
+    }
+    prepKeysSeen = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  } finally {
+    applyingPrep = false;
+  }
+}
+
+/** The SHA-256 of the file(s) being signed: the file goes through the room again only if this changes. */
+const fileHashOf = (src: { sha256: string[] }) => src.sha256.join(',');
+/** The file this tab last sent or received through the room (by hash). */
+let roomFileSent = '';
+/** A reply to someone asking for the file, waiting a moment in case another tab answers first. */
+let fileReply: ReturnType<typeof setTimeout> | null = null;
+/** When this tab last sent the file to someone who asked (it doesn't answer twice in a row). */
+let fileAnswered = 0;
+/** The file this tab asked the room for, and when (it asks once, again only if nothing comes). */
+let fileAsked = { hash: '', at: 0 };
+
+function roomFileSize() {
+  const src = state.source;
+  return (src?.pdf?.length ?? 0) + (src?.images ?? []).reduce((n, i) => n + i.bytes.length, 0);
+}
+function roomFiles(): RoomFiles {
+  const src = state.source;
+  if (!src || roomFileSize() > ROOM_FILE_LIMIT) return null;
+  return { pdf: src.pdf ? toBase64(src.pdf) : undefined, images: src.images?.map((i) => ({ name: i.name, format: i.format, b64: toBase64(i.bytes) })) };
+}
+
+/** Sends the file being signed to the room, in parts small enough for either relay. */
+async function sendFileParts(hash: string) {
+  const data = JSON.stringify(roomFiles());
+  const n = Math.max(1, Math.ceil(data.length / ROOM_FILE_PART));
+  for (let i = 0; i < n; i++) {
+    if (!room?.ws) return;
+    await room.send({ t: 'file-part', hash, i, n, data: data.slice(i * ROOM_FILE_PART, (i + 1) * ROOM_FILE_PART) });
+    if (n > 1) $('room-status').textContent = `Sending the file to the room: part ${i + 1} of ${n}.`;
+  }
+  if (n > 1) $('room-status').textContent = `Sent the file to the room (${n} parts).`;
+}
+
+/** Files arriving in parts, by hash. */
+const incoming = new Map<string, { parts: string[]; got: number; n: number }>();
+/** Files received whole and checked against their SHA-256, by hash. */
+const received = new Map<string, { pdf?: Uint8Array; images?: { name: string; format: 'png' | 'jpg'; bytes: Uint8Array }[] }>();
+/** A document from the room waiting for its file. */
+let pendingRemote: (DocumentDraft & RoomDraftExtras) | null = null;
+type RoomDraftExtras = { fileHash?: string; fileSize?: number; fileTooLarge?: boolean; fileComing?: boolean };
+
+async function receiveFilePart(m: Extract<RoomMessage, { t: 'file-part' }>) {
+  if (received.has(m.hash) || (state.source && fileHashOf(state.source) === m.hash)) return;
+  if (!(m.n >= 1 && m.n <= Math.ceil((ROOM_FILE_LIMIT * 1.4) / ROOM_FILE_PART) + 1 && m.i >= 0 && m.i < m.n && m.data.length <= ROOM_FILE_PART)) return;
+  // Someone is sending it: nobody else needs to answer a request for it.
+  if (fileReply) clearTimeout(fileReply);
+  fileReply = null;
+  fileAnswered = Date.now();
+  const f = incoming.get(m.hash) ?? { parts: [], got: 0, n: m.n };
+  incoming.set(m.hash, f);
+  if (f.parts[m.i] === undefined) {
+    f.parts[m.i] = m.data;
+    f.got++;
+  }
+  if (f.n > 1) $('room-status').textContent = `Receiving the file: part ${f.got} of ${f.n}.`;
+  if (f.got < f.n) return;
+  incoming.delete(m.hash);
+  const files = JSON.parse(f.parts.join('')) as RoomFiles;
+  const pdf = files?.pdf ? fromBase64(files.pdf) : undefined;
+  const images = files?.images?.map((i) => ({ name: i.name, format: i.format, bytes: fromBase64(i.b64) }));
+  // The file must be exactly the one that was signed.
+  const hashes = await Promise.all([...(pdf ? [pdf] : []), ...(images ?? []).map((i) => i.bytes)].map((b) => sha256Hex(b)));
+  if (hashes.join(',').toUpperCase() !== m.hash.toUpperCase()) {
+    $('room-status').textContent = 'A file from the room did not match its SHA-256 and was ignored.';
+    return;
+  }
+  received.set(m.hash, { pdf, images });
+  roomFileSent = m.hash;
+  if (pendingRemote && (pendingRemote.fileHash ?? fileHashOf(pendingRemote.source!)) === m.hash) {
+    const r = pendingRemote;
+    pendingRemote = null;
+    await applyRoomDraft(r);
+  }
+}
+
+/** This page's settings, as the room's host shares them (the same fields as a settings link). */
+function roomSettings() {
+  const b = BRAND as unknown as Record<string, string>;
+  const j: Record<string, string> = {};
+  for (const [, key] of LINK_KEYS) j[key] = String(b[key] ?? '');
+  // The seal travels with the settings (the person with the county sends it), unless it is a
+  // state seal, which every copy has built in.
+  const seal = $('brand-seal').getAttribute('src') ?? '';
+  const st = sealForState();
+  const shared = customLogo
+    ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`
+    : /^data:image\/(png|jpe?g);base64,/.test(seal) && seal.length < 400_000 && !(st && seal === `data:image/png;base64,${st.png}`)
+      ? seal
+      : '';
+  return JSON.stringify({ j, logo: shared });
+}
+
+/** Whose settings this tab follows (the room's host), once they arrive. */
+let roomHost: { fingerprint: string; name: string } | null = null;
+
+async function applyRoomSettings(m: Extract<RoomMessage, { t: 'settings' }>, r: SigningRoom) {
+  if (r.host) return; // the host sets them
+  const fpr = await r.checkSettings(m);
+  if (!fpr) return;
+  // The first proven person to share settings is the host; nobody else can change them.
+  const peer = peers.get(fpr);
+  if (!peer?.proven) return;
+  if (roomHost && roomHost.fingerprint !== fpr) return;
+  roomHost = { fingerprint: fpr, name: identityFromUserID(peer.userID).name || peer.userID };
+  const parsed = JSON.parse(m.settings) as { j?: Partial<Jurisdiction>; logo?: string };
+  const j: Partial<Jurisdiction> = {};
+  for (const [, key] of LINK_KEYS) {
+    const v = parsed.j?.[key];
+    if (typeof v === 'string' && v.trim()) j[key] = v;
+  }
+  const logo = parsed.logo ? sealFromDataUrl(parsed.logo) : null;
+  const b = BRAND as unknown as Record<string, string>;
+  const same = (Object.keys(j) as (keyof Jurisdiction)[]).every((k) => b[k] === j[k]) && !logo === !customLogo;
+  if (!same) useJurisdiction(j, logo);
+  showRoomSettings();
+}
+
+function showRoomSettings() {
+  const note = $('room-settings-note');
+  note.hidden = !room?.ws;
+  if (!room?.ws) return;
+  note.textContent = room.host
+    ? `Everyone in this room uses your settings: ${BRAND.name}, ${BRAND.county}, ${BRAND.state} (deeds recorded with the ${BRAND.recorderOffice}).`
+    : roomHost
+      ? `Settings from ${roomHost.name}, who started this room: ${BRAND.name}, ${BRAND.county}, ${BRAND.state} (deeds recorded with the ${BRAND.recorderOffice}). They stay while you are in the room.`
+      : 'Waiting for the settings of the person who started this room.';
+}
+
+/** The largest original file a room passes on. */
+// Up to 50 MB, sent in parts that stay under 1 MB per message after encryption, so they pass
+// either relay (the project's server, or Cloudflare). Larger files go by PDF.
+const ROOM_FILE_LIMIT = 50 * 1024 * 1024;
+const ROOM_FILE_PART = 512 * 1024;
+type RoomFiles = { pdf?: string; images?: { name: string; format: 'png' | 'jpg'; b64: string }[] } | null;
+
+/** The same signatures, merged: everyone's signatures over the same text. */
+async function mergeSigned(a: SignedText | undefined, b: SignedText | undefined) {
+  if (!a) return b;
+  if (!b) return a;
+  const seen = new Map<string, DocSignature>();
+  for (const x of [...a.signatures, ...b.signatures]) if (!seen.has(x.fingerprint.toUpperCase())) seen.set(x.fingerprint.toUpperCase(), x);
+  return seen.size === a.signatures.length ? a : assembleSigned(a.canonical, [...seen.values()]);
+}
+
+/** A document from another tab in the room: adopt it, or add its signatures to ours. */
+async function applyRoomDraft(remote: DocumentDraft & RoomDraftExtras) {
+  const status = $('room-status');
+  if (remote.source) {
+    const hash = remote.fileHash ?? fileHashOf(remote.source);
+    const have = !!state.source && fileHashOf(state.source) === hash;
+    if (!state.draft && !have) {
+      if (remote.fileTooLarge) {
+        status.textContent = 'Another tab is signing a file too large to pass through the room. Ask them for the PDF and load it under "Sign exactly as others".';
+        return;
+      }
+      // A text file is recreated from its text; a PDF or images need the file itself.
+      const got = remote.fileSize === 0 ? {} : received.get(hash);
+      if (!got) {
+        pendingRemote = remote;
+        // If the parts stop coming (the sender left), ask the room again.
+        setTimeout(() => {
+          if (pendingRemote === remote && !received.has(hash)) {
+            fileAsked = { hash: '', at: 0 };
+            incoming.delete(hash);
+            roomQueue = roomQueue.then(() => applyRoomDraft({ ...remote, fileComing: false }));
+          }
+        }, 20_000);
+        if (remote.fileComing || incoming.has(hash)) {
+          status.textContent = 'Receiving the file from the room...';
+        } else if (fileAsked.hash !== hash || Date.now() - fileAsked.at > 10_000) {
+          // We joined after the file went round: ask for it once (again only if nothing comes).
+          // Asked of the first signer (who loaded the file); the others answer only if they don't.
+          status.textContent = 'Getting the file from the room...';
+          fileAsked = { hash, at: Date.now() };
+          await room?.send({ t: 'need-file', hash, to: remote.signatures[0]?.fingerprint?.toUpperCase() });
+        }
+        return;
+      }
+      state.source = { ...remote.source, pdf: got.pdf, images: got.images };
+      showSource();
+    }
+    // The room has this file now: don't send it again unless it changes.
+    roomFileSent = hash;
+  }
+  const canonical = canonicalText(fullText(remote.title, remote.text));
+  const signed = await assembleSigned(
+    canonical,
+    remote.signatures.map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: new Date(x.signedAt), bytes: fromBase64(x.sig) })),
+  );
+  const reg = remote.registration ? await registrationFromDraft(remote.registration) : null;
+  const remoteBuyers = await Promise.all((remote.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
+  const remoteProof = reg?.parcel && remote.buyerProof?.length ? await proofFromSigs({ parcel: reg.parcel, keys: remoteBuyers, jurisdiction: reg.jurisdiction }, remote.buyerProof) : undefined;
+  const d = state.draft;
+  if (d) {
+    if (d.signed.canonical !== canonical) {
+      status.textContent = 'Another tab in the room has a different document open. Everyone must sign the same text: start over, or leave the room.';
+      return;
+    }
+    const merged = await mergeSigned(d.signed, signed);
+    const proof = await mergeSigned(d.buyerProof, remoteProof);
+    if (merged !== d.signed || proof !== d.buyerProof) {
+      setDraft({ ...d, signed: merged!, buyerProof: proof, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value });
+    }
+    // The sender is missing signatures we have (two signed at once): send ours back, so every tab ends with all of them.
+    if (merged!.signatures.length > signed.signatures.length || (proof?.signatures.length ?? 0) > (remoteProof?.signatures.length ?? 0)) void roomShare();
+    return;
+  }
+  if (reg && !sameKeys(reg.keys, state.signReg?.keys ?? [])) useSignRegistration([reg]);
+  buyerKeys = remoteBuyers;
+  setDraft({
+    signed,
+    buyerProof: remoteProof,
+    title: remote.title,
+    text: remote.text,
+    returnTo: remote.returnTo,
+    signers: remote.signers,
+    recordable: remote.recordable !== false,
+    source: remote.source,
+  });
+}
+
+const roomEvents = {
+  onStatus: roomStatus,
+  // Someone arrived: send them the forms as they are. Having just arrived ourselves, we take
+  // the room's forms instead of pushing ours.
+  onJoined: (_r: SigningRoom, newcomer?: boolean) => void roomShare('', newcomer ? 'arrived' : 'someone-arrived'),
+  // One message at a time: two signatures arriving together must both be merged, not race.
+  onMessage: (m: RoomMessage, r: SigningRoom) => {
+    roomQueue = roomQueue.then(() => handleRoomMessage(m, r));
+  },
+};
+let roomQueue: Promise<void> = Promise.resolve();
+async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
+  {
+    try {
+      if (m.t === 'ask') await roomShare();
+      else if (m.t === 'hello') {
+        const p = await r.checkHello(m);
+        peers.set(p.fingerprint, p);
+        renderPeers();
+      } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft & RoomDraftExtras);
+      else if (m.t === 'file-part') await receiveFilePart(m);
+      else if (m.t === 'prep') await applyPrep(m);
+      else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
+      else if (m.t === 'settings') await applyRoomSettings(m, r);
+      else if (m.t === 'need-file') {
+        // Someone joined after the file went round. The tab it was asked of answers at once; the
+        // others wait a few seconds and stand down if it arrives (they answer only if that tab left).
+        if (state.source && fileHashOf(state.source) === m.hash && !fileReply && Date.now() - fileAnswered > 5000) {
+          const mine = (state.signer ?? state.key)?.getFingerprint().toUpperCase();
+          fileReply = setTimeout(
+            () => {
+              fileReply = null;
+              fileAnswered = Date.now();
+              void roomShare(m.hash);
+            },
+            m.to && m.to === mine ? 0 : 3000 + Math.random() * 2000,
+          );
+        }
+      }
+    } catch (err) {
+      $('room-status').textContent = `A message from the room could not be used: ${(err as Error).message}`;
+    }
+  }
+}
+
+async function enterRoom(r: SigningRoom) {
+  room?.leave();
+  room = r;
+  peers.clear();
+  roomFileSent = '';
+  prepSeen = new Map();
+  prepKeysSeen = '';
+  input('room-link').value = r.link();
+  // The link as a QR code, for a phone in the same room.
+  const qr = bestQr(r.link());
+  $('room-qr').innerHTML = qr ? qrSvg(qr) : '';
+  r.connect();
+}
+
+/** A QR code as an inline SVG (drawn here, no image files). */
+function qrSvg(m: { size: number; dark(r: number, c: number): boolean }) {
+  let path = '';
+  for (let r = 0; r < m.size; r++) for (let c = 0; c < m.size; c++) if (m.dark(r, c)) path += `M${c + 4} ${r + 4}h1v1h-1z`;
+  const n = m.size + 8;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" role="img" aria-label="QR code of the room link"><rect width="${n}" height="${n}" fill="#fff"/><path d="${path}" fill="#000"/></svg>`;
+}
+
+// ---- Turning Sign together on: the page says where it was loaded from and where it would connect ----
+function showRoomConsent() {
+  const official = officialOrigin();
+  const here = roomsAvailableHere();
+  $('room-host').textContent = official.replace(/^https:\/\//, '');
+  let where = '';
+  try {
+    where = location.protocol === 'file:' ? 'a saved copy on this computer' : location.origin;
+  } catch {
+    where = 'an embedded preview';
+  }
+  const msg = $('room-where');
+  msg.innerHTML = '';
+  // A county copy with its own rooms: the original program's site can always coordinate instead.
+  const masterNote = $('room-master');
+  masterNote.innerHTML = '';
+  masterNote.hidden = official === MASTER_URL;
+  if (official !== MASTER_URL) {
+    masterNote.append(
+      'Or sign together on the original program\u2019s site, with this page\u2019s settings: ',
+      Object.assign(document.createElement('a'), {
+        id: 'room-master-link',
+        href: settingsLinkFor(MASTER_URL, room ? `#room=${room.secret}` : '#sign'),
+        textContent: MASTER_URL.replace(/^https:\/\//, ''),
+        target: '_blank',
+        rel: 'noopener',
+      }),
+      room ? ' (the same room: send the others that link too).' : '.',
+    );
+  }
+  if (here) {
+    const all = officialOrigins();
+    const relays = all.length > 1 ? `the program\u2019s relay server (${all[1]}), or its backup relay (${all[0]}) if that can\u2019t be reached` : `that same address`;
+    msg.textContent =
+      location.origin === official
+        ? `This page was loaded from ${official}, the program\u2019s own address. Sign together connects this tab to ${relays}, and only while you are in a room.`
+        : `This page was loaded from ${location.origin}, the program\u2019s server. Sign together connects this tab to ${relays}, and only while you are in a room.`;
+  } else {
+    // Only the program's own address can sign together: a copy elsewhere can't be trusted to.
+    msg.append(
+      `Sign together works only on the program\u2019s own address. This page was loaded from ${where}. To sign together, open `,
+      Object.assign(document.createElement('a'), { href: settingsLinkFor(official, INVITED_ROOM ? `#room=${INVITED_ROOM}` : '#sign'), textContent: official, rel: 'noopener' }),
+      ' and use it there.',
+    );
+  }
+  // A room is for key holders who accepted the terms: unlock your private key first, so the
+  // others see you proven by it, and agree to the terms of service and waiver of liability.
+  input('room-agree').disabled = !here;
+  const ready = here && !!state.signer && input('room-agree').checked;
+  input('room-enable').disabled = !ready;
+  if (!ready && input('room-enable').checked && !room) input('room-enable').checked = false;
+  $('room-need-key').hidden = !here || !!state.signer;
+  const on = input('room-enable').checked && ready;
+  ($('room-start') as HTMLButtonElement).disabled = !on;
+  ($('room-join') as HTMLButtonElement).disabled = !on;
+  ($('room-code-join') as HTMLButtonElement).disabled = !on || !!room?.ws;
+  ($('meetup-join') as HTMLButtonElement).disabled = !on || !!meetup?.ws;
+  $('room-paste').hidden = !!room?.ws;
+}
+input('room-agree').addEventListener('change', () => {
+  // Withdrawing agreement turns Sign together off (and leaves any room).
+  if (!input('room-agree').checked && input('room-enable').checked) {
+    input('room-enable').checked = false;
+    if (room) $('room-leave').click();
+  }
+  showRoomConsent();
+});
+input('room-enable').addEventListener('change', () => {
+  // Turning it off leaves any room.
+  if (!input('room-enable').checked && room) $('room-leave').click();
+  // The person chose to connect: a good moment to see if the program's site has a newer version.
+  if (input('room-enable').checked) void checkForUpdate();
+  showRoomConsent();
+});
+
+action('room-start', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  await enterRoom(await SigningRoom.create(roomEvents));
+  try {
+    history.replaceState(null, '', `#room=${room!.secret}`);
+  } catch {
+    /* sandboxed preview: the link is shown to copy */
+  }
+});
+action('room-join', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  $('room-invite-top').hidden = true;
+  const secret = INVITED_ROOM || /room=([A-Za-z0-9_-]+)/.exec(location.hash)?.[1];
+  if (!secret) throw new UserError('This link has no signing room in it.');
+  $('room-invite').hidden = true;
+  await enterRoom(await SigningRoom.open(secret, roomEvents));
+});
+input('room-code').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('room-code-join').click();
+});
+/** Joins a room from a pasted link or code, without reloading: the unlocked key and the work in progress stay. */
+action('room-code-join', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  const v = input('room-code').value.trim();
+  const secret = /room=([A-Za-z0-9_-]{20,})/.exec(v)?.[1] ?? (/^[A-Za-z0-9_-]{20,}$/.test(v) ? v : '');
+  if (!secret) throw new UserError('Paste the room link (it has "#room=" in it) or the code that follows "#room=".');
+  // A room lives at one address: a link to another copy's site is joined there.
+  const other = /^https?:\/\/[^/#?]+/i.exec(v)?.[0];
+  if (other && !officialOrigins().some((o) => o.toLowerCase() === other.toLowerCase())) {
+    throw new UserError(`That room is on ${other}, not this site. Open the link itself to join it there.`);
+  }
+  $('room-invite-top').hidden = true;
+  $('room-invite').hidden = true;
+  await enterRoom(await SigningRoom.open(secret, roomEvents));
+  input('room-code').value = '';
+  try {
+    history.replaceState(null, '', `#room=${secret}`);
+  } catch {
+    /* sandboxed preview */
+  }
+});
+// ---- The meetup room: find the people you sign with, and invite them to a private room ----
+const myFpr = () => (state.signer ?? state.key)?.getFingerprint().toUpperCase() ?? '';
+
+const meetupEvents = {
+  onStatus: (status: 'connecting' | 'connected' | 'closed', tabs: number, detail?: string) => {
+    const el = $('meetup-status');
+    el.className = status === 'connected' ? 'hint ok' : detail ? 'hint error' : 'hint';
+    el.textContent =
+      status === 'connecting'
+        ? 'Joining the meetup room...'
+        : status === 'connected'
+          ? `In the meetup room${meetup?.via ? ' (through the backup relay)' : ''}: ${tabs} tab${tabs === 1 ? '' : 's'}, yours included.`
+          : (detail ?? '');
+    if (status === 'closed') leftMeetup();
+  },
+  onJoined: () => void meetupAnnounce(),
+  onMessage: (m: RoomMessage, r: SigningRoom) => {
+    meetupQueue = meetupQueue.then(() => handleMeetup(m, r)).catch(() => undefined);
+  },
+};
+
+/** Who we are: proven by our key, with the county we work for and any contact details. */
+async function meetupAnnounce() {
+  if (!meetup?.ws || !state.signer || !meetupKeys) return;
+  await meetup.hello(state.signer);
+  const profile: MeetupProfile = {
+    fpr: myFpr(),
+    userID: describeKey(state.signer),
+    county: jurisdictionLabel(BRAND.county, BRAND.state),
+    contact: safeText(input('meetup-contact').value).trim().slice(0, 120),
+    epk: meetupKeys.pub,
+    ts: Date.now(),
+  };
+  const data = JSON.stringify(profile);
+  await meetup.send({ t: 'profile', data, sig: await meetup.signBlob(state.signer, 'MEETUP PROFILE', data) });
+}
+
+async function handleMeetup(m: RoomMessage, r: SigningRoom) {
+  const me = myFpr();
+  if (m.t === 'hello') {
+    const p = await r.checkHello(m);
+    if (p.fingerprint === me) return;
+    const was = people.get(p.fingerprint);
+    people.set(p.fingerprint, { key: p.key, userID: p.userID, proven: p.proven, profile: was?.profile, seen: Date.now() });
+  } else if (m.t === 'profile') {
+    const prof = JSON.parse(m.data) as MeetupProfile;
+    const who = people.get(String(prof.fpr).toUpperCase());
+    // Only a listing signed by the key that proved itself in this room counts.
+    if (!who?.proven || !(await r.verifyBlob(who.key, 'MEETUP PROFILE', m.data, m.sig))) return;
+    who.profile = { ...prof, fpr: prof.fpr.toUpperCase(), contact: safeText(prof.contact ?? '').slice(0, 120), county: safeText(prof.county ?? '') };
+    who.seen = Date.now();
+  } else if (m.t === 'bye') {
+    const who = people.get(m.from);
+    if (who && (await r.verifyBlob(who.key, 'MEETUP BYE', `${m.from}|${m.ts}`, m.sig))) {
+      people.delete(m.from);
+      selected.delete(m.from);
+    }
+  } else if (m.t === 'invite') {
+    if (m.to !== me || !meetupKeys) return;
+    const who = people.get(m.from);
+    if (!who?.proven || !who.profile?.epk || !(await r.verifyBlob(who.key, 'MEETUP INVITE', `${m.to}|${m.iv}|${m.ct}`, m.sig))) return;
+    const inv = (await openFrom(meetupKeys.pair, who.profile.epk, m.iv, m.ct)) as { secret: string; county: string };
+    if (!/^[A-Za-z0-9_-]{43}$/.test(inv.secret)) return;
+    const name = identityFromUserID(who.userID).name || who.userID;
+    pendingInvite = { from: m.from, name, secret: inv.secret, county: safeText(inv.county) };
+    const differs = !sameJurisdiction(inv.county, jurisdictionLabel(BRAND.county, BRAND.state));
+    $('meetup-invite-text').textContent =
+      `${name} (key ${formatFingerprint(m.from).slice(-24)}) invites you to sign together, for ${pendingInvite.county}. ` +
+      `Accepting agrees to that county for what you sign together` +
+      (differs ? `: this page switches from ${jurisdictionLabel(BRAND.county, BRAND.state)} to ${pendingInvite.county} (with its seal) while you are in the room.` : '.');
+    $('meetup-invite').hidden = false;
+    $('meetup-invite').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else if (m.t === 'invite-reply') {
+    if (m.to !== me) return;
+    const name = identityFromUserID(people.get(m.from)?.userID ?? '').name || 'Someone';
+    $('meetup-status').textContent = m.ok ? `${name} accepted and is joining your signing room.` : `${name} declined the invitation.`;
+  }
+  renderPeople();
+}
+
+function renderPeople() {
+  const ul = $('meetup-people');
+  ul.innerHTML = '';
+  const q = input('meetup-search').value.trim().toLowerCase();
+  const mine = jurisdictionLabel(BRAND.county, BRAND.state);
+  const list = [...people.entries()].filter(([fpr, p]) => {
+    if (!p.proven || !p.profile) return false;
+    if (input('meetup-mine').checked && !sameJurisdiction(p.profile.county, mine)) return false;
+    return !q || `${p.userID} ${fpr} ${p.profile.county} ${p.profile.contact}`.toLowerCase().includes(q);
+  });
+  for (const [fpr, p] of list) {
+    const li = document.createElement('li');
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', checked: selected.has(fpr) });
+    box.setAttribute('aria-label', `Select ${p.userID}`);
+    box.addEventListener('change', () => {
+      if (box.checked) selected.add(fpr);
+      else selected.delete(fpr);
+      renderInviteButton();
+    });
+    li.append(
+      box,
+      ' ',
+      Object.assign(document.createElement('strong'), { textContent: identityFromUserID(p.userID).name || p.userID }),
+      ` ${formatFingerprint(fpr).slice(-24)}  |  ${p.profile!.county}${p.profile!.contact ? `  |  ${p.profile!.contact}` : ''} `,
+      Object.assign(document.createElement('span'), { className: 'proven', textContent: 'proven by their key' }),
+    );
+    ul.append(li);
+  }
+  if (!list.length) {
+    ul.append(
+      Object.assign(document.createElement('li'), {
+        className: 'hint',
+        textContent: people.size ? 'Nobody matches.' : 'Nobody else is in the meetup room yet. Send someone the program’s address and ask them to join too.',
+      }),
+    );
+  }
+  renderInviteButton();
+}
+
+function renderInviteButton() {
+  let btn = document.getElementById('meetup-invite-selected') as HTMLButtonElement | null;
+  if (!btn) {
+    btn = Object.assign(document.createElement('button'), { type: 'button', id: 'meetup-invite-selected', className: 'primary' });
+    $('meetup-tools').append(Object.assign(document.createElement('div'), { className: 'actions' }), btn);
+    btn.addEventListener('click', () => void inviteSelected().catch((e) => ($('meetup-status').textContent = (e as Error).message)));
+  }
+  const n = [...selected].filter((f) => people.get(f)?.profile).length;
+  btn.textContent = n ? `Invite ${n === 1 ? 'the selected person' : `the ${n} selected people`} to sign together (for ${jurisdictionLabel(BRAND.county, BRAND.state)})` : 'Select people above to invite them';
+  btn.disabled = !n;
+}
+
+/** One private signing room for the group, with this page's county and seal; each person invited privately. */
+async function inviteSelected() {
+  if (!meetup?.ws || !state.signer || !meetupKeys) throw new UserError('Join the meetup room first.');
+  const targets = [...selected].map((f) => [f, people.get(f)] as const).filter(([, p]) => p?.profile?.epk);
+  if (!targets.length) return;
+  const county = jurisdictionLabel(BRAND.county, BRAND.state);
+  // We start the room, so it uses our settings (county, office, names, seal).
+  const r = await SigningRoom.create(roomEvents);
+  await enterRoom(r);
+  for (const [to, p] of targets) {
+    const sealed = await sealFor(meetupKeys.pair, p!.profile!.epk, { secret: r.secret, county });
+    const sig = await meetup.signBlob(state.signer, 'MEETUP INVITE', `${to}|${sealed.iv}|${sealed.ct}`);
+    await meetup.send({ t: 'invite', from: myFpr(), to, iv: sealed.iv, ct: sealed.ct, sig });
+  }
+  selected.clear();
+  renderPeople();
+  $('meetup-status').textContent = `Invited ${targets.length === 1 ? identityFromUserID(targets[0][1]!.userID).name || 'them' : `${targets.length} people`} to a private signing room for ${county}. They appear below the room when they accept.`;
+}
+
+action('meetup-join', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`The meetup room works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  meetupKeys = await newMeetupKeys();
+  meetup = await SigningRoom.meetup(meetupEvents);
+  meetup.connect();
+  $('meetup-join').hidden = true;
+  $('meetup-leave').hidden = false;
+  $('meetup-tools').hidden = false;
+  renderPeople();
+});
+
+/** Leaving removes our entry from everyone's list at once (a signed goodbye), then disconnects. */
+action('meetup-leave', async () => {
+  const m = meetup;
+  if (m?.ws && state.signer) {
+    const ts = Date.now();
+    await m.send({ t: 'bye', from: myFpr(), ts, sig: await m.signBlob(state.signer, 'MEETUP BYE', `${myFpr()}|${ts}`) });
+  }
+  meetup = null;
+  m?.leave();
+  leftMeetup();
+  $('meetup-status').textContent = 'You left the meetup room; your entry is gone from everyone\u2019s list.';
+});
+
+function leftMeetup() {
+  if (meetup?.ws) return;
+  meetup = null;
+  meetupKeys = null;
+  people.clear();
+  selected.clear();
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  $('meetup-join').hidden = false;
+  $('meetup-leave').hidden = true;
+  $('meetup-tools').hidden = true;
+  showRoomConsent();
+}
+
+action('meetup-accept', async () => {
+  const inv = pendingInvite;
+  if (!inv) return;
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  await meetup?.send({ t: 'invite-reply', from: myFpr(), to: inv.from, ok: true });
+  // The room's starter sends the county's settings and seal; this page takes them while in the room.
+  await enterRoom(await SigningRoom.open(inv.secret, roomEvents));
+  $('meetup-status').textContent = `Joined ${inv.name}\u2019s signing room, for ${inv.county}.`;
+});
+action('meetup-decline', async () => {
+  const inv = pendingInvite;
+  pendingInvite = null;
+  $('meetup-invite').hidden = true;
+  if (inv) await meetup?.send({ t: 'invite-reply', from: myFpr(), to: inv.from, ok: false });
+});
+
+input('meetup-search').addEventListener('input', renderPeople);
+input('meetup-mine').addEventListener('change', renderPeople);
+let contactTimer: ReturnType<typeof setTimeout> | null = null;
+input('meetup-contact').addEventListener('input', () => {
+  if (contactTimer) clearTimeout(contactTimer);
+  contactTimer = setTimeout(() => void meetupAnnounce(), 800);
+});
+// Listings refresh every minute; anyone not heard from in two and a half minutes is gone.
+setInterval(() => {
+  if (!meetup?.ws) return;
+  void meetupAnnounce();
+  const cutoff = Date.now() - 150_000;
+  for (const [f, p] of people) if (p.seen < cutoff) people.delete(f);
+  renderPeople();
+}, 60_000);
+
+action('room-leave', () => {
+  room?.leave();
+  room = null;
+  roomStatus('closed', 0);
+  try {
+    if (/room=/.test(location.hash)) history.replaceState(null, '', location.href.split('#')[0]);
+  } catch {
+    /* sandboxed preview */
+  }
+});
+action('room-copy', async () => {
+  try {
+    await navigator.clipboard.writeText(input('room-link').value);
+    $('room-status').textContent = 'Link copied. Send it privately: anyone with it can join the room.';
+  } catch {
+    input('room-link').select();
+    $('room-status').textContent = 'Select the link above and copy it.';
+  }
+});
 
 function draftForPdf(): DocumentDraft | undefined {
   const d = state.draft;
@@ -1669,7 +2750,7 @@ async function downloadInstrument() {
   const named = canonicalText(d.text).replace(/\s+/g, '');
   const transfer =
     state.signReg?.parcel && buyerKeys.length && buyerKeys.every((k) => named.includes(k.getFingerprint().toUpperCase()))
-      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys, proof: d.buyerProof }
+      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys, proof: d.buyerProof, jurisdiction: state.signReg.jurisdiction }
       : undefined;
   const pdf = await instrumentPdf({
     transfer,
@@ -1840,12 +2921,18 @@ $('v-use-mine').addEventListener('click', () => {
 action(
   'bin-v-btn',
   async () => {
-    if (!verifyRegs.length) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
     const file = input('bin-v-file').files?.[0];
     const sigFile = input('bin-v-sig').files?.[0];
     if (!file) throw new UserError('Choose the signed file, exactly as you received it.');
     if (!sigFile) throw new UserError('Choose its signature: the .sig file, or the verification page.');
     const sigBytes = new Uint8Array(await sigFile.arrayBuffer());
+    // A program release statement carries the publisher's key: use it when no registration is loaded.
+    let publisherKey: AnyKey | null = null;
+    if (!verifyRegs.length && isPdfBytes(sigBytes)) {
+      const att = (await releaseAttachments(sigBytes).catch(() => [])).find((a) => a.name === RELEASE_KEY_ATTACHMENT);
+      if (att) publisherKey = await readAnyKey(new TextDecoder().decode(att.data));
+    }
+    if (!verifyRegs.length && !publisherKey) throw new UserError('Load the owner\u2019s registration or public key card first (above).');
     let signature: Uint8Array;
     if (isPdfBytes(sigBytes) || isImage(sigFile)) {
       // The verification page: read its PGPSIG1 code.
@@ -1859,20 +2946,28 @@ action(
         throw new UserError('That is not a signature file. Load the .sig file, or the verification page.');
       });
     }
-    await checkBinary(file, signature);
+    await checkBinary(file, signature, publisherKey);
   },
   'Checking...',
 );
 
 /** Checks a binary-signed file against the loaded keys and shows the result. */
-async function checkBinary(file: File, signature: Uint8Array) {
-  const keys = mergeRegistrations(verifyRegs).keys;
+async function checkBinary(file: File, signature: Uint8Array, publisherKey: AnyKey | null = null) {
+  const keys = publisherKey ? [publisherKey] : mergeRegistrations(verifyRegs).keys;
   const r = await verifyBinaryFile({ signature, document: new Uint8Array(await file.arrayBuffer()), keys });
-  r.checks.push({
-    label: 'What this proves',
-    state: 'skipped',
-    detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
-  });
+  r.checks.push(
+    publisherKey
+      ? {
+          label: 'What this proves',
+          state: 'skipped',
+          detail: `That this exact file was signed by the key attached to the release statement (fingerprint ${publisherKey.getFingerprint().toUpperCase()}). Compare that fingerprint with the one the publisher gives elsewhere: anyone can make a statement with their own key.`,
+        }
+      : {
+          label: 'What this proves',
+          state: 'skipped',
+          detail: 'That this exact file was signed by the key(s) above. A binary file signature is for files sent directly to you; it is not used for filing with the Recorder.',
+        },
+  );
   lastCheck = null;
   checkedFiles = [file];
   $('cert-wrap').hidden = true;
@@ -2259,7 +3354,7 @@ action(
     if (payload.includes('PGPQ1|')) {
       // Paper filing: the codes carry the signed text.
       const registration = await registrationFor(payload);
-      r = await verifyScannedText({ scanned: payload, registration });
+      r = await verifyScannedText({ scanned: payload, registration, jurisdiction: jurisdictionLabel(BRAND.county, BRAND.state) });
       for (const f of scannedFiles) {
         r.checks.push({
           label: `Scanned copy: ${f.name}`,
@@ -2335,7 +3430,7 @@ action(
           signedText: r.signedText,
           codes: orderedCodes(payload),
         };
-        if (!input('c-agency').value) input('c-agency').value = `${BRAND.county} Recorder`;
+        if (!input('c-agency').value) input('c-agency').value = BRAND.recorderOffice;
         const parcel = /PARCEL NUMBERS?:\s*([0-9][0-9A-Z-]*(?:\s*,\s*[0-9][0-9A-Z-]*)*)/.exec(r.signedText);
         input('c-parcels').value = registration.parcel || (parcel ? parcel[1] : '');
         $('cert-wrap').hidden = false;
@@ -2419,6 +3514,31 @@ try {
 }
 $('frame-note').hidden = !framed;
 
+// A county's copy ("Download this county's program") carries its settings: they are its defaults.
+{
+  const cfg = bakedConfig();
+  if (cfg) {
+    const keys = ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority', 'relayUrl', 'analyticsToken'] as const;
+    for (const k of keys) {
+      const v = cfg[k];
+      if (typeof v === 'string' && (v.trim() || k === 'relayUrl')) {
+        BRAND[k] = v.trim();
+        BRAND_DEFAULTS[k] = v.trim();
+      }
+    }
+    // A copy can never claim the county adopted it: that takes the county's own source build.
+    // Adopted or a demonstration, from the adoption list built into this copy.
+    refreshStatus();
+    Object.assign(BRAND_DEFAULTS, { status: BRAND.status, sealApproved: BRAND.sealApproved, proposedNotice: BRAND.proposedNotice });
+    document.querySelectorAll<HTMLElement>('[data-copy-of]').forEach((el) => (el.hidden = false));
+    $('copy-of').textContent = `${BRAND.county}, ${BRAND.state} (a copy made from ${cfg.madeFrom ?? 'the S.T.O.P. tool'})`;
+    if (typeof cfg.publisher === 'string' && cfg.publisher.trim()) {
+      document.querySelectorAll<HTMLElement>('[data-publisher]').forEach((el) => (el.hidden = false));
+      $('copy-publisher').textContent = `${safeText(cfg.publisher)} (check the file against their signed release statement)`;
+    }
+  }
+}
+
 // Branding (src/brand.ts) and the seal embedded in index.html. Re-run when the
 // jurisdiction is overridden ("Use this tool for another county or state").
 let defaultSeal: { bytes: Uint8Array; src: string } | null = null;
@@ -2436,13 +3556,27 @@ let customLogo: { bytes: Uint8Array; type: string } | null = null;
   }
 }
 
+/**
+ * The seal to show when no logo was uploaded: the build's own seal while the county is
+ * still its default (Pima County, or a county copy's own), otherwise the chosen state's
+ * seal (src/seals.ts), if there is one.
+ */
+function sealForState(state = BRAND.state, county = BRAND.county) {
+  if (county === BRAND_DEFAULTS.county && state === BRAND_DEFAULTS.state && defaultSeal) return null;
+  return STATE_SEALS[state] ?? null;
+}
+
 function applyBrandToPage() {
   document.title = `${BRAND.name} (${BRAND.expansion})`;
   document.querySelectorAll<HTMLElement>('[data-brand]').forEach((el) => {
     const v = BRAND[el.dataset.brand as keyof typeof BRAND];
     if (typeof v === 'string') el.textContent = v;
   });
-  $('proposed-note').hidden = BRAND.status !== 'proposed';
+  $('proposed-note').hidden = BRAND.status !== 'demo';
+  const band = BRAND.sealApproved ? '' : BRAND.status === 'adopted' ? 'SEAL NOT APPROVED' : 'DEMO';
+  if (band) $('seal-wrap').dataset.band = band;
+  else delete $('seal-wrap').dataset.band;
+  showAdoption();
   const holder = $('project-url');
   holder.textContent = '';
   if (/^https?:\/\//.test(BRAND.projectUrl)) {
@@ -2451,10 +3585,16 @@ function applyBrandToPage() {
     holder.textContent = BRAND.projectUrl;
   }
   const seal = $<HTMLImageElement>('brand-seal');
+  const stateSeal = sealForState();
   if (customLogo) {
     seal.src = `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`;
     seal.hidden = false;
     setBrandSeal(customLogo.bytes);
+  } else if (stateSeal) {
+    seal.src = `data:image/png;base64,${stateSeal.png}`;
+    seal.alt = `Seal of ${BRAND.state}`;
+    seal.hidden = false;
+    setBrandSeal(fromBase64Text(stateSeal.png));
   } else if (defaultSeal) {
     seal.src = defaultSeal.src;
     seal.hidden = false;
@@ -2469,19 +3609,82 @@ applyBrandToPage();
 // ---- Use this tool for another county or state ----
 // Prominent: a button in the page header (and the seal itself) opens the panel, on any tab.
 function openJurisdiction() {
+  if (settingsLockedByRoom()) {
+    banner(`You are in a signing room: its settings come from ${roomHost?.name ?? 'the person who started it'}. Leave the room to change them.`);
+    $('boot').className = 'callout';
+    return;
+  }
   const d = $('jurisdiction') as HTMLDetailsElement;
   d.open = true;
   d.scrollIntoView({ behavior: 'smooth', block: 'start' });
   input('j-county').focus({ preventScroll: true });
 }
 $('j-open').addEventListener('click', openJurisdiction);
+$('jurisdiction').addEventListener('toggle', () => {
+  const d = $('jurisdiction') as HTMLDetailsElement;
+  if (d.open && settingsLockedByRoom()) {
+    d.open = false;
+    openJurisdiction();
+  }
+});
 $('brand-seal').addEventListener('click', openJurisdiction);
 $('brand-seal').title = 'Change the county, state or logo';
+// State and county selectors (src/counties.ts: every U.S. county, from the Census Bureau).
+const stateSelect = $<HTMLSelectElement>('j-state');
+const countySelect = $<HTMLSelectElement>('j-county');
+for (const code of Object.keys(STATES).sort((a, b) => STATES[a].name.localeCompare(STATES[b].name))) {
+  stateSelect.append(new Option(STATES[code].name, STATES[code].name));
+}
+/** Fills the county list for the chosen state (keeping a county from a link even if it isn't listed). */
+function fillCounties(selected: string) {
+  const list = countiesOf(stateCode(stateSelect.value));
+  countySelect.innerHTML = '';
+  for (const c of list) countySelect.append(new Option(c, c));
+  if (selected && !list.includes(selected)) countySelect.append(new Option(selected, selected));
+  countySelect.value = selected && [...countySelect.options].some((o) => o.value === selected) ? selected : (list[0] ?? '');
+}
+/** The county the form's names were last filled from (they follow it until typed differently). */
+let formCounty = BRAND.county;
+/** Picking a county fills in its recording office and the names that carry the county. */
+function countyChosen() {
+  const county = countySelect.value;
+  input('j-recorder').value = recordingOffice(stateCode(stateSelect.value), county);
+  for (const id of ['j-name', 'j-authority']) {
+    const v = input(id).value;
+    if (formCounty && v.includes(formCounty)) input(id).value = v.split(formCounty).join(county);
+  }
+  formCounty = county;
+}
+function sealPreview() {
+  const img = $<HTMLImageElement>('j-seal-preview');
+  const s = customLogo ? null : sealForState(stateSelect.value, countySelect.value);
+  img.src = customLogo
+    ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`
+    : s
+      ? `data:image/png;base64,${s.png}`
+      : (defaultSeal?.src ?? '');
+  img.hidden = !img.src;
+  $('j-seal-note').textContent = customLogo ? 'Your logo.' : s ? `The seal of ${stateSelect.value}${s.insignia ? ' (its use is restricted by state law: get permission before official use)' : ''}.` : 'This build\u2019s own seal.';
+}
+stateSelect.addEventListener('change', () => {
+  fillCounties('');
+  countyChosen();
+  sealPreview();
+});
+countySelect.addEventListener('change', () => {
+  countyChosen();
+  sealPreview();
+});
+
 function fillJurisdictionForm() {
   input('j-name').value = BRAND.name;
   input('j-expansion').value = BRAND.expansion;
-  input('j-county').value = BRAND.county;
-  input('j-state').value = BRAND.state;
+  if (![...stateSelect.options].some((o) => o.value === BRAND.state)) stateSelect.append(new Option(BRAND.state, BRAND.state));
+  stateSelect.value = BRAND.state;
+  fillCounties(BRAND.county);
+  formCounty = BRAND.county;
+  sealPreview();
+  input('j-recorder').value = BRAND.recorderOffice;
   input('j-url').value = BRAND.projectUrl;
   input('j-authority').value = BRAND.entityAuthority;
 }
@@ -2493,6 +3696,7 @@ const LINK_KEYS: [string, keyof Jurisdiction][] = [
   ['expansion', 'expansion'],
   ['county', 'county'],
   ['state', 'state'],
+  ['recorder', 'recorderOffice'],
   ['url', 'projectUrl'],
   ['authority', 'entityAuthority'],
 ];
@@ -2531,12 +3735,257 @@ function settingsFromLink() {
     // Names that still carry the default county follow the county given in the link.
     if (j.county && !j.name && BRAND.name.includes(BRAND.county)) j.name = BRAND.name.split(BRAND.county).join(j.county.trim());
     if (j.county && !j.entityAuthority && BRAND.entityAuthority.includes(BRAND.county)) j.entityAuthority = BRAND.entityAuthority.split(BRAND.county).join(j.county.trim());
+    if (j.county && !j.recorderOffice) j.recorderOffice = recordingOffice(stateCode(j.state ?? BRAND.state), j.county.trim());
     useJurisdiction(j, logo);
     $('j-status').textContent = `Settings from the link: ${BRAND.name} (${BRAND.county}, ${BRAND.state}).`;
   } catch (err) {
     banner(`The settings in this link could not be used: ${(err as Error).message}`);
   }
 }
+
+// ---- Download this county's program: the HTML with its settings built in, and the Worker ----
+action('lb-package', async () => {
+  const host = input('lb-host').value.trim().replace(/\/$/, '');
+  if (host && !/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(host)) {
+    throw new UserError('The address must be an https address with no path, like https://maricopa-county-stop.your-account.workers.dev');
+  }
+  const ownRooms = input('lb-rooms').checked;
+  if (ownRooms && !host) throw new UserError('To run Sign together at the copy\u2019s own address, enter that address.');
+  if (input('lb-analytics').checked && !/^[A-Za-z0-9]{16,64}$/.test(input('lb-analytics-token').value.trim())) {
+    throw new UserError('Enter your Cloudflare Web Analytics token (letters and digits, from the Cloudflare dashboard), or untick "Use our own".');
+  }
+  const cfg = cleanConfig({
+    name: input('j-name').value,
+    expansion: input('j-expansion').value,
+    county: input('j-county').value,
+    state: input('j-state').value,
+    recorderOffice: input('j-recorder').value,
+    // The copy's own address is its program address (printed on its PDFs).
+    projectUrl: host ? `${host}/` : input('j-url').value.trim(),
+    entityAuthority: input('j-authority').value,
+    // Sign together: at the copy's own address (its own Worker), or at the original program's site.
+    relayUrl: ownRooms ? host : MASTER_URL,
+    // Their own analytics, or the master site's.
+    analyticsToken: input('lb-analytics').checked ? input('lb-analytics-token').value.trim() : MASTER_ANALYTICS_TOKEN,
+    madeFrom: `${__APP_VERSION__}, ${new Date().toISOString().slice(0, 10)}`,
+  });
+  if (!cfg.county || !cfg.state) throw new UserError('Choose the state and county first.');
+  const pubName = safeText(input('lb-pub-name').value).trim();
+  const pubTitle = safeText(input('lb-pub-title').value).trim();
+  const postedAt = input('lb-pub-site').value.trim();
+  if (postedAt && !/^https?:\/\/\S+$/i.test(postedAt)) throw new UserError('Where the statement will be posted must be a web address (https://...).');
+  const sign = input('lb-sign').checked;
+  if (sign && !state.signer) throw new UserError('To sign the program file, unlock your private key in "Your key" first, or untick "Sign the program file".');
+  cfg.publisher = [pubName, pubTitle].filter(Boolean).join(', ') || undefined;
+  const f = input('j-logo').files?.[0];
+  const logo = f ? await logoFromFile(f) : customLogo;
+  const st = logo ? null : sealForState(cfg.state, cfg.county);
+  const html = new TextEncoder().encode(
+    countyHtml(PRISTINE_HTML, cfg, logo ? { type: logo.type, base64: toBase64(logo.bytes) } : st ? { type: 'image/png', base64: st.png } : null),
+  );
+  // The signature covers the exact program file (index.html), so it verifies with gpg and "Check a binary-signed file".
+  const signed = sign && state.signer ? await signDocument(state.signer, html) : null;
+  const publicArmored = signed && state.signer ? state.signer.toPublic().armor() : '';
+  const zipName = `${slug(cfg.name)}-program.zip`;
+  const zip = countyPackage(html, cfg, __WORKER_SOURCE__, signed ? { signature: signed.signature, publicArmored, fingerprint: signed.fingerprint } : null);
+  download(zip, zipName, 'application/zip');
+  const sha256 = await sha256Hex(html);
+  lastRelease = {
+    program: cfg.name,
+    county: cfg.county,
+    state: cfg.state,
+    office: cfg.recorderOffice,
+    programUrl: cfg.projectUrl,
+    signTogether: ownRooms ? `at ${host}` : `at ${MASTER_URL} (the original program)`,
+    madeFrom: cfg.madeFrom,
+    publisherName: pubName,
+    publisherTitle: pubTitle,
+    postedAt,
+    fileName: 'index.html',
+    fileSize: html.length,
+    sha256,
+    zipName,
+    zipSha256: await sha256Hex(zip),
+    documentId: signed?.documentId ?? sha256.slice(0, 24).toUpperCase(),
+    version: __APP_VERSION__,
+    built: __BUILD_DATE__,
+    changes: versionChanges(),
+    adoption: (() => {
+      const a = adoptionFor(cfg.state, cfg.county);
+      return a
+        ? `Adopted${a.county ? ` by ${cfg.county}` : ` statewide by ${cfg.state}`} since ${a.since}${a.authority ? ` (${a.authority})` : ''}.`
+        : `A demonstration: not adopted by ${cfg.county}, ${cfg.state}. Its pages and forms say so, and the seal carries a DEMO band, until the county (or the state) adopts it and the project adds it to the adoption list.`;
+    })(),
+    guide: guideBytes() ?? undefined,
+    seal: logo ? logo.bytes : st ? fromBase64(st.png) : undefined,
+    signed: signed && state.signer
+      ? { userID: describeKey(state.signer), fingerprint: signed.fingerprint, signedAt: signed.signedAt, payload: signed.payload, signature: signed.signature, publicArmored }
+      : null,
+  };
+  $('lb-statement').hidden = false;
+  $('lb-status').textContent =
+    `Downloaded the program for ${cfg.county}, ${cfg.state}. Unzip it and follow its README.md. ` +
+    (signed
+      ? 'Signed with your key: download the release statement and post it on your website.'
+      : 'Not signed. The release statement records the file\u2019s hash; tick "Sign the program file" to make it provable.');
+});
+let lastRelease: ReleaseStatementInfo | null = null;
+
+/** The user guide built into this page (scripts/build-guide.mjs). */
+function guideBytes() {
+  return __GUIDE_PDF__ ? fromBase64(__GUIDE_PDF__) : null;
+}
+action('dl-guide', () => {
+  const g = guideBytes();
+  if (!g) throw new UserError('This copy of the program was built without the user guide.');
+  download(g, 'stop-user-guide.pdf', 'application/pdf');
+});
+$('guide-card').hidden = !__GUIDE_PDF__;
+
+/** Headlines of this version's changes, from the changelog built into the page. */
+function versionChanges(): string[] {
+  // The first section with entries ("Unreleased" may be empty).
+  for (const section of __CHANGELOG__.split(/\n## /).slice(1)) {
+    const items = [...section.matchAll(/^- \*\*(.+?)\*\*/gm)].map((m) => m[1].replace(/[.:]$/, '')).filter(Boolean);
+    if (items.length) return items;
+  }
+  return [];
+}
+action('lb-statement', async () => {
+  if (!lastRelease) throw new UserError('Download the program first.');
+  download(await releaseStatementPdf(lastRelease), `${slug(lastRelease.program)}-release-statement.pdf`, 'application/pdf');
+});
+
+document.querySelectorAll<HTMLElement>('[data-official-site]').forEach((el) => (el.textContent = MASTER_URL));
+
+input('lb-analytics').addEventListener('change', () => ($('lb-analytics-wrap').hidden = !input('lb-analytics').checked));
+
+// ---- Usage analytics: Cloudflare Web Analytics, only if the visitor allows it ----
+function askAnalytics() {
+  let web = false;
+  try {
+    web = /^https:$/.test(location.protocol);
+  } catch {
+    web = false;
+  }
+  // Only on the web (a saved copy has no visit to count), and only with a token.
+  $('analytics-ask').hidden = !(web && /^[A-Za-z0-9]{16,64}$/.test(BRAND.analyticsToken));
+}
+action('analytics-yes', () => {
+  $('analytics-ask').hidden = true;
+  const s = document.createElement('script');
+  s.defer = true;
+  s.src = 'https://static.cloudflareinsights.com/beacon.min.js';
+  s.setAttribute('data-cf-beacon', JSON.stringify({ token: BRAND.analyticsToken, spa: false }));
+  document.head.append(s);
+  void checkForUpdate();
+});
+
+// ---- Update check: only after the person turns on something that connects (Sign together, analytics) ----
+/** A link to the program at `base` carrying this page's settings (county, office, names, logo). */
+function settingsLinkFor(base: string, hash = '') {
+  const q = new URLSearchParams();
+  const b = BRAND as unknown as Record<string, string>;
+  for (const [param, key] of LINK_KEYS) {
+    const v = String(b[key] ?? '').trim();
+    if (v && !(key === 'projectUrl' && v.replace(/\/$/, '') === MASTER_URL)) q.set(param, v);
+  }
+  const seal = $('brand-seal').getAttribute('src') ?? '';
+  const st = sealForState();
+  // The state seals are built in everywhere; any other logo travels in the link (if it isn't huge).
+  if (/^data:image\/(png|jpe?g);base64,/.test(seal) && seal.length < 200_000 && !(st && seal === `data:image/png;base64,${st.png}`)) q.set('seal', seal);
+  return `${base.replace(/\/$/, '')}/?${q.toString()}${hash}`;
+}
+
+const VERSION_RE = /stop-version=(v[\w.-]+) built=(\d{4}-\d\d-\d\dT[\d:]+Z)/;
+let updateChecked = false;
+/** Reads the version comment at the top of the master site's index.html (the first few KB only). */
+async function checkForUpdate() {
+  if (updateChecked) return;
+  updateChecked = true;
+  try {
+    if (location.origin === new URL(MASTER_URL).origin) return; // this is the newest
+    const res = await fetch(`${MASTER_URL}/?check=1`, { cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', headers: { Range: 'bytes=0-8191' } });
+    if (!res.ok || !res.body) return;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let head = '';
+    while (head.length < 65536 && !VERSION_RE.test(head)) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      head += dec.decode(value, { stream: true });
+    }
+    void reader.cancel().catch(() => undefined);
+    const m = VERSION_RE.exec(head);
+    if (!m || !(Date.parse(m[2]) > Date.parse(__BUILD_TIME__))) return;
+    $('update-text').textContent = `A newer version of the program (${m[1]}, built ${m[2].slice(0, 10)}) is on ${MASTER_URL.replace(/^https:\/\//, '')}. This copy is ${__APP_VERSION__}, built ${__BUILD_DATE__}.`;
+    ($('update-link') as HTMLAnchorElement).href = settingsLinkFor(MASTER_URL, `#${currentTab()}`);
+    $('update-offer').hidden = false;
+  } catch {
+    /* an update check never gets in the way */
+  }
+}
+action('update-dismiss', () => {
+  $('update-offer').hidden = true;
+});
+action('analytics-no', () => {
+  $('analytics-ask').hidden = true;
+});
+
+// ---- Link builder: the link for the panel's settings as they are now ----
+{
+  const base = $<HTMLSelectElement>('lb-base');
+  const official = officialOrigin();
+  const here = (() => {
+    try {
+      return location.protocol === 'file:' ? '' : location.href.split(/[?#]/)[0];
+    } catch {
+      return '';
+    }
+  })();
+  if (official) base.append(new Option(`The program's site (${official.replace(/^https:\/\//, '')})`, `${official}/`));
+  if (here && here !== `${official}/`) base.append(new Option(`This page's address (${here})`, here));
+  if (!base.options.length) base.append(new Option('The program\u2019s web address', BRAND.projectUrl));
+}
+
+function buildLink() {
+  const fields: [string, string, string][] = [
+    ['county', input('j-county').value, BRAND_DEFAULTS.county],
+    ['state', input('j-state').value, BRAND_DEFAULTS.state],
+    ['recorder', input('j-recorder').value, BRAND_DEFAULTS.recorderOffice],
+    ['name', input('j-name').value, BRAND_DEFAULTS.name],
+    ['expansion', input('j-expansion').value, BRAND_DEFAULTS.expansion],
+    ['url', input('j-url').value, BRAND_DEFAULTS.projectUrl],
+    ['authority', input('j-authority').value, BRAND_DEFAULTS.entityAuthority],
+  ];
+  const q = new URLSearchParams();
+  for (const [k, v, d] of fields) if (v.trim() && v.trim() !== d) q.set(k, v.trim());
+  if (input('lb-seal').checked && customLogo) q.set('seal', `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}`);
+  const tab = $<HTMLSelectElement>('lb-tab').value;
+  const link = `${$<HTMLSelectElement>('lb-base').value}${q.toString() ? `?${q.toString()}` : ''}${tab ? `#${tab}` : ''}`;
+  textarea('lb-out').value = link;
+  ($('lb-open') as HTMLAnchorElement).href = link;
+  ($('lb-seal') as HTMLInputElement).disabled = !customLogo;
+  $('lb-status').textContent =
+    (customLogo ? '' : 'To put a logo in the link, choose it above and press "Use these settings" first. ') +
+    (link.length > 60000 ? 'The link is long because it carries the logo itself; some apps may shorten or break long links.' : '');
+  return link;
+}
+for (const id of ['j-name', 'j-expansion', 'j-recorder', 'j-url', 'j-authority']) input(id).addEventListener('input', buildLink);
+// The county and state change other fields first (their own listeners), so follow them a moment later.
+for (const id of ['j-state', 'j-county']) $(id).addEventListener('change', () => setTimeout(buildLink));
+for (const id of ['lb-base', 'lb-tab', 'lb-seal']) $(id).addEventListener('change', buildLink);
+$('link-api').addEventListener('toggle', buildLink);
+action('lb-copy', async () => {
+  const link = buildLink();
+  try {
+    await navigator.clipboard.writeText(link);
+    $('lb-status').textContent = 'Link copied.';
+  } catch {
+    textarea('lb-out').select();
+    $('lb-status').textContent = 'Select the link above and copy it.';
+  }
+});
 
 action('j-link', async () => {
   const q = new URLSearchParams();
@@ -2561,26 +4010,122 @@ action('j-link', async () => {
 });
 
 /** Form defaults that still hold the old county follow the new one. */
-function followCounty(oldCounty: string) {
+function followCounty(oldCounty: string, oldOffice = '') {
   if (!input('reg-county').value || input('reg-county').value === oldCounty) input('reg-county').value = BRAND.county;
   const short = (c: string) => c.replace(/\s+County$/i, '');
-  if (!input('f-county').value || input('f-county').value === short(oldCounty)) input('f-county').value = short(BRAND.county);
-  if (input('c-agency').value === `${oldCounty} Recorder`) input('c-agency').value = `${BRAND.county} Recorder`;
+  const f = input('f-county').value;
+  if (!f || f === short(oldCounty) || f === oldCounty) input('f-county').value = BRAND.county;
+  if (!input('c-agency').value || input('c-agency').value === `${oldCounty} Recorder` || input('c-agency').value === oldOffice) input('c-agency').value = BRAND.recorderOffice;
   syncTemplate();
 }
 
 function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLogo) {
   const oldCounty = BRAND.county;
+  const oldOffice = BRAND.recorderOffice;
   const clean = j && (Object.fromEntries(Object.entries(j).map(([k, v]) => [k, safeText(String(v ?? '')).trim()])) as Partial<Jurisdiction>);
   applyJurisdiction(clean);
   customLogo = logo;
   applyBrandToPage();
   fillJurisdictionForm();
-  followCounty(oldCounty);
-  const custom = !!logo || (['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
+  followCounty(oldCounty, oldOffice);
+  const custom = !!logo || (['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
   $('j-status').textContent = custom
     ? `Using ${BRAND.name} (${BRAND.county}, ${BRAND.state}) until this page is closed.`
     : 'Using the defaults.';
+  buildLink();
+  if (room?.host) {
+    void roomShare();
+    showRoomSettings();
+  }
+}
+
+/** The About tab's adoption section: the list, this county's status, and how to ask for it. */
+function showAdoption() {
+  const a = adoptionFor(BRAND.state, BRAND.county);
+  const status = $('adopt-status');
+  status.className = a ? 'callout ok' : 'callout warn';
+  status.textContent = a
+    ? `${BRAND.county}, ${BRAND.state}: adopted${a.county ? '' : ` (statewide, by ${BRAND.state})`} since ${a.since}${a.authority ? ` (${a.authority})` : ''}.${a.seal ? '' : ' Use of the seal is not approved yet.'}`
+    : `${BRAND.county}, ${BRAND.state}: not adopted. This is a demonstration: the forms are not official, and the seal carries a DEMO band.`;
+  const list = $('adopt-list');
+  list.innerHTML = '';
+  const by = adoptionsByState();
+  if (!by.length) {
+    list.append(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'No state or county has adopted the program yet. Everywhere, it runs as a demonstration.' }));
+  } else {
+    const ul = document.createElement('ul');
+    for (const [st, e] of by) {
+      const li = document.createElement('li');
+      const parts = [e.state ? `the whole state, since ${e.state.since}` : '', ...e.counties.map((c) => `${c.county} (since ${c.since})`)].filter(Boolean);
+      li.append(Object.assign(document.createElement('strong'), { textContent: st }), `: ${parts.join('; ')}`);
+      ul.append(li);
+    }
+    list.append(ul);
+  }
+  $('adopt-ask').hidden = !!a;
+  if (a) return;
+  const site = BRAND.projectUrl || MASTER_URL;
+  $('adopt-county-h').textContent = `Ask ${BRAND.county} to adopt it`;
+  $('adopt-county-who').textContent = `In ${BRAND.county}, deeds are recorded by the ${BRAND.recorderOffice}.`;
+  ($('adopt-county-find') as HTMLAnchorElement).href = `https://duckduckgo.com/?q=${encodeURIComponent(`${BRAND.recorderOffice} ${BRAND.state} contact`)}`;
+  textarea('adopt-county-letter').value = [
+    `To the ${BRAND.recorderOffice}`,
+    `and the governing board of ${BRAND.county}, ${BRAND.state}`,
+    '',
+    'I am writing to ask the county to adopt the S.T.O.P. (Stop Theft of Property) program, a free, voluntary safeguard against forged deeds.',
+    '',
+    'An owner who joins registers an OpenPGP public signing key for their parcel on a paper form, with a notary. After that, a deed or other instrument filed against the parcel should carry the registered owners’ digital signatures, printed on the paper as QR codes. A filing that is unsigned, or signed by a key that is not registered, is held and investigated instead of being recorded.',
+    '',
+    'It costs the county nothing, needs no change to the recording software (the signatures are checked from the paper or the scan), and is voluntary for owners. Signatures can be checked with standard, free software (GnuPG).',
+    '',
+    `The program, its forms and its source code are at ${site}`,
+    '',
+    'Deed fraud costs owners years and thousands of dollars in quiet-title actions. I would welcome the chance to discuss it.',
+    '',
+    'Sincerely,',
+    '',
+    '[Your name]',
+    '[Your address]',
+    '[Your phone or email]',
+  ].join('\n');
+  $('adopt-state-h').textContent = `Ask ${BRAND.state} to adopt it statewide`;
+  const code = stateCode(BRAND.state).toLowerCase();
+  ($('adopt-state-legislature') as HTMLAnchorElement).href = code ? `https://openstates.org/${code}/` : 'https://openstates.org/';
+  ($('adopt-state-legislature') as HTMLAnchorElement).textContent = `the ${BRAND.state} legislature`;
+  textarea('adopt-state-letter').value = [
+    `Dear Senator / Representative [name],`,
+    '',
+    `I am a constituent in ${BRAND.county}, ${BRAND.state}. I am asking you to sponsor legislation that lets county recording offices in ${BRAND.state} protect owners from forged deeds through a free, voluntary program like S.T.O.P. (Stop Theft of Property).`,
+    '',
+    'Under it, an owner who joins registers an OpenPGP public signing key for their parcel on a notarized paper form. Any deed or instrument later filed against that parcel must carry the registered owners’ digital signatures (printed on the paper as QR codes); a filing that is unsigned, or signed by a key that is not registered, is held and investigated instead of being recorded.',
+    '',
+    'The bill would need to: (1) allow recording offices to accept these registrations; (2) let them hold, rather than record, a filing against a registered parcel that lacks the registered signatures, pending investigation; and (3) keep participation voluntary and free for owners. It needs no change to recording software: signatures are checked from the paper or the scan, with standard, free software.',
+    '',
+    `The program, its forms and its source code are at ${site}`,
+    '',
+    'Deed fraud costs owners years and thousands of dollars in quiet-title actions. I would welcome the chance to meet with you or your staff about it.',
+    '',
+    'Sincerely,',
+    '',
+    '[Your name]',
+    '[Your address]',
+    '[Your phone or email]',
+  ].join('\n');
+}
+for (const id of ['county', 'state'] as const) {
+  action(`adopt-${id}-copy`, async () => {
+    const t = textarea(`adopt-${id}-letter`);
+    try {
+      await navigator.clipboard.writeText(t.value);
+    } catch {
+      t.select();
+    }
+  });
+}
+
+/** In someone else's room, the settings are theirs. */
+function settingsLockedByRoom() {
+  return !!room?.ws && !room.host;
 }
 
 async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>> {
@@ -2589,19 +4134,11 @@ async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>>
 }
 
 action('j-apply', async () => {
+  if (settingsLockedByRoom()) throw new UserError(`You are in a signing room: its settings come from ${roomHost?.name ?? 'the person who started it'}. Leave the room to change them.`);
   const f = input('j-logo').files?.[0];
   const logo = f ? await logoFromFile(f) : customLogo;
-  // Names that still carry the old county follow the new one ("Pima County S.T.O.P. Initiative"
-  // becomes "Maricopa County S.T.O.P. Initiative"), unless they were typed differently.
-  const oldCounty = BRAND.county;
-  const newCounty = input('j-county').value.trim();
-  if (newCounty && newCounty !== oldCounty) {
-    for (const [id, current] of [['j-name', BRAND.name], ['j-authority', BRAND.entityAuthority]] as const) {
-      if (input(id).value === current && current.includes(oldCounty)) input(id).value = current.split(oldCounty).join(newCounty);
-    }
-  }
   useJurisdiction(
-    { name: input('j-name').value, expansion: input('j-expansion').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
+    { name: input('j-name').value, expansion: input('j-expansion').value, recorderOffice: input('j-recorder').value, county: input('j-county').value, state: input('j-state').value, projectUrl: input('j-url').value, entityAuthority: input('j-authority').value },
     logo,
   );
   input('j-logo').value = '';
@@ -2616,6 +4153,7 @@ action('j-save', () => {
     name: BRAND.name,
     expansion: BRAND.expansion,
     county: BRAND.county,
+    recorderOffice: BRAND.recorderOffice,
     state: BRAND.state,
     projectUrl: BRAND.projectUrl,
     entityAuthority: BRAND.entityAuthority,
@@ -2650,6 +4188,19 @@ input('j-load').addEventListener('change', async () => {
 document.querySelectorAll<HTMLElement>('[data-app="version"]').forEach((el) => (el.textContent = __APP_VERSION__));
 document.querySelectorAll<HTMLElement>('[data-app="built"]').forEach((el) => (el.textContent = __BUILD_DATE__));
 $('changelog-body').replaceChildren(renderChangelog(__CHANGELOG__));
+{
+  // Credits for the state seals (Wikimedia Commons), as their licenses require.
+  const ul = $('seal-credits');
+  for (const [state, s] of Object.entries(STATE_SEALS)) {
+    const li = document.createElement('li');
+    li.append(
+      `${state}: `,
+      Object.assign(document.createElement('a'), { href: s.source, textContent: s.file, rel: 'noopener' }),
+      ` by ${s.author}, ${s.license}${s.insignia ? ' (insignia: use restricted by law)' : ''}.`,
+    );
+    ul.append(li);
+  }
+}
 $('show-about-software').addEventListener('click', () => {
   showTab('about');
   ($('changelog') as HTMLDetailsElement).open = true;
@@ -2660,7 +4211,9 @@ $('show-about-software').addEventListener('click', () => {
 {
   const local = location.protocol === 'file:';
   const name = `${BRAND.name.replace(/\./g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase()}-${__APP_VERSION__}.html`;
-  const href = location.href.split('#')[0];
+  // "dl=1" lets the site count downloads (it has no other meaning to the page).
+  const base = location.href.split('#')[0];
+  const href = `${base}${base.includes('?') ? '&' : '?'}dl=1`;
   document.querySelectorAll<HTMLAnchorElement>('[data-self-download]').forEach((a) => {
     a.href = href;
     a.download = name;
@@ -2670,11 +4223,20 @@ $('show-about-software').addEventListener('click', () => {
   $('self-offline').hidden = !local;
 }
 if (!input('reg-county').value) input('reg-county').value = BRAND.county;
-if (!input('f-county').value) input('f-county').value = BRAND.county.replace(/\s+County$/i, '');
+if (!input('f-county').value) input('f-county').value = BRAND.county;
 syncTemplate();
 
 const initial = location.hash.slice(1) as Tab;
-showTab(TABS.includes(initial) ? initial : 'about');
+const roomLink = !!INVITED_ROOM;
+showTab(roomLink ? 'sign' : TABS.includes(initial) ? initial : 'about');
+// A room link: offer to join (nothing connects until the person chooses to).
+if (roomLink) {
+  $('room-invite').hidden = false;
+  $('room-invite-top').hidden = false;
+}
+if (!officialOrigin()) $('room-card').hidden = true;
+showRoomConsent();
 $('boot').hidden = true;
 // After start-up, so a problem with the link's settings stays visible.
 settingsFromLink();
+askAnalytics();

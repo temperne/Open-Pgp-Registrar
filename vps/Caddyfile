@@ -1,0 +1,27 @@
+# The S.T.O.P. project server. Caddy gets the https certificates from Let's Encrypt and
+# renews them on its own (about 30 days before they expire); http redirects to https.
+# The domain must point at this server (an A record for 84.46.239.112). To use another
+# domain, put it here and in src/brand.ts (MASTER_FALLBACK_URL), rebuild and prove the
+# page, deploy it, then run vps/setup.sh again.
+# Caddy writes no access log unless a site asks for one, so no record of visitors is kept.
+{
+	# Let's Encrypt only (Caddy would otherwise also try ZeroSSL).
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+securerecorder.csproject.org {
+	encode zstd gzip
+	header {
+		-Server
+		# Browsers use https for this address from now on.
+		Strict-Transport-Security "max-age=31536000"
+	}
+	# The app and the signing-room relay (WebSockets pass straight through).
+	reverse_proxy 127.0.0.1:8787
+}
+
+# The server's earlier address: links to it (signing-room links included; browsers keep
+# the "#room=..." part across the redirect) now go to the domain.
+84-46-239-112.sslip.io {
+	redir https://securerecorder.csproject.org{uri} permanent
+}

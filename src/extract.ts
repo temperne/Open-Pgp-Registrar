@@ -183,8 +183,9 @@ export const SUPPORTED_ALL = `${SUPPORTED_FILES}, or images (JPG, PNG and others
  * then its text, or for an image or scan, the signer's description of it.
  * All of it is carried in the printed codes, so it comes back from paper.
  */
-export function fileSignedText(f: ExtractedFile, description: string, parcelStatement = '') {
+export function fileSignedText(f: ExtractedFile, description: string, parcelStatement = '', jurisdictionLine = '') {
   const head = [
+    jurisdictionLine ? safeText(jurisdictionLine) : '',
     `SIGNED FILE: ${safeText(f.name)}.`,
     `DIGITAL FINGERPRINT (SHA-256): ${f.sha256.join(', ')}.`,
     f.pageCount ? `PAGES: ${f.pageCount}.` : '',

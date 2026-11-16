@@ -63,6 +63,145 @@ last part is the date the version was tagged.
   registration: the certificate reprints the buyers' keys from a sale deed. Loading a
   signed document as a registration explains what to load instead.
 
+### Sign together, county list, analytics (this release)
+- **Sign together, live (signing rooms).** Co-owners and buyers sign the same document at
+  once, each on their own computer, through the program's relay. It works **only when the
+  page was loaded from the program's own address** (a saved copy or another host can't use
+  it, and says where to go), needs an unlocked private key and agreement to its **terms of
+  service and waiver of liability** (shown in place), and is **off until turned on**; a
+  room link shows an invitation and asks before joining. Everything is encrypted in the tab with a key that
+  is only in the link (after "#", never sent to a server); participants appear proven by
+  their keys. The relay stores nothing. The security policy allows that one host only.
+- **County selector:** every U.S. county and county equivalent (U.S. Census Bureau list,
+  public domain), Pima County by default. Choosing one fills in its **recording office**
+  from the state's usual title (County Recorder, County Clerk, Register of Deeds, Clerk of
+  Court, Town Clerk...) with known county exceptions; it can be corrected, and given in a
+  link (`recorder=`). Registration forms, certificates and templates name that office, and
+  templates write parishes, boroughs and independent cities correctly.
+- **State seals:** choosing a county in another state shows that state's seal on the page
+  and every PDF (an uploaded logo still wins; Pima County keeps its own). The 50 seals
+  come from Wikimedia Commons, credited on the page and in `SEALS.md`. Many are insignia
+  whose use states restrict by law, as the page says.
+- **Link builder and API documentation:** the county panel documents every link setting
+  and builds the link live from the settings as they are, with the tab to open on, the
+  logo optionally included, and Copy and Open buttons.
+- **Download this county's program:** a zip with the whole program as one HTML file,
+  that county's settings (and seal) built in as its defaults, and the Cloudflare Worker
+  that serves it, relays its signing rooms and counts its use, with instructions. The
+  copy can make the next county's copy. Copies always say "proposed program". The copy's
+  web address is its program address; a checkbox runs Sign together there with its own
+  Worker. Otherwise, or if its relay can't be reached, Sign together falls back to the
+  master site (https://pimastopinitiative.jasonajensen.workers.dev), same room.
+- **Sign together for registrations and files.** A signing room now carries a
+  registration in progress (every key holder signs it from their own tab; the room card
+  follows them to the Register tab) and a signed file, the original included. Tested with
+  four signers in four tabs.
+- **Every registration and document names its county, and other counties' sites refuse
+  it.** A registration's signed statement now includes "JURISDICTION: <county>, <state>"
+  (fixed when the first key holder signs, carried in its codes and JSON), and so does
+  the signed text of every new document and file. Both print it as a COUNTY barcode. The
+  check fails a registration or document for another county than the one the site is set
+  to (or one that doesn't name its county), and the Sign tab refuses to continue them.
+  Keys stay county-free: one key can be registered anywhere.
+- **Add buyers from the signing room.** On a sale deed, everyone in the signing room who
+  isn't a seller gets an "Add ... as a buyer (from the signing room)" button: their key,
+  already proven in the room, goes on the deed with no key file. The buyer then proves
+  their key from their own tab.
+- **Live editing in a signing room.** Before anyone signs, everything people do on the
+  Sign and Register forms reaches the others in the room as they do it: loading the parcel
+  registration, the template, every field, the title and text, the buyers' and co-owners'
+  keys. Only what changed is sent, so people editing different fields don't overwrite
+  each other, and the field someone is typing in is never changed under them. Once
+  anyone signs, the text is settled and only signatures travel.
+- **The project's server has its own domain: https://securerecorder.csproject.org**, with
+  a Let's Encrypt certificate (renewed automatically) and HSTS. Its earlier address,
+  https://84-46-239-112.sslip.io, redirects there, room links included.
+- **Meetup room.** In the Sign together card, "Join the meetup room" lists everyone there
+  with the name in their key, its fingerprint (proven by their key), the county they work
+  for and any contact details they add; search it, or tick "My county only". Select one
+  or more people and invite them to a private signing room: each invitation is encrypted
+  for that person alone and signed by the inviter, and names the county. Accepting agrees
+  to it: an invitee set to another county switches to it, with the inviter's seal, while
+  in the room. Leaving removes your entry from everyone's list at once (a signed goodbye);
+  listings refresh every minute and expire. The meetup room is public by design and
+  stores nothing.
+- **User guide.** A step-by-step guide with screenshots (make a key, register a parcel,
+  sign and check documents, sign together, adoption, checking the program file) is built
+  into the program: "Download the user guide (PDF)" on the About tab. `npm run
+  guide:shots` retakes the screenshots from the real app and `npm run guide` builds it.
+- **A real release statement.** The county builder's release statement now starts with
+  the statement itself: who releases which version for which county and recording
+  office, where it is published, what it is, its adoption status, what's new, how to use
+  it and how to put it online, with a signature line for the publisher. The verification
+  (file and zip SHA-256, fingerprint, signature code) follows, then the user guide.
+- **Large documents: progress and speed.** Building a PDF now shows its progress on the
+  button ("Drawing the signature codes: 152 of 1565 (10%)", "Adding the code maps",
+  "Saving the PDF (854 pages)") and keeps the page responsive. Each QR code is drawn as one
+  path, far fewer drawing operations, so large PDFs build faster and are smaller. A 3 MB
+  HTML file: loaded in 1.5 s, signed in 1.2 s, its 854-page package built in 17 s. Loading
+  a large file now says how many codes and pages it will need, and suggests a PDF or a
+  binary file signature instead.
+- **The footer's program line wraps** instead of cutting off the demonstration notice.
+- **Demonstration until adopted; the adoption list.** Adoption is now a list built into
+  the program (`src/adoptions.json`), kept by the project owner: a state entry adopts every
+  county in that state, a county entry adopts one county. Everywhere else the page and
+  every PDF say "Demonstration system: not adopted by ... Not an official county form."
+  and the seal carries a DEMO band (until the adoption also approves the seal). The About
+  tab shows the list by state and county, and, where it isn't adopted, how to ask: the
+  county's recording office and governing board, a letter to send, and for a statewide
+  adoption, links to find your legislators and your state legislature (Open States) with
+  the steps and a letter.
+- **Signing rooms run on the project's own server, with Cloudflare as the backup.** Rooms
+  use https://84-46-239-112.sslip.io first (no per-message cost) and move to the master
+  site's Cloudflare relay on their own if it can't be reached; everyone tries them in the
+  same order with the same room key. The page works from that address too. The server
+  (`vps/`) serves the proven page (checked against its SHA-256), relays only encrypted
+  messages, stores and logs nothing, and sits behind a firewall.
+- **Files up to 50 MB through a signing room.** A signed file's original goes through the
+  room in encrypted parts of 512 KB (under 1 MB per message, so either relay takes them),
+  once per file (by its SHA-256), and is checked against that hash on arrival. Someone
+  who joins later asks for it once; if the parts stop coming, the page asks again.
+- **A signing room uses the settings of the person who started it.** County, state,
+  recording office, program name, business office and logo are shared with everyone who
+  joins, signed with the starter's key, so every tab prints the same forms. Joiners see
+  whose settings they are using and can't change them while in the room; the starter's
+  changes reach everyone.
+- **Join a signing room by pasting its link or code.** Someone who already has the page
+  open with their key unlocked pastes the room link (or the code after `#room=`) into the
+  Sign together card and joins, with no reload: the key and the work in progress stay.
+- **Fixed: a registration in a signing room listed only the person who started it.**
+  Being in the room didn't add anyone's key, so the registration was "complete" after
+  one signature. The Register tab now offers to add the keys of everyone proven in the
+  room, signing asks before leaving them out, and a tab whose key isn't on the
+  registration says so instead of showing it as complete.
+- **Fixed: two people signing at the same moment.** A third tab could keep only one of the
+  two new signatures. Room messages are now handled one at a time, and a tab that holds
+  signatures the sender lacked shares them back, so every tab ends with all of them.
+- **Sign together on the original site, always.** A county copy with its own rooms always
+  offers signing together on the master site instead, with the copy's settings (and the
+  same room). A saved copy's "open the program's site" link carries its settings too.
+- **Update check, only when connecting.** `index.html` carries its version in a comment near
+  the top. When someone turns on Sign together (or allows analytics) on a page not loaded
+  from the master site, it reads the first few KB of the master site's `index.html`; if
+  that is newer, it offers a link to the newest version with the same settings. Nothing is
+  checked otherwise.
+- **Signed release statement for a county copy (optional).** The builder can name who is
+  making the copy (person or office, title or authority, where the statement will be
+  posted) and sign the program file with the maker's key. It then offers a **release
+  statement** PDF to post on the maker's website: the program file's and the zip's
+  SHA-256, the publisher, the key fingerprint and the signature (QR code, with the key and
+  `.sig` attached). The hash can't be inside the file it describes, so it lives in the
+  statement. The zip carries `index.html.sig` and `publisher-key.asc`
+  (`gpg --verify index.html.sig public/index.html`), and "Check a binary-signed file"
+  accepts the statement on its own, using its attached key. The copy's About tab names
+  its publisher.
+- **Analytics, asked first.** On the web the page asks each visitor whether it may count
+  the visit with Cloudflare Web Analytics (no cookies, no cross-site tracking); the beacon
+  loads only on "Allow". County copies can use their own token or, by default, the master
+  site's. The site's Worker also counts page loads, downloads and signing rooms by
+  country on the server (Workers Analytics Engine). Nothing about keys or documents is
+  counted. The Worker (`worker/`) also serves the site and the relay.
+
 ### Build proof (this release)
 - `npm run proof` runs the built app through the full ownership chain (complex
   registration, two sales, every form of the Recorder's filing as the next

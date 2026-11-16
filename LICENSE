@@ -52,3 +52,10 @@ each under its own license, which continues to apply to that library:
   - JsBarcode: MIT (https://github.com/lindell/JsBarcode)
   - bwip-js: MIT (https://github.com/metafloor/bwip-js)
   - ZXing for JS (@zxing/library): Apache-2.0 (https://github.com/zxing-js/library)
+  - County names: U.S. Census Bureau, 2020 FIPS county codes, a U.S. government work
+    in the public domain (https://www2.census.gov/geo/docs/reference/codes2020/)
+  - State seals: Wikimedia Commons, Category: SVG state seals of the United States
+    (https://commons.wikimedia.org/wiki/Category:SVG_state_seals_of_the_United_States).
+    49 are public domain; Maryland's is CC BY-SA 4.0 and stays under that license.
+    Each file's author and license are in SEALS.md and on the page (About this
+    software). Many are insignia whose use is restricted by state law.

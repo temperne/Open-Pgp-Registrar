@@ -17,6 +17,12 @@ import {
   PDFImage,
   decodePDFRawStream,
   type RGB,
+  rectangle,
+  fill,
+  pushGraphicsState,
+  popGraphicsState,
+  setFillingRgbColor,
+  type PDFOperator,
 } from 'pdf-lib';
 import { bestQr, code128Bits, codeMapText, pdf417Path, type CodeMapEntry, type QrMatrix } from './codes';
 import {
@@ -37,12 +43,14 @@ import {
   type RegistrationRole,
   type SignedText,
   type HolderUpdate,
+  jurisdictionOf,
+  jurisdictionLabel,
 } from './crypto';
 import { canonicalText } from './text';
 import { needsDescription, type ExtractedFile, type SourceImage } from './extract';
 import type * as openpgp from 'openpgp';
 import { safeText } from './text';
-import { BRAND, brandLine } from './brand';
+import { BRAND, brandLine, refreshStatus } from './brand';
 
 const PAGE_W = 612; // US Letter
 const PAGE_H = 792;
@@ -177,11 +185,33 @@ const MAP_MAX_THICKNESS = 22;
  * Draws a code map on every page that has QR codes, then saves. The map lists
  * each QR code's position relative to the map itself, in map modules.
  */
+/**
+ * Progress for long documents (thousands of codes): the page shows it, and the work
+ * pauses briefly every so often so the page stays responsive.
+ */
+let progressFn: ((message: string) => void) | null = null;
+let lastYield = 0;
+export function onPdfProgress(fn: ((message: string) => void) | null) {
+  progressFn = fn;
+}
+async function progress(message: string) {
+  if (!progressFn) return;
+  const now = Date.now();
+  if (now - lastYield < 120) return;
+  lastYield = now;
+  progressFn(message);
+  await new Promise((r) => setTimeout(r, 0));
+}
+
 async function finish(doc: PDFDocument): Promise<Uint8Array> {
   // Code pages that continue a document (more codes than fit on one page) carry
   // the document ID of the page they follow.
   let lastId = '';
-  for (const page of doc.getPages()) {
+  const all = doc.getPages();
+  let at = 0;
+  for (const page of all) {
+    at++;
+    await progress(`Adding the code maps: page ${at} of ${all.length}...`);
     const qrs = QR_ON_PAGE.get(page);
     const id = DOC_ID_ON_PAGE.get(page);
     if (NO_DOC_ID.has(page)) DOC_ID_ON_PAGE.delete(page);
@@ -204,7 +234,11 @@ async function finish(doc: PDFDocument): Promise<Uint8Array> {
     // SVG units are half a module. Rotated a quarter turn: the symbol's width runs up the page.
     page.drawSvgPath(sym.path, { x: MAP_X, y: MAP_Y, scale: MAP_MODULE / 2, rotate: degrees(90), color: rgb(0, 0, 0), borderWidth: 0 });
   }
-  return doc.save();
+  if (progressFn) {
+    progressFn(`Saving the PDF (${all.length} pages)...`);
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  return doc.save({ objectsPerTick: 200 });
 }
 
 /** Every QR code drawn, by page, for the page's code map. */
@@ -217,6 +251,7 @@ const NO_DOC_ID = new WeakSet<PDFPage>();
 function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: number) {
   QR_ON_PAGE.set(page, [...(QR_ON_PAGE.get(page) ?? []), { x, yTop, size }]);
   const cell = size / m.size;
+  const ops: PDFOperator[] = [];
   for (let r = 0; r < m.size; r++) {
     let c = 0;
     while (c < m.size) {
@@ -227,9 +262,12 @@ function drawQr(page: PDFPage, m: QrMatrix, x: number, yTop: number, size: numbe
       const start = c;
       while (c < m.size && m.dark(r, c)) c++;
       // Slight overlap avoids hairline gaps between modules in some viewers.
-      page.drawRectangle({ x: x + start * cell, y: yTop - (r + 1) * cell, width: (c - start) * cell + 0.05, height: cell + 0.05, color: rgb(0, 0, 0) });
+      ops.push(rectangle(x + start * cell, yTop - (r + 1) * cell, (c - start) * cell + 0.05, cell + 0.05));
     }
   }
+  // One filled path for the whole code: far fewer operators than a rectangle per run,
+  // which matters for documents with thousands of codes.
+  page.pushOperators(pushGraphicsState(), setFillingRgbColor(0, 0, 0), ...ops, fill(), popGraphicsState());
 }
 
 /** Draws a Code 128 barcode; returns its drawn width. */
@@ -255,22 +293,59 @@ function footer(page: PDFPage, fonts: Fonts, left: string, pageNo: number, pages
   page.drawText(safeText(left), { x: M, y: 35, size: 7.5, font: fonts.reg, color: MUTED });
   const right = `Page ${pageNo} of ${pages}`;
   page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 35, size: 7.5, font: fonts.reg, color: MUTED });
-  // Program line: name, web address, and the "proposed" notice while it applies.
-  const brand = wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)[0];
-  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'proposed' ? WARN : MUTED });
+  // Program line: name, web address, and the demonstration notice while it applies.
+  // Up to two lines, so the demonstration notice is never cut off.
+  wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)
+    .slice(0, 2)
+    .forEach((line, i) => page.drawText(line, { x: M, y: 25 - i * 8, size: 6.5, font: fonts.reg, color: BRAND.status === 'demo' ? WARN : MUTED }));
+}
+
+/**
+ * The county a registration or document is for, as a Code 128 barcode (for intake
+ * scanners) with the text below. The check itself reads the county from the signed
+ * text, which can't be changed; this is a convenience. Returns the y below it.
+ */
+function jurisdictionBarcode(page: PDFPage, fonts: Fonts, jurisdiction: string | undefined, x: number, top: number, maxW = 175) {
+  if (!jurisdiction?.trim()) return top;
+  const value = safeText(`COUNTY:${jurisdiction}`).toUpperCase();
+  const moduleW = Math.min(0.8, maxW / (code128Bits(value).length + 20));
+  page.drawText('COUNTY', { x, y: top - 8, size: 7, font: fonts.bold, color: MUTED });
+  // Under 30 points tall, so it is never taken for the page's document ID barcode.
+  const bw = drawCode128(page, value, x + 10 * moduleW, top - 40, moduleW, 28);
+  const label = safeText(jurisdiction);
+  const lw = fonts.reg.widthOfTextAtSize(label, 8);
+  page.drawText(label, { x: x + 10 * moduleW + Math.max(0, (bw - lw) / 2), y: top - 51, size: 8, font: fonts.reg, color: INK });
+  return top - 58;
 }
 
 /** Seal at the top-right corner of a page. Returns the width it takes. */
 function sealCorner(page: PDFPage, fonts: Fonts, size = 58) {
   if (!fonts.seal) return 0;
-  page.drawImage(fonts.seal, { x: PAGE_W - M - size, y: PAGE_H - M - size + 10, width: size, height: size });
+  const x = PAGE_W - M - size;
+  const y = PAGE_H - M - size + 10;
+  page.drawImage(fonts.seal, { x, y, width: size, height: size });
+  demoBand(page, fonts, x, y, size);
   return size + 12;
 }
 
-function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string) {
+/**
+ * Until the program's adoption here approves the seal (src/adoptions.json), every seal
+ * carries a DEMO band, so nobody takes a demonstration for an official form.
+ */
+function demoBand(page: PDFPage, fonts: Fonts, x: number, y: number, size: number) {
+  if (BRAND.sealApproved) return;
+  const h = size * 0.24;
+  const label = BRAND.status === 'adopted' ? 'SEAL NOT APPROVED' : 'DEMO';
+  const fs = Math.min(h * 0.72, (size * 0.95) / (fonts.bold.widthOfTextAtSize(label, 1) || 1));
+  page.drawRectangle({ x, y: y + (size - h) / 2, width: size, height: h, color: rgb(0.72, 0.07, 0.07), opacity: 0.92 });
+  const w = fonts.bold.widthOfTextAtSize(label, fs);
+  page.drawText(label, { x: x + (size - w) / 2, y: y + (size - h) / 2 + (h - fs * 0.7) / 2, size: fs, font: fonts.bold, color: rgb(1, 1, 1) });
+}
+
+function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string, program = BRAND.name) {
   const width = CONTENT_W - sealCorner(page, fonts);
   let y = PAGE_H - M;
-  y = text(page, fonts, `${BRAND.name}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
+  y = text(page, fonts, `${program}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
   y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold, width });
   if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED, width });
   return Math.min(y - 10, fonts.seal ? PAGE_H - M - 58 : y - 10);
@@ -339,6 +414,8 @@ export interface RegistrationInfo {
   /** Owner of record (default) or lien holder; a lien holder names the lien. */
   role?: RegistrationRole;
   interest?: string;
+  /** "Pima County, Arizona": part of the signed statement; another county's site refuses it. */
+  jurisdiction?: string;
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -378,6 +455,7 @@ export interface RegistrationDraft {
   proofs: Record<string, { fingerprint: string; userID: string; signedAt: string; sig: string }[]>;
   role?: RegistrationRole;
   interest?: string;
+  jurisdiction?: string;
 }
 
 type StoredSig = { fingerprint: string; userID: string; signedAt: string; sig: string };
@@ -392,6 +470,7 @@ export interface DraftRegistration {
   labels?: string[];
   role?: RegistrationRole;
   interest?: string;
+  jurisdiction?: string;
   /** Proof of key possession (each key's signature over the registration statement). */
   proof?: StoredSig[];
   /** Registration by sale: the deed (its signed text and signatures) and the previous keys. */
@@ -405,6 +484,7 @@ export function draftRegistration(r: Registration): DraftRegistration {
     labels: r.labels,
     role: r.role,
     interest: r.interest,
+    jurisdiction: r.jurisdiction,
     proof: r.proof ? proofSigs(r.proof) : undefined,
     transfer: r.transfer
       ? {
@@ -422,7 +502,7 @@ const toSigs = (sigs: StoredSig[]) => sigs.map((x) => ({ fingerprint: x.fingerpr
 export async function registrationFromDraft(d: DraftRegistration): Promise<Registration> {
   const keys = await Promise.all(d.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
   const role = d.role === 'lienholder' ? 'lienholder' : undefined;
-  const reg: Registration = { parcel: d.parcel, keys, labels: d.labels, role, interest: d.interest };
+  const reg: Registration = { parcel: d.parcel, keys, labels: d.labels, role, interest: d.interest, jurisdiction: d.jurisdiction };
   if (d.proof?.length) reg.proof = await proofFromSigs(reg, d.proof);
   if (d.transfer) {
     const from = await Promise.all(d.transfer.from.map(async (a) => (await readAnyKey(a)).toPublic()));
@@ -436,7 +516,7 @@ const proofSigs = (p?: SignedText) =>
   (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
 
 /** Rebuilds a proof from stored signatures for the given registration. */
-export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[]; role?: RegistrationRole; interest?: string }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
+export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[]; role?: RegistrationRole; interest?: string; jurisdiction?: string }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
   if (!sigs?.length) return undefined;
   return assembleSigned(
     canonicalText(registrationStatement(reg)),
@@ -483,6 +563,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       proof: proofSigs(proof),
       role: info.role === 'lienholder' ? 'lienholder' : undefined,
       interest: info.role === 'lienholder' ? info.interest?.trim() || undefined : undefined,
+      jurisdiction: info.jurisdiction?.trim() || undefined,
     };
     await doc.attach(new TextEncoder().encode(JSON.stringify(json, null, 1)), `${REGISTRATION_ATTACHMENT}-${n + 1}.json`, {
       mimeType: 'application/json',
@@ -665,7 +746,10 @@ async function drawRegistration(
     fonts,
     'No fee  |  Voluntary',
     info.role === 'lienholder' ? 'Lien Holder Public Key Registration' : 'Owner Public Key Registration',
-    info.county?.trim() ? `For filing with the Recorder, ${info.county.trim()}` : 'For filing with the County Recorder',
+    // The county's own recording office, when the form is for the county the tool is set to.
+    !info.county?.trim() || info.county.trim().toLowerCase() === BRAND.county.toLowerCase()
+      ? `For filing with the ${BRAND.recorderOffice}`
+      : `For filing with the recording office, ${info.county.trim()}`,
   );
 
   checkbox(p, M, y - 9, !info.replacement);
@@ -810,6 +894,7 @@ async function drawRegistration(
     'Every key listed must sign any instrument affecting the parcel. The owners chose how many keys to use and how to describe them. Public keys are safe to publish: they check signatures but cannot create them.',
   );
   const keyRows: Row[] = [{ label: 'Parcel number', value: parcel }];
+  if (info.jurisdiction?.trim()) keyRows.push({ label: 'County', value: info.jurisdiction.trim() });
   keys.forEach((k, i) => {
     const kf = k.getFingerprint().toUpperCase();
     keyRows.push({
@@ -820,6 +905,7 @@ async function drawRegistration(
     });
   });
   y = table(page, fonts, keyRows, y, CONTENT_W, 150);
+  y = jurisdictionBarcode(page, fonts, info.jurisdiction, M, y - 8);
 
   // Codes: this registrant's key, and the parcel's whole key list.
   const ensure = (h: number) => {
@@ -828,7 +914,7 @@ async function drawRegistration(
       y = header(page, fonts, 'Attachment to registration (continued)', 'Keys Registered for This Parcel');
     }
   };
-  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels, role: info.role, interest: info.interest });
+  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels, role: info.role, interest: info.interest, jurisdiction: info.jurisdiction });
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
@@ -1008,6 +1094,219 @@ export async function signaturePagePdf(info: SignaturePageInfo): Promise<Uint8Ar
   const { doc, fonts } = await newDoc(`Signature verification page - ${info.documentId}`);
   const p = await drawSignaturePage(doc, fonts, info);
   footer(p, fonts, `Signature verification page  |  Document ID ${info.documentId}`, 1, 1);
+  return finish(doc);
+}
+
+/** A county copy's release statement: the program file's hash, who published it, and (optionally) their signature. */
+export interface ReleaseStatementInfo {
+  program: string;
+  county: string;
+  state: string;
+  office: string;
+  programUrl: string;
+  signTogether: string;
+  madeFrom: string;
+  publisherName: string;
+  publisherTitle: string;
+  postedAt: string;
+  fileName: string;
+  fileSize: number;
+  sha256: string;
+  zipName: string;
+  zipSha256: string;
+  documentId: string;
+  /** The program's version and build date (v0.1.11152026, 2026-11-16). */
+  version?: string;
+  built?: string;
+  /** What's new in this version (headlines from the changelog). */
+  changes?: string[];
+  /** Adopted here, or a demonstration (from the adoption list). */
+  adoption?: string;
+  /** The user guide, appended after the statement and its verification page. */
+  guide?: Uint8Array;
+  /** The released copy's seal or logo (PNG or JPEG). */
+  seal?: Uint8Array;
+  signed: null | {
+    userID: string;
+    fingerprint: string;
+    signedAt: Date;
+    payload: string;
+    signature: Uint8Array;
+    publicArmored: string;
+  };
+}
+
+export const RELEASE_KEY_ATTACHMENT = 'publisher-key.asc';
+
+/**
+ * The statement is about the released copy, not the site that made it: its name, county,
+ * address, adoption status and seal appear in the header, footer and seal corner.
+ */
+export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<Uint8Array> {
+  const saved = { ...BRAND };
+  try {
+    Object.assign(BRAND, { name: info.program, county: info.county, state: info.state, recorderOffice: info.office, projectUrl: info.programUrl || BRAND.projectUrl });
+    refreshStatus();
+    return await releaseStatement(info);
+  } finally {
+    Object.assign(BRAND, saved);
+  }
+}
+
+async function releaseStatement(info: ReleaseStatementInfo): Promise<Uint8Array> {
+  const { doc, fonts } = await newDoc(`Release statement - ${info.program}`);
+  if (info.seal?.length) {
+    try {
+      fonts.seal = info.seal[0] === 0x89 ? await doc.embedPng(info.seal) : await doc.embedJpg(info.seal);
+    } catch {
+      /* keep the page's own seal */
+    }
+  }
+
+  // ---- Page 1: the statement ----
+  const sp = doc.addPage([PAGE_W, PAGE_H]);
+  let sy = header(sp, fonts, 'Release statement', `${info.program}${info.version ? `, version ${info.version}` : ''}`, `For ${info.county}, ${info.state}`, info.program);
+  const who = [info.publisherName, info.publisherTitle].filter(Boolean).join(', ') || 'The publisher named below';
+  const dated = isoDateTime(info.signed?.signedAt ?? new Date()).slice(0, 10);
+  sy = text(
+    sp,
+    fonts,
+    `${who} releases the ${info.program}${info.version ? ` (version ${info.version}${info.built ? `, built ${info.built}` : ''})` : ''} for ${info.county}, ${info.state}, ` +
+      `where deeds are recorded with the ${info.office}. ` +
+      (info.programUrl ? `It is published at ${info.programUrl}. ` : '') +
+      `This is the program file to use: ${info.fileName}, SHA-256 ${info.sha256.slice(0, 16)}... (in full on the next page). ` +
+      (info.signed ? `This statement is signed with the publisher's OpenPGP key (${formatFingerprint(info.signed.fingerprint).slice(-24)}).` : 'This statement is NOT signed.'),
+    sy,
+    { size: 11, leading: 15 },
+  );
+  const section = (title: string, body: string) => {
+    sy = text(sp, fonts, title, sy - 12, { size: 11.5, font: fonts.bold, color: ACCENT });
+    sy = text(sp, fonts, body, sy - 3, { size: 9.5, leading: 12.5 });
+  };
+  section(
+    'What it is',
+    'A free, voluntary safeguard against forged deeds. An owner registers a digital signing key for their parcel with the recording office, on a notarized paper form. After that, a deed or other document filed against the parcel must carry the registered owners’ digital signatures, printed on the paper as QR codes; a filing that is unsigned or signed with another key is held and investigated instead of being recorded. It runs entirely in the browser: nothing is uploaded or stored.',
+  );
+  if (info.adoption) section('Status', info.adoption);
+  if (info.changes?.length) {
+    const shown = info.changes.slice(0, 10);
+    const more = info.changes.length - shown.length;
+    section(
+      `In this version (${info.changes.length} changes)`,
+      shown.map((c) => `- ${c.replace(/`/g, '')}`).join('\n') + (more > 0 ? `\n...and ${more} more: see "Version and changes" on the program's About tab.` : ''),
+    );
+  }
+  section(
+    'How to use it',
+    `Open the program at ${info.programUrl || 'its web address'} (or open ${info.fileName} itself: it works offline). The user guide attached after the next page walks through making a key, registering a parcel, signing and checking documents, and signing together.`,
+  );
+  section(
+    'How to put it online',
+    `The package ${info.zipName} holds the program and a Cloudflare Worker that serves it and relays signing rooms. Unzip it, then run npm install and npx wrangler deploy (its README.md explains). Or put ${info.fileName} on any web server.`,
+  );
+  // The publisher's own signature, in ink, clear of the footer.
+  sy = Math.max(sy - 26, 96);
+  sp.drawLine({ start: { x: M, y: sy }, end: { x: M + 250, y: sy }, thickness: 0.75, color: INK });
+  sp.drawLine({ start: { x: M + 290, y: sy }, end: { x: M + 420, y: sy }, thickness: 0.75, color: INK });
+  text(sp, fonts, `${who}`, sy - 4, { size: 8.5, color: MUTED, width: 250 });
+  text(sp, fonts, `Date (signed digitally ${dated})`, sy - 4, { x: M + 290, size: 8.5, color: MUTED, width: 140 });
+
+  // ---- Page 2: verification ----
+  const p = doc.addPage([PAGE_W, PAGE_H]);
+  let y = header(
+    p,
+    fonts,
+    'Release statement  |  Verification',
+    `${info.program}: ${info.county}, ${info.state}`,
+    info.signed
+      ? 'Signed by the publisher. Post this page where people get the program, so they can confirm they have the published file. It is kept apart from the file because a file cannot carry its own hash.'
+      : 'NOT SIGNED. This statement records the file’s hash and who made it, but carries no signature, so it proves nothing by itself.',
+    info.program,
+  );
+  const rows: Row[] = [];
+  if (info.publisherName) rows.push({ label: 'Published by', value: info.publisherName });
+  if (info.publisherTitle) rows.push({ label: 'Title or authority', value: info.publisherTitle });
+  if (info.postedAt) rows.push({ label: 'This statement is posted at', value: info.postedAt });
+  rows.push(
+    { label: 'Program', value: info.program },
+    { label: 'For', value: `${info.county}, ${info.state} (deeds recorded with the ${info.office})` },
+    { label: 'Program web address', value: info.programUrl || '(none given)' },
+    { label: 'Sign together', value: info.signTogether },
+    { label: 'Made from', value: info.madeFrom },
+    { label: 'Program file', value: `${info.fileName}, ${humanSize(info.fileSize)}` },
+    { label: 'Program file SHA-256', value: `${info.sha256.slice(0, 32)}\n${info.sha256.slice(32)}`, mono: true },
+    { label: 'Package (zip) SHA-256', value: `${info.zipName}\n${info.zipSha256.slice(0, 32)}\n${info.zipSha256.slice(32)}`, mono: true },
+  );
+  if (info.signed) {
+    rows.push(
+      { label: 'Signed by (key)', value: info.signed.userID },
+      { label: 'Publisher key fingerprint', value: fingerprintTwoLines(info.signed.fingerprint), mono: true },
+      { label: 'Signed at', value: isoDateTime(info.signed.signedAt) },
+    );
+  }
+  y = table(p, fonts, rows, y, CONTENT_W, 150);
+
+  if (info.signed) {
+    y -= 14;
+    const qr = bestQr(info.signed.payload)!;
+    const qrSize = 150;
+    drawQr(p, qr, M, y, qrSize);
+    text(p, fonts, 'Scan: carries the signature over the program file', y - qrSize - 6, { x: M, size: 7.5, font: fonts.bold, color: MUTED, width: qrSize });
+    const rx = M + qrSize + 24;
+    const rw = PAGE_W - M - rx;
+    let ry = text(p, fonts, 'DOCUMENT ID', y, { x: rx, size: 8, font: fonts.bold, color: MUTED });
+    const moduleW = Math.min(1.0, rw / (code128Bits(info.documentId).length + 20));
+    const bw = drawCode128(p, info.documentId, rx + 10 * moduleW, ry - 44, moduleW, 38);
+    ry -= 48;
+    const idW = fonts.mono.widthOfTextAtSize(info.documentId, 10);
+    p.drawText(info.documentId, { x: rx + 10 * moduleW + (bw - idW) / 2, y: ry - 10, size: 10, font: fonts.mono, color: INK });
+    ry -= 20;
+    ry = text(p, fonts, 'How to check the program file', ry - 4, { x: rx, size: 9.5, font: fonts.bold, width: rw });
+    ry = text(
+      p,
+      fonts,
+      `1. Compare the fingerprint above with the one the publisher gives elsewhere (their website, letterhead or in person). ` +
+        `2. Check the file: on this program's website, "Check a document", "Check a binary-signed file": load ${info.fileName} and this page ` +
+        `(the publisher's key is attached to it). Or with GnuPG: gpg --import ${RELEASE_KEY_ATTACHMENT}; gpg --verify ${info.fileName}.sig ${info.fileName}. ` +
+        `3. Or just compare the SHA-256: sha256sum ${info.fileName} (Windows: Get-FileHash ${info.fileName}).`,
+      ry - 3,
+      { x: rx, size: 8, width: rw },
+    );
+    y = Math.min(y - qrSize - 20, ry) - 10;
+    rule(p, y);
+    y = text(p, fonts, 'Code text (for manual entry if the code cannot be scanned):', y - 6, { size: 7.5, font: fonts.bold, color: MUTED });
+    text(p, fonts, info.signed.payload, y - 2, { size: 6.5, font: fonts.mono, leading: 8 });
+    await doc.attach(new TextEncoder().encode(info.signed.publicArmored), RELEASE_KEY_ATTACHMENT, {
+      mimeType: 'application/pgp-keys',
+      description: 'The publisher’s public key',
+    });
+    await doc.attach(info.signed.signature, `${info.fileName}.sig`, {
+      mimeType: 'application/pgp-signature',
+      description: 'Detached OpenPGP signature over the program file',
+    });
+  } else {
+    y = text(
+      p,
+      fonts,
+      `To check a copy, compare its SHA-256 with the one above: sha256sum ${info.fileName} (Windows: Get-FileHash ${info.fileName}). ` +
+        'Without a signature, this only helps if you got this statement from someone you trust.',
+      y - 16,
+      { size: 9 },
+    );
+  }
+  // ---- Then the user guide ----
+  if (info.guide?.length) {
+    try {
+      const guide = await PDFDocument.load(info.guide);
+      const pages = await doc.copyPages(guide, guide.getPageIndices());
+      for (const pg of pages) doc.addPage(pg);
+    } catch {
+      /* the statement stands without the guide */
+    }
+  }
+  const total = doc.getPageCount();
+  footer(sp, fonts, `Release statement  |  Document ID ${info.documentId}`, 1, total);
+  footer(p, fonts, `Release statement  |  Document ID ${info.documentId}`, 2, total);
   return finish(doc);
 }
 
@@ -1205,6 +1504,8 @@ export interface SaleTransfer {
   from: openpgp.PublicKey[];
   /** The buyers' proof of key possession: each key's signature over the new registration. */
   proof?: SignedText;
+  /** The county the sale (and the buyers' registration) is for. */
+  jurisdiction?: string;
 }
 
 export interface InstrumentInfo {
@@ -1476,6 +1777,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   const bw = drawCode128(sp, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
   const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
   sp.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y = Math.min(y, jurisdictionBarcode(sp, fonts, jurisdictionOf(`${info.title}\n${info.text}`), bx, tableTop - 80));
 
   y = text(
     sp,
@@ -1506,6 +1808,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
       }
     }
     const x = M + col * (size + gap);
+    await progress(`Drawing the signature codes: ${i + 1} of ${n} (${Math.round(((i + 1) / n) * 100)}%)...`);
     const qr = bestQr(info.codes[i])!;
     drawQr(sp, qr, x, y, size);
     const label = `Code ${i + 1} of ${n}`;
@@ -1559,6 +1862,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
           keys: t.keys.map((k) => k.armor()),
           labels: t.keys.map((k) => describeKey(k)),
           proof: proofSigs(t.proof),
+          jurisdiction: t.jurisdiction,
           transfer: { documentId, from: t.from.map((k) => k.armor()) },
         },
         null,
@@ -1576,7 +1880,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
     'This deed names the buyers’ signing keys. When it is recorded, these keys become the keys registered for the parcel, in place of ' +
       'the keys that signed the deed, with no separate registration: the sellers’ registered keys signed the deed that names them. ' +
       'From then on, every key below must sign any instrument affecting the parcel. To check a later document, load this deed in place of ' +
-      'a registration form; the tool confirms that the previous keys signed it. Confirm with the Recorder that this deed was recorded and is ' +
+      `a registration form; the tool confirms that the previous keys signed it. Confirm with the ${BRAND.recorderOffice} that this deed was recorded and is ` +
       'the latest for the parcel.',
     y,
     { size: 9.5 },
@@ -1634,7 +1938,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
     y -= 8;
     grid(t.proof.codes, 'Proof code');
   }
-  const codes = await encodeRegistrationCodes({ parcel: t.parcel, keys: t.keys, transfer: { documentId, from: t.from } });
+  const codes = await encodeRegistrationCodes({ parcel: t.parcel, keys: t.keys, jurisdiction: t.jurisdiction, transfer: { documentId, from: t.from } });
   if (y - size - 50 < 64) newPage();
   y = text(page, fonts, 'The buyers’ keys as codes (scan them in any order with the deed’s signature codes):', y - 6, { size: 9, font: fonts.bold });
   y -= 8;
@@ -1941,8 +2245,9 @@ export async function registrationsFromPdf(bytes: Uint8Array): Promise<Registrat
       const parcel = String(j.parcel ?? '');
       const role: RegistrationRole | undefined = j.role === 'lienholder' ? 'lienholder' : undefined;
       const interest = role ? String(j.interest ?? '') : undefined;
-      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys, role, interest }, j.proof) : undefined;
-      const reg: Registration = { parcel, keys, labels, proof, role, interest };
+      const jurisdiction = j.jurisdiction ? String(j.jurisdiction) : undefined;
+      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys, role, interest, jurisdiction }, j.proof) : undefined;
+      const reg: Registration = { parcel, keys, labels, proof, role, interest, jurisdiction };
       if (j.transfer?.documentId && Array.isArray(j.transfer.from)) {
         const from = await Promise.all((j.transfer.from as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
         reg.transfer = { documentId: String(j.transfer.documentId), from };
@@ -2226,11 +2531,13 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
   const bw = drawCode128(cover, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
   const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
   cover.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y = Math.min(y, jurisdictionBarcode(cover, fonts, jurisdictionLabel(BRAND.county, BRAND.state), bx, tableTop - 80));
   y -= 14;
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
-  info.codes.forEach((code, i) => {
+  for (let i = 0; i < info.codes.length; i++) {
+    const code = info.codes[i];
     const col = i % perRow;
     if (col === 0 && y - size - 24 < 64) {
       cover = doc.addPage([PAGE_W, PAGE_H]);
@@ -2238,12 +2545,13 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
       y = header(cover, fonts, 'Signed file  |  Cover page (continued)', 'Signature Codes');
     }
     const x = M + col * (size + gap);
+    await progress(`Drawing the signature codes: ${i + 1} of ${info.codes.length} (${Math.round(((i + 1) / info.codes.length) * 100)}%)...`);
     const qr = bestQr(code);
     if (qr) drawQr(cover, qr, x, y, size);
     const label = `Code ${i + 1} of ${info.codes.length}`;
     cover.drawText(label, { x: x + (size - fonts.bold.widthOfTextAtSize(label, 8.5)) / 2, y: y - size - 12, size: 8.5, font: fonts.bold, color: MUTED });
     if (col === perRow - 1 || i === info.codes.length - 1) y -= size + 50;
-  });
+  }
 
   // ---- 2. The file ----
   const filePages: PDFPage[] = [];

@@ -14,10 +14,73 @@ gives counter staff a way to check a filing.
 
 ## Hard rules
 
-- **Nothing is stored or sent.** No server, no accounts, no analytics, no
-  localStorage/IndexedDB/cookies. Keys and documents exist only in memory while
-  the tab is open. The production build sets a Content-Security-Policy with
-  `connect-src 'none'`. Do not loosen it.
+- **Nothing is stored, and nothing is sent except through a signing room the person
+  turns on.** No accounts, no localStorage/IndexedDB/cookies, no analytics in the page.
+  Keys and documents exist only in memory while the tab is open. Private keys never
+  leave the tab.
+- **Signing rooms** (`src/room.ts`, the owner's decision, Nov 2026): the only network
+  use. Works only when the page was loaded from exactly the program's address
+  (`BRAND.relayUrl`'s origin, https; `roomsAvailableHere`): a saved copy, another host
+  or a preview can't open or join rooms and links to the official address instead. Off
+  until the person has an unlocked key, agrees to the terms of service and waiver of
+  liability (`#room-terms`, `#room-agree`), and turns on "Sign together"; a room link
+  shows an invitation at the top of the page and asks before joining. The room key is
+  read once at start-up (`INVITED_ROOM`): tab changes rewrite the "#". Messages are AES-GCM encrypted in the tab with a 32-byte key that
+  is only in the link after `#`; the relay sees ciphertext and a hashed room name, and
+  stores nothing. Participants prove their keys by signing a challenge. The room's
+  **settings** (jurisdiction and logo) are the starter's (`room.host`): shared as a
+  `settings` message signed with their key (`shareSettings`/`checkSettings`), applied by
+  joiners (`applyRoomSettings`, first proven sender wins), and locked for joiners while in
+  the room (`settingsLockedByRoom`). Joiners can also paste a room link or code
+  (`#room-code`) to join without reloading. A registration in a room offers the proven
+  peers' keys (`#co-room`, and a question before the first signature). A signed file's
+  original (up to `ROOM_FILE_LIMIT`, 50 MB) goes through the room **once per file hash**
+  (`roomFileSent`) as `file-part` messages of `ROOM_FILE_PART` (512 KB, under 1 MB each so
+  Cloudflare takes them too), checked against the hash on arrival (`receiveFilePart`);
+  later updates carry signatures only, and a late joiner asks with
+  `need-file` naming the first signer, who answers at once; the others wait 3-5 s and
+  stand down when it arrives.
+  **Live editing** (`prep` messages): before anyone signs, changes to the Sign and
+  Register forms (`prepFields`: every field with an id in `#text-form`/`#reg-form`, minus
+  files and the room's own), the loaded registration, buyers' and co-owners' keys are
+  sent as they happen (only what changed, `prepSeen`; a full snapshot to a newcomer) and
+  applied as if typed (`applyPrep` dispatches input/change events; never into the focused
+  field; the template first, title and text last). On a sale deed, proven peers who
+  aren't sellers are offered as buyers (`#buyer-room`).
+  **Meetup room** (the owner's decision, Nov 2026): one public room for everyone
+  (`SigningRoom.meetup`, fixed `MEETUP_SECRET`, relays allow 500 tabs for its name). Each
+  tab sends `hello` and a `profile` signed with its key (name from the key, county,
+  optional contact, a fresh P-256 ECDH public key); unsigned or unproven listings are
+  ignored. `invite` is encrypted for the invitee alone (`sealFor`/`openFrom`) and signed
+  by the inviter; it carries a new private room's key and the county. Accepting joins that
+  room, whose settings (and seal: `roomSettings` sends any seal that isn't a built-in
+  state seal) come from the inviter. `bye` (signed) removes an entry at once; listings
+  refresh every 60 s and expire after 150 s. "My county only" filters by county.
+- The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
+  relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check), the
+  master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the
+  analytics endpoint **only**. Do not loosen it further.
+- **The project's server** (`vps/`, the owner's decision, Nov 2026): `MASTER_FALLBACK_URL`
+  (https://securerecorder.csproject.org) is a second official address for pages that relay
+  through the master site (`officialOrigins`), and their **first** relay:
+  `SigningRoom.connect` tries `relayBases()` in order (the project's server, then the
+  master's Cloudflare relay as the backup) and moves on if one doesn't welcome the tab
+  within 8 s or closes first. `vps/relay.mjs` speaks the Worker's protocol; it serves
+  only the proven page (`update-page.sh` checks the README's SHA-256) and logs nothing.
+  Set up with `sh vps/setup.sh` (Debian 13, as root).
+- **Update check** (`checkForUpdate`): never on load. Only after the person turns on Sign
+  together or allows analytics, and only when the page isn't on `MASTER_URL`: it reads
+  the first few KB of `MASTER_URL/?check=1` for the comment the build puts near the top
+  of `index.html` (`<!-- S.T.O.P. stop-version=v... built=... -->`), and if it is newer,
+  offers `settingsLinkFor(MASTER_URL)` (the same settings as link parameters). The Worker
+  answers `?check` with CORS and counts it as `update-check`.
+- **Analytics:** (1) server-side in the Worker (Workers Analytics Engine): page loads,
+  downloads and rooms by country; (2) Cloudflare Web Analytics in the page **only if the
+  visitor allows it** (`#analytics-ask`, asked on every visit on https, never in a saved
+  copy; no cookies). Token: `MASTER_ANALYTICS_TOKEN` in `src/brand.ts` (public); county
+  copies carry their own or the master's. The CSP allows `script-src
+  https://static.cloudflareinsights.com` and `connect-src https://cloudflareinsights.com`
+  for it. Never count anything about keys or documents.
 - Keys are never published anywhere (no keyservers, no WKD). The public key only
   goes onto the printed registration form.
 - Use standard OpenPGP only. Every signature must also verify with stock GnuPG
@@ -91,6 +154,16 @@ gives counter staff a way to check a filing.
    shows each registration's proof status, and a deed check fails unless the
    registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
    card** PDF for sharing with co-owners.
+   **Jurisdiction** (the owner's decision, Nov 2026): a registration names its county
+   (`jurisdiction`, "Pima County, Arizona", fixed from the site's county when the first
+   key holder signs) in `registrationStatement` ("JURISDICTION: ..."), its codes' fifth
+   field, its JSON and drafts, and a sale's buyers' registration takes the sellers'. New
+   documents and files start their signed text with the same line (`jurisdictionLine`).
+   Registrations and documents print it as a COUNTY Code 128 barcode
+   (`jurisdictionBarcode`; under 30 points tall, never a document ID). The check
+   (`verifyScannedText`'s `jurisdiction`) fails a registration or document for another
+   county, or one that names none; the Sign tab refuses them (`requireThisCounty`). Keys
+   carry no county.
    **Roles**: a registration is for the owner of record (default) or a **lien holder**
    (`role: 'lienholder'`, `interest` names the lien); the role is in
    `registrationStatement`, the codes (the fifth field becomes a JSON object
@@ -201,9 +274,18 @@ gives counter staff a way to check a filing.
 - The seal image is embedded in `index.html` (`<img id="brand-seal">`, base64), with
   a comment explaining how to replace it. The PDFs read the seal from there, so
   there is one copy.
-- While `status` is `'proposed'`, the site and every PDF say "Proposed program: not
-  yet adopted by Pima County. Not an official county form." Switch it to `'adopted'`
-  only once the county has adopted the program and approved use of its seal.
+- **Adoption list** (`src/adoptions.json`, `src/adoption.ts`; the owner's decision, Nov
+  2026): only the project owner adds entries, in this way: an entry, a proven build, a
+  deploy. A **state** entry (no county) adopts every county in that state; a **county**
+  entry adopts one county; `seal: true` also approves the seal. `refreshStatus()` sets
+  `BRAND.status` ('demo' or 'adopted') and `BRAND.sealApproved` for the current county.
+  Everywhere not adopted, the site and every PDF say "Demonstration system: not adopted
+  by <county>, <state>. Not an official county form." and the seal carries a DEMO band
+  (`demoBand` in pdf.ts, `#seal-wrap[data-band]` on the page; "SEAL NOT APPROVED" when
+  adopted without the seal). Never mark a place adopted any other way. The About tab
+  (`#adoption`) lists adoptions by state and county and, where not adopted, how to ask:
+  the county's recording office and board, a letter, and for a state, Open States links
+  (find your legislators; `openstates.org/<state>/`) with steps and a letter.
 - The 2-inch recording margin on deed page 1 stays free of branding.
 
 ## Code maps (PDF417)
@@ -235,6 +317,67 @@ searches size-matched tiles, skips white areas, ignores empty or bogus detection
 (the seal can fool it), reads pages last-first and stops once complete. Keep
 signature codes small (`PART_SIZE` = 320, about version 14): large dense codes fail
 at fractional pixel sizes, which real scans and photos produce.
+
+## Worker (`worker/`)
+
+Cloudflare Worker for the hosted site: serves `dist/index.html` (assets binding), relays
+signing rooms (`/relay/<room>`, one Durable Object per room, WebSocket hibernation, no
+storage, at most 16 tabs and 4 MB per message) and counts usage (`stop_usage` dataset).
+Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`). See
+`worker/README.md`. `npx wrangler dev` runs it locally (the relay and the page together).
+
+## User guide and release statement
+
+`docs/guide/user-guide.pdf` is built by `scripts/build-guide.mjs` from screenshots that
+`scripts/guide-shots.mjs` takes of the built app (served at the official address, with the
+proof's test keys and documents). Retake them when the screens change (`npm run build &&
+npm run guide:shots && npm run guide`, then build and prove again). The build carries the
+guide as `__GUIDE_PDF__` (About tab download; appended to a county's release statement).
+Keep the JPEGs small: deploying from a session sends the page inside the Worker script,
+which Cloudflare's free plan caps at 3 MB compressed (now about 2.8 MB).
+`releaseStatementPdf`: page 1 is the statement (publisher releases version X for the
+county, status, what's new, how to use and deploy, ink signature line), page 2 the
+verification (hashes, fingerprint, PGPSIG1 code), then the guide.
+
+## The project's server (`vps/`)
+
+The project's VPS (Debian 13): Caddy (https, no access log) in front of `relay.mjs` (Node,
+`ws`) on 127.0.0.1:8787, run by systemd as a throwaway user, behind an nftables firewall
+(22, 80, 443 only). `setup.sh` installs and updates it; `update-page.sh` installs the page
+from the master site only if it matches the README's SHA-256, so deploy to the master
+first, then pull and update the VPS. `tests/relay.test.ts` runs the real relay.
+
+## County copies, seals, master site
+
+- **Link API** (GET parameters on the page; documented and built live in the panel's
+  "Link settings (API) and link builder"): `name`, `expansion`, `county`, `state`,
+  `recorder`, `url`, `authority`, `seal` (data: image only), and a `#tab`.
+- **Download this county's program** (`src/deploy.ts`): the page's own HTML captured at
+  start-up (`src/pristine.ts`), with a `<script type="application/json" id="stop-config">`
+  settings block (read at start-up as that copy's defaults; a copy is always
+  "proposed"), the seal swapped in, the CSP's connect-src set to the copy's own address
+  (only if "Sign together runs at this address" is ticked; otherwise `MASTER_URL`), and
+  the Worker source (`__WORKER_SOURCE__`) with a wrangler.toml and README, zipped.
+  Optional **publisher** (`lb-pub-*`, baked in as `publisher`, shown on About) and
+  **signing** (`lb-sign`, needs an unlocked key): `signDocument` over the exact
+  `index.html` bytes; the zip adds `index.html.sig` and `publisher-key.asc`; a separate
+  **release statement** (`releaseStatementPdf`) carries both SHA-256s, the publisher, the
+  fingerprint and the `PGPSIG1` code, with the key and .sig attached. The hash never goes
+  in the HTML (it would change it). `#bin-check` uses the statement's attached key when no
+  registration is loaded.
+- **`MASTER_URL`** (`src/brand.ts`, fixed in every copy): the original site. Copies
+  without their own rooms send Sign together there; a copy whose relay can't be reached
+  offers "Continue this room on the main site" (same room key).
+- **State seals** (`src/seals.ts`, generated; credits in SEALS.md and on the page): shown
+  when the county isn't the build's default; an uploaded logo wins. Many are insignia.
+
+## County list
+
+`src/counties.ts` is generated from the Census Bureau's 2020 county list (public
+domain): every county and equivalent by state, plus each state's usual title for the
+office that records deeds (`recordingOffice`, with `OFFICE_EXCEPTIONS`). Titles are
+defaults to confirm; the page lets them be corrected. Don't replace it with a
+commercial database whose license forbids republishing (simplemaps' free license does).
 
 ## Layout
 
@@ -283,10 +426,45 @@ Every build that is released, or pushed for a pull request, must be proven:
    - a sale to an individual checked against the previous filing, and the new owner's
      document checked against the certificate-only filing
    - checks that must fail: the new owner's document against the original
-     registration, and a deed signed by a key that isn't registered
+     registration, a deed signed by a key that isn't registered, and a Pima County
+     registration and deed on a site set to Maricopa County
    - changing the county from the header on another tab, and settings from the link
      (with an embedded seal; "Copy a link" round-trips; a seal at a web address is
      refused with no request)
+   - the county selector and recording offices in other states (Texas, Louisiana)
+   - the state seal switching with the state, the link builder's link round-tripping,
+     and "Download this county's program": the zip's HTML opens as that county (office,
+     seal), its CSP allows only its own address, and its PDFs name it
+   - a signed release: the statement names the publisher and carries the file's and the
+     zip's SHA-256; `gpg --verify` passes; the program's check with the file and the
+     statement is GOOD, and a changed file DOES NOT VERIFY
+   - four signers in one room (two signing at the same moment; gpg verifies all four), a
+     registration signed together in a room (the joiner pastes the link into the page they
+     have open, takes the starter's county, and the room's keys are offered and asked
+     for), and a file signed together in a room (the file crosses the relay once while
+     both sign, and once more for someone who joins afterwards)
+   - a 6.9 MB file through a room in parts (each message under 1 MB), checked GOOD
+   - a sale in a signing room: the seller adds the buyer from the room (no key file),
+     both sellers sign, the buyer proves their key from their own tab, COMPLETE
+   - live editing in a room: a loaded registration, the template and fields typed in
+     either tab, and the registration form reach the other tab
+   - the meetup room: three people listed (proven, county, contact), "My county only",
+     a group invitation for one county that switches the invitee from another county,
+     and leaving removing an entry at once
+   - failover: the project's server refuses, and two tabs (one on each official address)
+     move to Cloudflare's relay on their own, sign together and check GOOD
+   - the update check: nothing until Sign together is turned on, then one request to the
+     master site; a newer version is offered with the same settings, an older one isn't
+   - two owners signing together in a signing room through a test relay, with the app
+     served at the program's exact address (and a saved copy refused): off until a
+     key is unlocked and it is turned on, the link asks first, peers proven by their
+     keys, every relay message encrypted, and the result checks GOOD
+   - demonstration until adopted: the notice and the DEMO band on the page and the PDFs,
+     and the About tab's status, letter and state legislature link
+   - the user guide downloads from the About tab, and a release statement carries the
+     statement, the verification and the guide
+   - usage analytics: asked first on the web, never in a saved copy; nothing loaded
+     before an answer or after "No thanks"; only the beacon after "Allow"
    - no page errors and no network requests
 4. Every PDF the run made, plus `REPORT.md` (version, run time, the build's SHA-256,
    each check and its files), goes to `proof/<version>/`. Commit that folder. The

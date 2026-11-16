@@ -1,3 +1,4 @@
+import { adoptionFor } from './adoption';
 /*
  * ===========================================================================
  * BRANDING: edit this file to rename the program or change its web address.
@@ -16,6 +17,13 @@
  * Only the standard PDF characters can be printed (plain Latin letters,
  * digits and common punctuation), so avoid curly quotes or symbols here.
  */
+/**
+ * The master site's Cloudflare Web Analytics token (public; it is in every visitor's
+ * page). Fixed in every build and copy: county copies that don't set their own count
+ * with this one. '' leaves analytics off. From the Cloudflare dashboard, Web Analytics.
+ */
+export const MASTER_ANALYTICS_TOKEN = '';
+
 export const BRAND = {
   /** Full program name. */
   name: 'Pima County S.T.O.P. Initiative',
@@ -25,6 +33,12 @@ export const BRAND = {
   county: 'Pima County',
   /** State: used in the deed templates ("... County, Arizona") and the notary venue ("STATE OF ARIZONA"). */
   state: 'Arizona',
+  /**
+   * The office that records deeds in this county, as it calls itself (it differs
+   * by state and by county: County Recorder, County Clerk, Register of Deeds...).
+   * Used on the registration form, the certificate and in the templates.
+   */
+  recorderOffice: 'Pima County Recorder',
   /**
    * Program web address, printed on every PDF and linked from the site.
    * The test site for now; replace it with the official address once there is one, e.g.
@@ -41,14 +55,45 @@ export const BRAND = {
    */
   entityAuthority: 'Pima County Business Licensing Authority',
   /**
-   * 'proposed' prints the notice below on the site and every PDF, so nobody
-   * mistakes these documents for official county forms before the program is
-   * adopted. Change to 'adopted' only once the county has approved the program
-   * (and the use of its seal).
+   * 'demo' until this county (or its whole state) is in src/adoptions.json, which only
+   * the project owner changes, through a proven build. A demonstration prints the notice
+   * below on the site and every PDF, and a DEMO band across the seal. Set by
+   * refreshStatus(); don't set it by hand.
    */
-  status: 'proposed' as 'proposed' | 'adopted',
-  proposedNotice: 'Proposed program: not yet adopted by Pima County. Not an official county form.',
+  status: 'demo' as 'demo' | 'adopted',
+  /** The adoption also approves showing the seal without the DEMO band. */
+  sealApproved: false,
+  /**
+   * Signing rooms: the relay that passes encrypted messages between co-owners'
+   * tabs (worker/ in this repository, deployed with Cloudflare). The page may
+   * connect only to this host (the build's Content-Security-Policy allows it and
+   * nothing else), and only when someone starts or joins a room. '' turns
+   * signing rooms off.
+   */
+  relayUrl: 'https://pimastopinitiative.jasonajensen.workers.dev',
+  /**
+   * Cloudflare Web Analytics site token (public: it is in every visitor's page). The
+   * page asks each visitor first and loads the beacon only if they allow it. ''
+   * leaves analytics off. Get it from the Cloudflare dashboard, Web Analytics, after
+   * adding the site. County copies use this one unless they give their own.
+   */
+  analyticsToken: MASTER_ANALYTICS_TOKEN,
+  proposedNotice: 'Demonstration system: not adopted by Pima County, Arizona. Not an official county form.',
 };
+
+/**
+ * The program's master address (the original site). Fixed in every build and copy: a
+ * county copy whose own signing rooms can't be reached falls back to it, and copies
+ * without their own rooms send people there.
+ */
+export const MASTER_URL = 'https://pimastopinitiative.jasonajensen.workers.dev';
+
+/**
+ * The project's own server (`vps/`): the same page and the signing-room relay. For pages
+ * that relay through the master site, rooms use this server first and fall back to the
+ * master site's Cloudflare relay; the page works when loaded from here too.
+ */
+export const MASTER_FALLBACK_URL = 'https://securerecorder.csproject.org';
 
 /** The values as built, so an override can be undone. */
 export const BRAND_DEFAULTS = { ...BRAND };
@@ -60,6 +105,8 @@ export interface Jurisdiction {
   expansion: string;
   county: string;
   state: string;
+  /** The office that records deeds there (e.g. "Harris County Clerk"). */
+  recorderOffice: string;
   projectUrl: string;
   entityAuthority: string;
 }
@@ -72,20 +119,30 @@ export interface Jurisdiction {
 export function applyJurisdiction(j: Partial<Jurisdiction> | null) {
   Object.assign(BRAND, BRAND_DEFAULTS);
   if (!j) return;
-  for (const k of ['name', 'expansion', 'county', 'state', 'projectUrl', 'entityAuthority'] as const) {
+  for (const k of ['name', 'expansion', 'county', 'state', 'recorderOffice', 'projectUrl', 'entityAuthority'] as const) {
     const v = j[k]?.trim();
     if (v) BRAND[k] = v;
   }
-  const changed = (['name', 'county', 'state'] as const).some((k) => BRAND[k] !== BRAND_DEFAULTS[k]);
-  if (changed) {
-    BRAND.status = 'proposed';
-    BRAND.proposedNotice = `Proposed program: not yet adopted by ${BRAND.county}. Not an official county form.`;
-  }
+  refreshStatus();
 }
+
+/**
+ * Adopted or a demonstration, from the adoption list (src/adoptions.json): this county's
+ * own entry, or its state's.
+ */
+export function refreshStatus() {
+  const a = adoptionFor(BRAND.state, BRAND.county);
+  BRAND.status = a ? 'adopted' : 'demo';
+  BRAND.sealApproved = !!a?.seal;
+  BRAND.proposedNotice = a
+    ? ''
+    : `Demonstration system: not adopted by ${BRAND.county}, ${BRAND.state}. Not an official county form.`;
+}
+refreshStatus();
 
 /** Text for the PDF footers. */
 export function brandLine() {
   const parts = [`${BRAND.name} (${BRAND.expansion})`, BRAND.projectUrl];
-  if (BRAND.status === 'proposed') parts.push(BRAND.proposedNotice);
+  if (BRAND.status === 'demo') parts.push(BRAND.proposedNotice);
   return parts.filter(Boolean).join('  |  ');
 }

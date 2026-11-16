@@ -1,0 +1,32 @@
+# Cloudflare Worker for the S.T.O.P. site. Deploy from this folder:
+#   npm install
+#   npx wrangler login        (once)
+#   npx wrangler deploy
+# See README.md in this folder.
+name = "pimastopinitiative"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+# No telemetry from the deploy tool either.
+send_metrics = false
+# One address only: Sign together works only there, so no per-version preview addresses.
+preview_urls = false
+
+# The app: the single-file build, served by the Worker (so page loads can be counted).
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+run_worker_first = true
+
+# Signing rooms: one Durable Object per room, no storage.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Usage counts (page loads, downloads, rooms opened and joined), per country.
+[[analytics_engine_datasets]]
+binding = "STATS"
+dataset = "stop_usage"

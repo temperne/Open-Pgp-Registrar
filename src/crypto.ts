@@ -712,6 +712,12 @@ export interface Registration {
   /** For a lien holder: the lien these keys protect (e.g. its recording number). */
   interest?: string;
   /**
+   * The county and state this registration is for ("Pima County, Arizona"). It is part
+   * of the signed statement, so it can't be changed, and a site running for another
+   * county refuses it.
+   */
+  jurisdiction?: string;
+  /**
    * A registration made by a recorded sale: the deed, signed by the previous
    * registered keys, names these keys as the new ones. No separate registration
    * (or identity check) is needed; the Recorder's index says which is current.
@@ -737,12 +743,14 @@ export const roleName = (r?: RegistrationRole) => (r === 'lienholder' ? 'lien ho
  * key and passphrase. Keys are listed in fingerprint order so every holder,
  * on any computer, signs exactly the same text.
  */
-export function registrationStatement(reg: { parcel: string; keys: AnyKey[]; role?: RegistrationRole; interest?: string }) {
+export function registrationStatement(reg: { parcel: string; keys: AnyKey[]; role?: RegistrationRole; interest?: string; jurisdiction?: string }) {
+  const where = reg.jurisdiction?.trim() ? [`JURISDICTION: ${reg.jurisdiction.trim()}.`] : [];
   const keys = [...reg.keys].sort((x, y) => x.getFingerprint().localeCompare(y.getFingerprint()));
   if (reg.role === 'lienholder') {
     return [
       'S.T.O.P. LIEN HOLDER KEY REGISTRATION.',
       `PARCEL NUMBER: ${reg.parcel.trim()}.`,
+      ...where,
       `INTEREST: ${(reg.interest ?? '').trim() || 'NOT GIVEN'}.`,
       'EVERY KEY LISTED BELOW MUST SIGN ANY RELEASE, SATISFACTION OR ASSIGNMENT OF THIS INTEREST.',
       'BY SIGNING THIS STATEMENT, EACH KEY HOLDER CONFIRMS THEY HOLD THE KEY AND ITS PASSPHRASE.',
@@ -752,6 +760,7 @@ export function registrationStatement(reg: { parcel: string; keys: AnyKey[]; rol
   return [
     'S.T.O.P. PARCEL KEY REGISTRATION.',
     `PARCEL NUMBER: ${reg.parcel.trim()}.`,
+    ...where,
     'EVERY KEY LISTED BELOW MUST SIGN ANY INSTRUMENT AFFECTING THIS PARCEL.',
     'BY SIGNING THIS STATEMENT, EACH KEY HOLDER CONFIRMS THEY HOLD THE KEY AND ITS PASSPHRASE.',
     ...keys.map((k, i) => `KEY ${i + 1}: ${k.getFingerprint().toUpperCase()} ${describeKey(k)}.`),
@@ -847,17 +856,34 @@ export function parcelKey(parcel: string) {
   return parcel.toUpperCase().replace(/[^0-9A-Z]/g, '');
 }
 
+/** "Pima County, Arizona": how a jurisdiction is written in signed text. */
+export function jurisdictionLabel(county: string, state: string) {
+  return `${county.trim()}, ${state.trim()}`;
+}
+
+/** The jurisdiction a signed text names ("JURISDICTION: PIMA COUNTY, ARIZONA."), or ''. */
+export function jurisdictionOf(text: string) {
+  return /JURISDICTION:\s*([^.\n]+?)\s*\./i.exec(text)?.[1]?.trim() ?? '';
+}
+
+/** Same county and state, however written. */
+export function sameJurisdiction(a: string, b: string) {
+  const norm = (x: string) => canonicalText(x).replace(/[^A-Z0-9]/g, '');
+  return !!a && !!b && norm(a) === norm(b);
+}
+
 export async function encodeRegistrationCodes(reg: Registration): Promise<string[]> {
   const keys = concatBytes(reg.keys.map((k) => k.toPublic().write()));
   const fields = [REG_PREFIX, toBase64(new TextEncoder().encode(reg.parcel.trim())), 'ALL', toBase64(keys)];
   const labels = reg.labels?.some((l) => l.trim()) ? reg.labels.map((l) => l.trim()) : undefined;
-  const extra = reg.role === 'lienholder' || reg.transfer;
+  const extra = reg.role === 'lienholder' || reg.transfer || reg.jurisdiction?.trim();
   if (extra) {
     // Newer form of the fifth field: an object (older readers expected a label list).
     const obj = {
       labels,
       role: reg.role === 'lienholder' ? 'lienholder' : undefined,
       interest: reg.interest?.trim() || undefined,
+      jurisdiction: reg.jurisdiction?.trim() || undefined,
       transfer: reg.transfer ? { documentId: reg.transfer.documentId, from: toBase64(concatBytes(reg.transfer.from.map((k) => k.toPublic().write()))) } : undefined,
     };
     fields.push(toBase64(new TextEncoder().encode(JSON.stringify(obj))));
@@ -891,10 +917,11 @@ export async function decodeRegistrationCodes(scanned: string): Promise<Registra
     }
     if (Array.isArray(extra)) reg.labels = extra.map((x) => String(x ?? ''));
     else if (extra && typeof extra === 'object') {
-      const o = extra as { labels?: unknown[]; role?: string; interest?: string; transfer?: { documentId?: string; from?: string } };
+      const o = extra as { labels?: unknown[]; role?: string; interest?: string; jurisdiction?: string; transfer?: { documentId?: string; from?: string } };
       if (Array.isArray(o.labels)) reg.labels = o.labels.map((x) => String(x ?? ''));
       if (o.role === 'lienholder') reg.role = 'lienholder';
       if (o.interest) reg.interest = String(o.interest);
+      if (o.jurisdiction) reg.jurisdiction = String(o.jurisdiction);
       if (o.transfer?.documentId && o.transfer.from) {
         const from = await openpgp.readKeys({ binaryKeys: fromBase64(o.transfer.from) });
         reg.transfer = { documentId: String(o.transfer.documentId), from: from.map((k) => k.toPublic()) };
@@ -931,6 +958,8 @@ export function mergeRegistrations(regs: Registration[]): Registration {
     .sort((x, y) => y.signatures.length - x.signatures.length)[0];
   const roles = new Set(regs.filter((r) => r.parcel).map((r) => r.role ?? 'owner'));
   if (roles.size > 1) throw new Error('These registrations are for different roles (an owner and a lien holder). Load the one that applies to this document.');
+  const places = new Set(regs.filter((r) => r.parcel).map((r) => (r.jurisdiction ?? '').trim().toUpperCase()));
+  if (places.size > 1) throw new Error(`These registrations are for different counties (${[...places].filter(Boolean).join('; ')}). Load the one for this county.`);
   const first = regs.find((r) => r.role || r.interest || r.transfer);
   const transfer = regs.map((r) => r.transfer).find((t) => t?.deed) ?? first?.transfer;
   return {
@@ -940,6 +969,7 @@ export function mergeRegistrations(regs: Registration[]): Registration {
     proof,
     role: first?.role,
     interest: first?.interest,
+    jurisdiction: regs.find((r) => r.jurisdiction)?.jurisdiction,
     transfer,
   };
 }
@@ -977,6 +1007,8 @@ export async function verifyScannedText(input: {
   registration?: Registration;
   /** Shorthand for a registration with one key and no parcel. */
   registeredKey?: AnyKey;
+  /** The county and state this site checks filings for ("Pima County, Arizona"). */
+  jurisdiction?: string;
 }): Promise<TextVerifyResult> {
   const reg: Registration = input.registration ?? { parcel: '', keys: input.registeredKey ? [input.registeredKey.toPublic()] : [] };
   const checks: Check[] = [];
@@ -1079,6 +1111,28 @@ export async function verifyScannedText(input: {
       state: signers.every((s) => s.state === 'pass') ? 'pass' : 'fail',
       detail: `${valid} owners signed exactly the same text (document ID ${d.documentId}).`,
     });
+  }
+  // The county: the registration and the document must both be for the county this site
+  // checks filings for. Both name it in their signed text, so neither can be changed.
+  if (input.jurisdiction) {
+    const site = input.jurisdiction;
+    if (reg.parcel) {
+      checks.push(
+        !reg.jurisdiction
+          ? { label: 'Registration county', state: 'fail', detail: `The registration doesn't name its county, so it can't be checked against ${site}.` }
+          : sameJurisdiction(reg.jurisdiction, site)
+            ? { label: 'Registration county', state: 'pass', detail: `The registration is for ${reg.jurisdiction}.` }
+            : { label: 'Registration county', state: 'fail', detail: `The registration is for ${reg.jurisdiction}, not ${site}. This site checks filings for ${site} only.` },
+      );
+    }
+    const named = jurisdictionOf(d.canonical);
+    checks.push(
+      !named
+        ? { label: 'Document county', state: 'fail', detail: `The signed text doesn't name its county ("JURISDICTION: ..."), so it can't be checked against ${site}.` }
+        : sameJurisdiction(named, site)
+          ? { label: 'Document county', state: 'pass', detail: `The signed text is for ${named}.` }
+          : { label: 'Document county', state: 'fail', detail: `The signed text is for ${named}, not ${site}. This site checks filings for ${site} only.` },
+    );
   }
   let notForRecording = false;
   if (reg.parcel) {

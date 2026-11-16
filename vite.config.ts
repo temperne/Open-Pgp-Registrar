@@ -1,23 +1,47 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 // Version, build date and changelog are built into the page (About this software).
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+const builtAt = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+// Near the top of index.html, so another copy can read the version from the first few KB.
+const versionComment = `<!-- S.T.O.P. stop-version=v${pkg.version} built=${builtAt} -->`;
 const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8');
+// The Worker's source, built in so the page can package it for another county.
+const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.url), 'utf8');
+// The user guide (scripts/build-guide.mjs), carried in the page as base64.
+const guideUrl = new URL('./docs/guide/user-guide.pdf', import.meta.url);
+const guidePdf = existsSync(guideUrl) ? readFileSync(guideUrl).toString('base64') : '';
 
 // The built app is one self-contained HTML file. Owners and Recorder staff can
-// save it and open it offline. The Content-Security-Policy blocks every network
-// connection, so the page can't send keys or documents anywhere even if it
-// tried. It is added only to the build because the dev server needs a websocket.
+// save it and open it offline. The Content-Security-Policy allows network
+// connections to one place only: the signing-room relay named in src/brand.ts
+// (and the site's own origin, which serves it). Even there, a room's messages are
+// encrypted in the tab with a key the relay never sees. Nothing else can be
+// reached. It is added only to the build because the dev server needs a websocket.
+const brandSource = readFileSync(new URL('./src/brand.ts', import.meta.url), 'utf8');
+const relay = /relayUrl:\s*'([^']*)'/.exec(brandSource)?.[1] ?? '';
+const relayHost = relay ? new URL(relay).host : '';
+// The master site's backup server (MASTER_FALLBACK_URL): signing rooms move there if the master can't be reached.
+const masterHost = new URL(/MASTER_URL = '([^']*)'/.exec(brandSource)?.[1] ?? 'https://invalid').host;
+const fallback = /MASTER_FALLBACK_URL = '([^']*)'/.exec(brandSource)?.[1] ?? '';
+const fallbackHost = fallback && relayHost === masterHost ? new URL(fallback).host : '';
+const connect = [
+  "'self'",
+  ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : []),
+  ...(fallbackHost ? [`https://${fallbackHost}`, `wss://${fallbackHost}`] : []),
+  'https://cloudflareinsights.com',
+].join(' ');
 const csp = [
   "default-src 'none'",
-  "script-src 'unsafe-inline'",
+  // Cloudflare Web Analytics: its beacon script, loaded only if the visitor allows it.
+  "script-src 'unsafe-inline' https://static.cloudflareinsights.com",
   "style-src 'unsafe-inline'",
   'img-src data: blob:',
-  "connect-src 'none'",
+  `connect-src ${connect}`,
   "form-action 'none'",
   "base-uri 'none'",
   "object-src 'none'",
@@ -28,7 +52,7 @@ function offlineCsp(): Plugin {
     name: 'offline-csp',
     apply: 'build',
     transformIndexHtml(html) {
-      return html.replace('<head>', `<head>\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`);
+      return html.replace('<head>', `<head>\n    ${versionComment}\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`);
     },
   };
 }
@@ -54,8 +78,11 @@ export default defineConfig({
   plugins: [offlineCsp(), viteSingleFile(), fileHash()],
   define: {
     __APP_VERSION__: JSON.stringify(`v${pkg.version}`),
-    __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __BUILD_DATE__: JSON.stringify(builtAt.slice(0, 10)),
+    __BUILD_TIME__: JSON.stringify(builtAt),
     __CHANGELOG__: JSON.stringify(changelog),
+    __WORKER_SOURCE__: JSON.stringify(workerSource),
+    __GUIDE_PDF__: JSON.stringify(guidePdf),
   },
   build: { target: 'es2022' },
   test: { testTimeout: 60000 },
