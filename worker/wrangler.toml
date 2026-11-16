@@ -8,6 +8,8 @@ main = "src/index.ts"
 compatibility_date = "2025-09-01"
 # No telemetry from the deploy tool either.
 send_metrics = false
+# One address only: Sign together works only there, so no per-version preview addresses.
+preview_urls = false
 
 # The app: the single-file build, served by the Worker (so page loads can be counted).
 [assets]
