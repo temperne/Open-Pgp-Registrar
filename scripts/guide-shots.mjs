@@ -135,5 +135,8 @@ pdfShot('13-pdf-registration', '01-registration-ann-and-bob-carol.pdf');
 const deedPages = +execFileSync('pdfinfo', [join(PROOF, '02-sale-1-deed-to-dan-eve-and-acme.pdf')]).toString().match(/Pages:\s+(\d+)/)[1];
 pdfShot('14-pdf-deed', '02-sale-1-deed-to-dan-eve-and-acme.pdf');
 pdfShot('15-pdf-signature-page', '02-sale-1-deed-to-dan-eve-and-acme.pdf', Math.min(deedPages, 3));
+// For the README's forms table (not in the guide): the certificate and a release statement.
+pdfShot('16-pdf-certificate', '03c-sale-1-filing-certificate-only.pdf');
+pdfShot('17-pdf-release-statement', '13b-release-statement.pdf');
 const total = readdirSync(OUT).filter((f) => f.endsWith('.jpg')).reduce((n, f) => n + readFileSync(join(OUT, f)).length, 0);
 console.log(`${readdirSync(OUT).filter((f) => f.endsWith('.jpg')).length} images, ${(total / 1024).toFixed(0)} KB`);

@@ -342,10 +342,10 @@ function demoBand(page: PDFPage, fonts: Fonts, x: number, y: number, size: numbe
   page.drawText(label, { x: x + (size - w) / 2, y: y + (size - h) / 2 + (h - fs * 0.7) / 2, size: fs, font: fonts.bold, color: rgb(1, 1, 1) });
 }
 
-function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string) {
+function header(page: PDFPage, fonts: Fonts, kicker: string, title: string, subtitle?: string, program = BRAND.name) {
   const width = CONTENT_W - sealCorner(page, fonts);
   let y = PAGE_H - M;
-  y = text(page, fonts, `${BRAND.name}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
+  y = text(page, fonts, `${program}  |  ${kicker}`.toUpperCase(), y, { size: 8, font: fonts.bold, color: ACCENT, width });
   y = text(page, fonts, title, y - 6, { size: 19, font: fonts.bold, width });
   if (subtitle) y = text(page, fonts, subtitle, y - 4, { size: 10.5, color: MUTED, width });
   return Math.min(y - 10, fonts.seal ? PAGE_H - M - 58 : y - 10);
@@ -1141,7 +1141,7 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
 
   // ---- Page 1: the statement ----
   const sp = doc.addPage([PAGE_W, PAGE_H]);
-  let sy = header(sp, fonts, 'Release statement', `${info.program}${info.version ? `, version ${info.version}` : ''}`, `For ${info.county}, ${info.state}`);
+  let sy = header(sp, fonts, 'Release statement', `${info.program}${info.version ? `, version ${info.version}` : ''}`, `For ${info.county}, ${info.state}`, info.program);
   const who = [info.publisherName, info.publisherTitle].filter(Boolean).join(', ') || 'The publisher named below';
   const dated = isoDateTime(info.signed?.signedAt ?? new Date()).slice(0, 10);
   sy = text(
@@ -1164,7 +1164,14 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
     'A free, voluntary safeguard against forged deeds. An owner registers a digital signing key for their parcel with the recording office, on a notarized paper form. After that, a deed or other document filed against the parcel must carry the registered owners’ digital signatures, printed on the paper as QR codes; a filing that is unsigned or signed with another key is held and investigated instead of being recorded. It runs entirely in the browser: nothing is uploaded or stored.',
   );
   if (info.adoption) section('Status', info.adoption);
-  if (info.changes?.length) section('In this version', info.changes.slice(0, 10).map((c) => `• ${c}`).join('\n'));
+  if (info.changes?.length) {
+    const shown = info.changes.slice(0, 14);
+    const more = info.changes.length - shown.length;
+    section(
+      `In this version (${info.changes.length} changes)`,
+      shown.map((c) => `- ${c.replace(/`/g, '')}`).join('\n') + (more > 0 ? `\n...and ${more} more: see "Version and changes" on the program's About tab.` : ''),
+    );
+  }
   section(
     'How to use it',
     `Open the program at ${info.programUrl || 'its web address'} (or open ${info.fileName} itself: it works offline). The user guide attached after the next page walks through making a key, registering a parcel, signing and checking documents, and signing together.`,
@@ -1190,6 +1197,7 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
     info.signed
       ? 'Signed by the publisher. Post this page where people get the program, so they can confirm they have the published file. It is kept apart from the file because a file cannot carry its own hash.'
       : 'NOT SIGNED. This statement records the file’s hash and who made it, but carries no signature, so it proves nothing by itself.',
+    info.program,
   );
   const rows: Row[] = [];
   if (info.publisherName) rows.push({ label: 'Published by', value: info.publisherName });

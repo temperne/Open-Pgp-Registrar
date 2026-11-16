@@ -11,10 +11,15 @@ that runs entirely in the browser, works offline, and **stores and sends nothing
 
 **Try it: https://pimastopinitiative.jasonajensen.workers.dev/**
 
-> **Status: proposed.** The program has not been adopted by Pima County. Every page
-> and PDF says so until the county adopts it (see [Rebranding](#rebranding-for-another-jurisdiction)).
+> **Status: demonstration.** No county or state has adopted the program yet. Until one
+> does, every page and PDF says "Demonstration system" and the seal carries a DEMO band.
+> Adoptions are listed in [`src/adoptions.json`](src/adoptions.json): a state entry covers
+> every county in it. See [Adoption](#adoption-and-the-demonstration-notice).
 
-![About the program](docs/images/01-about.png)
+**New here?** Read the **[user guide](docs/guide/user-guide.pdf)** (PDF, with screenshots),
+also on the site's About tab.
+
+![About the program](docs/guide/01-about.jpg)
 
 ## Contents
 
@@ -23,8 +28,10 @@ that runs entirely in the browser, works offline, and **stores and sends nothing
 - [How to use it](#how-to-use-it): [owners](#for-owners) and [Recorder staff](#for-recorder-staff)
 - [What the printed documents look like](#what-the-printed-documents-look-like)
 - [Security model and limits](#security-model-and-limits)
+- [Deploying it](#deploying-it): a link, any web server, Cloudflare, your own server, a county's copy
+- [Adoption and the demonstration notice](#adoption-and-the-demonstration-notice)
 - [Rebranding for another jurisdiction](#rebranding-for-another-jurisdiction)
-- [Running, hosting and development](#running-hosting-and-development)
+- [Development](#development)
 - [Download and verify](#download-and-verify)
 - [Changelog](CHANGELOG.md) and [License](#license)
 
@@ -134,7 +141,7 @@ co-owners your **public key card** so they can list your key.
 
 | Create a key | Your key |
 |---|---|
-| ![Create a key](docs/images/02-create-key.png) | ![Your key](docs/images/03-your-key.png) |
+| ![Create a key](docs/guide/03-create-key.jpg) | ![Your key](docs/guide/04-your-key.jpg) |
 
 **2. Register.** Enter the parcel number(s) (one form per parcel) and add any other
 keys for the parcels (optional: one key is enough for any owner). Choose **Sign the
@@ -145,7 +152,7 @@ checked; file it with the Recorder.
 
 | Registration form | Every key has signed |
 |---|---|
-| ![Register](docs/images/04-register.png) | ![Registration signed](docs/images/05-registration-signed.png) |
+| ![Register](docs/guide/05-register.jpg) | ![Registration signed](docs/guide/06-registration-signed.jpg) |
 
 **3. Sign a document.** Load the parcel's registration, pick a template (or blank),
 fill it in, and **Sign**. Co-owners add their signatures. Print the document: it has a
@@ -154,7 +161,7 @@ codes. Sign in ink before a notary as usual.
 
 | Writing a lease | Signed |
 |---|---|
-| ![Sign a lease](docs/images/06-sign-lease.png) | ![Signed](docs/images/07-signed.png) |
+| ![Sign a deed](docs/guide/07-sign.jpg) | ![Signed](docs/guide/08-signed.jpg) |
 
 **Or sign a file.** Under **Sign a file**, load a PDF, Word or text file, or images.
 Its text appears, locked, as what will be signed. For an image or a scan, write what
@@ -223,7 +230,7 @@ A tenant, buyer or bank can load the owner's public key card instead of a
 registration. For a binary-signed file, open **Check a binary-signed file** and load
 the file with its `.sig` or verification page.
 
-![Check a filing](docs/images/08-check.png)
+![Check a filing](docs/guide/10-check.jpg)
 
 To file the check with the document, tick **Include the original document** and
 **Include the checked copy** before downloading the certificate: one PDF with the
@@ -237,9 +244,29 @@ and run `gpg --verify document.txt.sig document.txt`.
 
 ## What the printed documents look like
 
-| Registration (page 1) | Signed lease (page 1) | Signature page | Verification certificate | Private key |
-|---|---|---|---|---|
-| ![](docs/images/pdf-registration.png) | ![](docs/images/pdf-lease.png) | ![](docs/images/pdf-signature-page.png) | ![](docs/images/pdf-certificate.png) | ![](docs/images/pdf-private-key.png) |
+Every form is US Letter, prints in black and white, and carries its QR codes plus a code
+map (the PDF417 strip in the left margin) so a scan or phone photo can be read back. While
+the program is a demonstration, each one says so and the seal carries a DEMO band. These
+come from the latest [build proof](proof/), which has every PDF in full.
+
+| Private key (keep it safe) | Registration form, page 1 (Exhibit A) | Deed, page 1 (Exhibit B) |
+|---|---|---|
+| ![Private key PDF](docs/guide/12-pdf-private-key.jpg) | ![Registration form](docs/guide/13-pdf-registration.jpg) | ![Deed](docs/guide/14-pdf-deed.jpg) |
+
+| Deed's signature page (the QR codes) | Verification certificate (Exhibit C) | County release statement |
+|---|---|---|
+| ![Signature page](docs/guide/15-pdf-signature-page.jpg) | ![Verification certificate](docs/guide/16-pdf-certificate.jpg) | ![Release statement](docs/guide/17-pdf-release-statement.jpg) |
+
+- **Private key**: the key, passphrase-protected, as a PDF attachment, QR codes and text.
+- **Registration form**: one per parcel, every key listed, a signature section per signer
+  (notary and identity check), the key list as QR codes, and the COMPLETE / NOT COMPLETE
+  proof that every key signed it. Names its county (signed, and as a COUNTY barcode).
+- **Deed or other document**: your text with the 2-inch recording margin, an ink signature
+  block and notary acknowledgment per signer, then a signature page with the document ID
+  and county barcodes and the QR codes that carry the signed text.
+- **Verification certificate**: what Recorder staff print after checking a filing.
+- **Release statement**: what a county's publisher posts with its copy of the program
+  (the statement, its verification, then the user guide).
 
 ## Security model and limits
 
@@ -303,7 +330,7 @@ from Wikimedia Commons; their credits are in [SEALS.md](SEALS.md). Many states r
 the use of their seal by law: get permission before any official use. **Save settings file** keeps them for next time. The "proposed program"
 notice stays on.
 
-![Use this tool for another county or state](docs/images/12-another-county.png)
+![Use this tool for another county or state](docs/guide/11-another-county.jpg)
 
 **For a county's own build**, everything specific to Pima County and Arizona is in a
 few places:
@@ -327,11 +354,90 @@ few places:
 
 Then run `npm run build`; `dist/index.html` is the finished site.
 
-## Running, hosting and development
+## Deploying it
 
-- **Use it**: open `dist/index.html` in a browser, or host that single file on any
-  web server or GitHub Pages. It needs no server-side code.
-- **Develop**:
+The whole program is one file, `dist/index.html` (`npm run build`, or the release
+download). It needs no server-side code to work; a server only adds **Sign together**
+(the relay for signing rooms) and usage counts. From simplest to most complete:
+
+### 1. Just a link (no hosting)
+
+Use the master site with your county's settings. Open **Change county or state** at the
+top of the page, choose the state and county (the recording office, names and state seal
+follow), then **Link settings (API) and link builder** → **Copy the link**. Everything,
+including Sign together, runs on the master site, which updates itself.
+
+### 2. Any web server or static host
+
+Upload `dist/index.html` as `index.html` to any web server, GitHub Pages, Netlify, or a
+county's existing site. Everything works there, offline too, except signing rooms: Sign
+together runs only on the program's own address, so a copy elsewhere sends people to the
+master site for it. (A copy made with "Download this county's program" carries its
+county's settings; see 5.)
+
+### 3. Cloudflare (free plan)
+
+The master site runs this way: a Cloudflare Worker serves the page, relays signing rooms
+and counts usage by country (no tracking in the page).
+
+```sh
+npm install && npm run build
+cd worker
+npm install
+npx wrangler login        # once; opens your browser
+npx wrangler deploy       # uploads the page and the Worker
+```
+
+It answers at `https://<name>.<your-account>.workers.dev/` (set `name` in
+`worker/wrangler.toml`), or at a custom domain you add in Cloudflare. For the usage
+counts, enable **Workers Analytics Engine** once in the Cloudflare dashboard. See
+[`worker/README.md`](worker/README.md).
+
+### 4. Your own server (VPS)
+
+The project's own server (https://84-46-239-112.sslip.io) runs this way, and is the
+**first-choice relay** for signing rooms (no per-message cost, files up to 50 MB), with
+Cloudflare as the backup. On Debian 13, as root:
+
+```sh
+apt-get install -y git
+git clone https://github.com/temperne/Open-Pgp-Registrar.git
+cd Open-Pgp-Registrar
+sh vps/setup.sh
+```
+
+`setup.sh` installs Node.js, Caddy and nftables from Debian, turns on a firewall (SSH,
+http and https only), installs the relay as a locked-down service, downloads the page from
+the master site **only if its SHA-256 matches the proven build in this README**, and starts
+everything. Caddy gets the https certificate itself. To update after a new release:
+`git pull && sh vps/setup.sh`. To use your own domain instead of sslip.io, see
+[`vps/README.md`](vps/README.md).
+
+### 5. A county's own copy
+
+In **Change county or state** → **Link settings (API) and link builder**, **Download this
+county's program** makes a zip: the program with that county's settings and seal built in,
+plus the Cloudflare Worker and a README (deploy it as in 3). Optionally name who is
+publishing it and sign it with your key: you also get a **release statement** PDF to post,
+which says what you are releasing, carries the file's SHA-256 and your signature, and
+includes the user guide.
+
+## Adoption and the demonstration notice
+
+Adoptions are kept in [`src/adoptions.json`](src/adoptions.json) by the project owner, and
+take effect with a proven build:
+
+```json
+{ "state": "Arizona", "since": "2027-01-15", "seal": true, "authority": "A.R.S. ..." }
+{ "state": "Texas", "county": "Harris County", "since": "2027-03-01" }
+```
+
+A state entry adopts every county in that state; a county entry adopts one county; `seal`
+approves showing the seal without the DEMO band. Everywhere else the program says it is a
+demonstration, and its About tab shows how to ask the county, or the state's legislators,
+to adopt it, with letters to send.
+
+## Development
 
 ```sh
 npm install

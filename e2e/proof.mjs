@@ -566,7 +566,7 @@ try {
         stText.includes(zipSha) &&
         stText.includes('HarrisCountyClerkOffice') &&
         stText.includes('ChiefDeputyClerk') &&
-        /HarrisCountyClerkOffice,ChiefDeputyClerk,releasesthe/.test(stText) &&
+        /HarrisCountyClerkOffice,ChiefDeputyClerkreleasestheHarrisCountyS\.T\.O\.P\.Initiative/.test(stText) &&
         /Howtouseit/.test(stText) &&
         /UserGuide/.test(stText) &&
         pages(statement) >= 15 &&
