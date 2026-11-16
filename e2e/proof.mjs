@@ -751,9 +751,13 @@ try {
     await a.click('#tab-register');
     await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
     await a.fill('#reg-parcels', '444-55-6666');
-    await a.setInputFiles('#co-file', keys['bob-carol'].card);
-    await a.waitForFunction(() => /Added/.test(document.getElementById('co-status').textContent), null, { timeout: 60000 });
+    // Nobody adds the other key by hand: the room offers it, and signing asks to add it (the test says yes).
+    const offer = flat(await a.textContent('#co-room'));
+    const offered = (await a.isVisible('#co-room')) && /Bob Jones/.test(offer);
+    const asked = [];
+    a.on('dialog', (dlg) => asked.push(dlg.message()));
     await a.click('#reg-btn');
+    await status(a, 'reg-status', 'Not complete: 1 of 2');
     await status(b, 'reg-status', 'Not complete: 1 of 2');
     await b.click('#tab-register');
     const owner = await b.inputValue('#reg-owner');
@@ -770,8 +774,9 @@ try {
     await r.close();
     check(
       '12c. A registration signed together in a room',
-      owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
-      `the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
+      offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
+        owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
+      `the room offered the other key holder's proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
       [reg],
     );
   }

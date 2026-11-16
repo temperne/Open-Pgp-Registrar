@@ -30,6 +30,8 @@ export interface Peer {
   userID: string;
   /** The tab proved it holds this key by signing the room's challenge. */
   proven: boolean;
+  /** Its public key (to add to a registration's key list). */
+  key: openpgp.PublicKey;
 }
 
 export interface RoomEvents {
@@ -192,6 +194,6 @@ export class SigningRoom {
     } catch {
       proven = false;
     }
-    return { fingerprint: key.getFingerprint().toUpperCase(), userID: key.getUserIDs()[0] ?? '', proven };
+    return { fingerprint: key.getFingerprint().toUpperCase(), userID: key.getUserIDs()[0] ?? '', proven, key: key.toPublic() };
   }
 }

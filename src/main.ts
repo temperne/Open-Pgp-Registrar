@@ -613,6 +613,7 @@ function keyItem(k: openpgp.PublicKey, extra?: Node, label?: string) {
 }
 
 function renderCoOwners() {
+  if (room) showRoomKeys();
   const list = $('co-list');
   list.innerHTML = '';
   state.coOwners.forEach((k, i) => {
@@ -656,6 +657,28 @@ function regKeysFromForm(): openpgp.PublicKey[] {
   const mine = state.key!.toPublic();
   const others = state.coOwners.filter((c) => c.getFingerprint().toUpperCase() !== mine.getFingerprint().toUpperCase());
   return [mine, ...others];
+}
+
+/** Keys proven in the signing room that this registration doesn't list yet (before anyone signs). */
+function roomKeysMissing(): openpgp.PublicKey[] {
+  if (!room?.ws || !state.key || state.regDraft) return [];
+  const listed = new Set(regKeysFromForm().map((k) => k.getFingerprint().toUpperCase()));
+  return [...peers.values()].filter((p) => p.proven && !listed.has(p.fingerprint)).map((p) => p.key);
+}
+
+function showRoomKeys() {
+  const missing = roomKeysMissing();
+  const btn = $('co-room');
+  btn.hidden = !missing.length;
+  btn.textContent = `Add ${missing.length === 1 ? 'the key' : `the ${missing.length} keys`} of the signing room: ${missing.map((k) => describeKey(k)).join('; ')}`;
+}
+
+function addRoomKeys(keys: openpgp.PublicKey[]) {
+  state.coOwners.push(...keys);
+  renderCoOwners();
+  showRoomKeys();
+  $('co-status').className = 'hint ok';
+  $('co-status').textContent = `Added from the signing room (each proven by their key): ${keys.map((k) => describeKey(k)).join('; ')}. Each of them must sign.`;
 }
 
 function regRole(): RegistrationRole {
@@ -727,7 +750,16 @@ function renderRegDraft() {
   $('reg-next-hint').textContent = missing.length
     ? 'Give the PDF to the next key holder (they choose "Continue a registration" and load it), or let them sign on this computer.'
     : 'Print and file it. Every signer still signs in ink before a notary.';
+  // A tab whose key isn't on this registration (for example, from a signing room): say so plainly.
+  const mine = state.key?.getFingerprint().toUpperCase();
+  if (mine && !d.keys.some((k) => k.getFingerprint().toUpperCase() === mine)) {
+    $('reg-next-hint').textContent =
+      `Your key (${describeKey(state.key!)}) is not on this registration, so it doesn't need or take your signature. ` +
+      'If you are an owner, the person who started it must choose "Start over", add your key (in a signing room: "Add the keys of everyone in the signing room") and sign again.';
+  }
 }
+
+action('co-room', () => addRoomKeys(roomKeysMissing()));
 
 action(
   'reg-btn',
@@ -739,6 +771,16 @@ action(
     const role = regRole();
     need(input('reg-owner').value, role === 'lienholder' ? 'Enter the lien holder.' : 'Enter the owner(s) of record.');
     if (!state.regDraft) {
+      // People in the signing room aren't on the key list: being in the room doesn't make them owners, so ask.
+      const fromRoom = roomKeysMissing();
+      if (
+        fromRoom.length &&
+        confirm(
+          `${fromRoom.map((k) => describeKey(k)).join('; ')} ${fromRoom.length === 1 ? 'is' : 'are'} in the signing room but not on this registration. Add ${fromRoom.length === 1 ? 'that key' : 'their keys'}, so ${fromRoom.length === 1 ? 'they' : 'each of them'} must sign it too?\n\nOK: add and sign. Cancel: sign without them.`,
+        )
+      ) {
+        addRoomKeys(fromRoom);
+      }
       const parcels = splitParcels(need(textarea('reg-parcels').value, 'Enter the parcel number.'));
       const interest = role === 'lienholder' ? need(input('reg-interest').value, 'Describe the lien (its type and recording number).').trim() : undefined;
       state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest };
@@ -853,7 +895,11 @@ async function applyRoomReg(remote: RegistrationDraft) {
   const d = state.regDraft;
   if (!d) {
     await loadRegDraft(remote);
-    status.textContent = `A registration from the room is open on the Register tab: signed by ${state.regDraft!.keys.length - regMissing().length} of ${state.regDraft!.keys.length} keys.`;
+    const mine = state.key?.getFingerprint().toUpperCase();
+    const listed = !mine || state.regDraft!.keys.some((k) => k.getFingerprint().toUpperCase() === mine);
+    status.textContent = listed
+      ? `A registration from the room is open on the Register tab: signed by ${state.regDraft!.keys.length - regMissing().length} of ${state.regDraft!.keys.length} keys.`
+      : 'A registration from the room is open on the Register tab, but it doesn\u2019t list your key, so you can\u2019t sign it. The person who started it must choose "Start over" and add your key.';
     return;
   }
   const keys = await Promise.all(remote.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
@@ -1691,6 +1737,7 @@ let room: SigningRoom | null = null;
 const peers = new Map<string, Peer>();
 
 function renderPeers() {
+  showRoomKeys();
   const ul = $('room-peers');
   ul.innerHTML = '';
   const me = state.signer ?? state.key;

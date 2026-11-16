@@ -96,6 +96,11 @@ last part is the date the version was tagged.
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included (up to
   2.8 MB; larger files go by PDF). Tested with four signers in four tabs.
+- **Fixed: a registration in a signing room listed only the person who started it.**
+  Being in the room didn't add anyone's key, so the registration was "complete" after
+  one signature. The Register tab now offers to add the keys of everyone proven in the
+  room, signing asks before leaving them out, and a tab whose key isn't on the
+  registration says so instead of showing it as complete.
 - **Fixed: two people signing at the same moment.** A third tab could keep only one of the
   two new signatures. Room messages are now handled one at a time, and a tab that holds
   signatures the sender lacked shares them back, so every tab ends with all of them.
