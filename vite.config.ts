@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 // Version, build date and changelog are built into the page (About this software).
@@ -12,6 +12,9 @@ const versionComment = `<!-- S.T.O.P. stop-version=v${pkg.version} built=${built
 const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8');
 // The Worker's source, built in so the page can package it for another county.
 const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.url), 'utf8');
+// The user guide (scripts/build-guide.mjs), carried in the page as base64.
+const guideUrl = new URL('./docs/guide/user-guide.pdf', import.meta.url);
+const guidePdf = existsSync(guideUrl) ? readFileSync(guideUrl).toString('base64') : '';
 
 // The built app is one self-contained HTML file. Owners and Recorder staff can
 // save it and open it offline. The Content-Security-Policy allows network
@@ -79,6 +82,7 @@ export default defineConfig({
     __BUILD_TIME__: JSON.stringify(builtAt),
     __CHANGELOG__: JSON.stringify(changelog),
     __WORKER_SOURCE__: JSON.stringify(workerSource),
+    __GUIDE_PDF__: JSON.stringify(guidePdf),
   },
   build: { target: 'es2022' },
   test: { testTimeout: 60000 },

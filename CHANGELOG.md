@@ -103,6 +103,15 @@ last part is the date the version was tagged.
   check fails a registration or document for another county than the one the site is set
   to (or one that doesn't name its county), and the Sign tab refuses to continue them.
   Keys stay county-free: one key can be registered anywhere.
+- **User guide.** A step-by-step guide with screenshots (make a key, register a parcel,
+  sign and check documents, sign together, adoption, checking the program file) is built
+  into the program: "Download the user guide (PDF)" on the About tab. `npm run
+  guide:shots` retakes the screenshots from the real app and `npm run guide` builds it.
+- **A real release statement.** The county builder's release statement now starts with
+  the statement itself: who releases which version for which county and recording
+  office, where it is published, what it is, its adoption status, what's new, how to use
+  it and how to put it online, with a signature line for the publisher. The verification
+  (file and zip SHA-256, fingerprint, signature code) follows, then the user guide.
 - **Large documents: progress and speed.** Building a PDF now shows its progress on the
   button ("Drawing the signature codes: 152 of 1565 (10%)", "Adding the code maps",
   "Saving the PDF (854 pages)") and keeps the page responsive. Each QR code is drawn as one

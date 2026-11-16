@@ -310,6 +310,19 @@ storage, at most 16 tabs and 4 MB per message) and counts usage (`stop_usage` da
 Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`). See
 `worker/README.md`. `npx wrangler dev` runs it locally (the relay and the page together).
 
+## User guide and release statement
+
+`docs/guide/user-guide.pdf` is built by `scripts/build-guide.mjs` from screenshots that
+`scripts/guide-shots.mjs` takes of the built app (served at the official address, with the
+proof's test keys and documents). Retake them when the screens change (`npm run build &&
+npm run guide:shots && npm run guide`, then build and prove again). The build carries the
+guide as `__GUIDE_PDF__` (About tab download; appended to a county's release statement).
+Keep the JPEGs small: deploying from a session sends the page inside the Worker script,
+which Cloudflare's free plan caps at 3 MB compressed (now about 2.8 MB).
+`releaseStatementPdf`: page 1 is the statement (publisher releases version X for the
+county, status, what's new, how to use and deploy, ink signature line), page 2 the
+verification (hashes, fingerprint, PGPSIG1 code), then the guide.
+
 ## The project's server (`vps/`)
 
 The project's VPS (Debian 13): Caddy (https, no access log) in front of `relay.mjs` (Node,
@@ -425,6 +438,8 @@ Every build that is released, or pushed for a pull request, must be proven:
      keys, every relay message encrypted, and the result checks GOOD
    - demonstration until adopted: the notice and the DEMO band on the page and the PDFs,
      and the About tab's status, letter and state legislature link
+   - the user guide downloads from the About tab, and a release statement carries the
+     statement, the verification and the guide
    - usage analytics: asked first on the web, never in a saved copy; nothing loaded
      before an answer or after "No thanks"; only the beacon after "Allow"
    - no page errors and no network requests

@@ -566,10 +566,14 @@ try {
         stText.includes(zipSha) &&
         stText.includes('HarrisCountyClerkOffice') &&
         stText.includes('ChiefDeputyClerk') &&
+        /HarrisCountyClerkOffice,ChiefDeputyClerk,releasesthe/.test(stText) &&
+        /Howtouseit/.test(stText) &&
+        /UserGuide/.test(stText) &&
+        pages(statement) >= 15 &&
         /GOOD/.test(good.v) &&
         /DOES NOT VERIFY/.test(bad.v) &&
         /Harris County Clerk Office/.test(pub),
-      `the statement names the publisher and carries the file's SHA-256 (${sha.slice(0, 16)}...) and the zip's; gpg --verify index.html.sig passes; the program's check with only the file and the statement: ${good.v}; a changed file: ${bad.v}; the copy names its publisher`,
+      `the statement says who releases which version for which county, what's new and how to use it, then the file's SHA-256 (${sha.slice(0, 16)}...) and the zip's, then the user guide (${pages(statement)} pages in all); gpg --verify index.html.sig passes; the program's check with only the file and the statement: ${good.v}; a changed file: ${bad.v}; the copy names its publisher`,
       [zip, statement],
     );
   }
@@ -1021,6 +1025,20 @@ try {
         newer.masterLink.startsWith(`${MASTER}/?`) &&
         /county=Harris\+County/.test(newer.masterLink),
       `the version is on line ${versionLine} of index.html; a county copy asks nothing until Sign together is turned on, then makes one request to the master site; a newer version is offered with the same settings (${newer.link.slice(0, 90)}...); an older one is not; the copy always offers signing together on the master site with its settings`,
+    );
+  }
+
+  // ---- 18. The user guide: a download on the About tab ----
+  {
+    const pg = await newPage();
+    const guide = await save(pg, '#dl-guide', '18-user-guide.pdf');
+    await pg.close();
+    const gText = flat(execFileSync('pdftotext', [guide, '-']).toString());
+    check(
+      '18. User guide',
+      pages(guide) >= 12 && /User Guide/.test(gText) && /Register your parcel/.test(gText) && /Check a document/.test(gText) && /Sign together/.test(gText),
+      `the About tab's "Download the user guide" gives a ${pages(guide)}-page guide with screenshots: key, registration, signing, signing together, checking, adoption, verifying the program`,
+      [guide],
     );
   }
 

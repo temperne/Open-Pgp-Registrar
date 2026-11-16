@@ -1115,6 +1115,15 @@ export interface ReleaseStatementInfo {
   zipName: string;
   zipSha256: string;
   documentId: string;
+  /** The program's version and build date (v0.1.11152026, 2026-11-16). */
+  version?: string;
+  built?: string;
+  /** What's new in this version (headlines from the changelog). */
+  changes?: string[];
+  /** Adopted here, or a demonstration (from the adoption list). */
+  adoption?: string;
+  /** The user guide, appended after the statement and its verification page. */
+  guide?: Uint8Array;
   signed: null | {
     userID: string;
     fingerprint: string;
@@ -1128,12 +1137,55 @@ export interface ReleaseStatementInfo {
 export const RELEASE_KEY_ATTACHMENT = 'publisher-key.asc';
 
 export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<Uint8Array> {
-  const { doc, fonts } = await newDoc(`Program release statement - ${info.program}`);
+  const { doc, fonts } = await newDoc(`Release statement - ${info.program}`);
+
+  // ---- Page 1: the statement ----
+  const sp = doc.addPage([PAGE_W, PAGE_H]);
+  let sy = header(sp, fonts, 'Release statement', `${info.program}${info.version ? `, version ${info.version}` : ''}`, `For ${info.county}, ${info.state}`);
+  const who = [info.publisherName, info.publisherTitle].filter(Boolean).join(', ') || 'The publisher named below';
+  const dated = isoDateTime(info.signed?.signedAt ?? new Date()).slice(0, 10);
+  sy = text(
+    sp,
+    fonts,
+    `${who} releases the ${info.program}${info.version ? ` (version ${info.version}${info.built ? `, built ${info.built}` : ''})` : ''} for ${info.county}, ${info.state}, ` +
+      `where deeds are recorded with the ${info.office}. ` +
+      (info.programUrl ? `It is published at ${info.programUrl}. ` : '') +
+      `This is the program file to use: ${info.fileName}, SHA-256 ${info.sha256.slice(0, 16)}... (in full on the next page). ` +
+      (info.signed ? `This statement is signed with the publisher's OpenPGP key (${formatFingerprint(info.signed.fingerprint).slice(-24)}).` : 'This statement is NOT signed.'),
+    sy,
+    { size: 11, leading: 15 },
+  );
+  const section = (title: string, body: string) => {
+    sy = text(sp, fonts, title, sy - 12, { size: 11.5, font: fonts.bold, color: ACCENT });
+    sy = text(sp, fonts, body, sy - 3, { size: 9.5, leading: 12.5 });
+  };
+  section(
+    'What it is',
+    'A free, voluntary safeguard against forged deeds. An owner registers a digital signing key for their parcel with the recording office, on a notarized paper form. After that, a deed or other document filed against the parcel must carry the registered owners’ digital signatures, printed on the paper as QR codes; a filing that is unsigned or signed with another key is held and investigated instead of being recorded. It runs entirely in the browser: nothing is uploaded or stored.',
+  );
+  if (info.adoption) section('Status', info.adoption);
+  if (info.changes?.length) section('In this version', info.changes.slice(0, 10).map((c) => `• ${c}`).join('\n'));
+  section(
+    'How to use it',
+    `Open the program at ${info.programUrl || 'its web address'} (or open ${info.fileName} itself: it works offline). The user guide attached after the next page walks through making a key, registering a parcel, signing and checking documents, and signing together.`,
+  );
+  section(
+    'How to put it online',
+    `The package ${info.zipName} holds the program and a Cloudflare Worker that serves it and relays signing rooms. Unzip it, then run npm install and npx wrangler deploy (its README.md explains). Or put ${info.fileName} on any web server.`,
+  );
+  // The publisher's own signature, in ink.
+  sy -= 26;
+  sp.drawLine({ start: { x: M, y: sy }, end: { x: M + 250, y: sy }, thickness: 0.75, color: INK });
+  sp.drawLine({ start: { x: M + 290, y: sy }, end: { x: M + 420, y: sy }, thickness: 0.75, color: INK });
+  text(sp, fonts, `${who}`, sy - 4, { size: 8.5, color: MUTED, width: 250 });
+  text(sp, fonts, `Date (signed digitally ${dated})`, sy - 4, { x: M + 290, size: 8.5, color: MUTED, width: 140 });
+
+  // ---- Page 2: verification ----
   const p = doc.addPage([PAGE_W, PAGE_H]);
   let y = header(
     p,
     fonts,
-    'Program release statement',
+    'Release statement  |  Verification',
     `${info.program}: ${info.county}, ${info.state}`,
     info.signed
       ? 'Signed by the publisher. Post this page where people get the program, so they can confirm they have the published file. It is kept apart from the file because a file cannot carry its own hash.'
@@ -1210,7 +1262,19 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
       { size: 9 },
     );
   }
-  footer(p, fonts, `Program release statement  |  Document ID ${info.documentId}`, 1, 1);
+  // ---- Then the user guide ----
+  if (info.guide?.length) {
+    try {
+      const guide = await PDFDocument.load(info.guide);
+      const pages = await doc.copyPages(guide, guide.getPageIndices());
+      for (const pg of pages) doc.addPage(pg);
+    } catch {
+      /* the statement stands without the guide */
+    }
+  }
+  const total = doc.getPageCount();
+  footer(sp, fonts, `Release statement  |  Document ID ${info.documentId}`, 1, total);
+  footer(p, fonts, `Release statement  |  Document ID ${info.documentId}`, 2, total);
   return finish(doc);
 }
 

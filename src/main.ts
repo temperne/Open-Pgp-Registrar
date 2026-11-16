@@ -3420,6 +3420,16 @@ action('lb-package', async () => {
     zipName,
     zipSha256: await sha256Hex(zip),
     documentId: signed?.documentId ?? sha256.slice(0, 24).toUpperCase(),
+    version: __APP_VERSION__,
+    built: __BUILD_DATE__,
+    changes: versionChanges(),
+    adoption: (() => {
+      const a = adoptionFor(cfg.state, cfg.county);
+      return a
+        ? `Adopted${a.county ? ` by ${cfg.county}` : ` statewide by ${cfg.state}`} since ${a.since}${a.authority ? ` (${a.authority})` : ''}.`
+        : `A demonstration: not adopted by ${cfg.county}, ${cfg.state}. Its pages and forms say so, and the seal carries a DEMO band, until the county (or the state) adopts it and the project adds it to the adoption list.`;
+    })(),
+    guide: guideBytes() ?? undefined,
     signed: signed && state.signer
       ? { userID: describeKey(state.signer), fingerprint: signed.fingerprint, signedAt: signed.signedAt, payload: signed.payload, signature: signed.signature, publicArmored }
       : null,
@@ -3432,6 +3442,27 @@ action('lb-package', async () => {
       : 'Not signed. The release statement records the file\u2019s hash; tick "Sign the program file" to make it provable.');
 });
 let lastRelease: ReleaseStatementInfo | null = null;
+
+/** The user guide built into this page (scripts/build-guide.mjs). */
+function guideBytes() {
+  return __GUIDE_PDF__ ? fromBase64(__GUIDE_PDF__) : null;
+}
+action('dl-guide', () => {
+  const g = guideBytes();
+  if (!g) throw new UserError('This copy of the program was built without the user guide.');
+  download(g, 'stop-user-guide.pdf', 'application/pdf');
+});
+$('guide-card').hidden = !__GUIDE_PDF__;
+
+/** Headlines of this version's changes, from the changelog built into the page. */
+function versionChanges(): string[] {
+  // The first section with entries ("Unreleased" may be empty).
+  for (const section of __CHANGELOG__.split(/\n## /).slice(1)) {
+    const items = [...section.matchAll(/^- \*\*(.+?)\*\*/gm)].map((m) => m[1].replace(/[.:]$/, '')).filter(Boolean);
+    if (items.length) return items;
+  }
+  return [];
+}
 action('lb-statement', async () => {
   if (!lastRelease) throw new UserError('Download the program first.');
   download(await releaseStatementPdf(lastRelease), `${slug(lastRelease.program)}-release-statement.pdf`, 'application/pdf');
