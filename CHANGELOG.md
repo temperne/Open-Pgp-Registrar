@@ -96,6 +96,14 @@ last part is the date the version was tagged.
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included. Tested with
   four signers in four tabs.
+- **Every registration and document names its county, and other counties' sites refuse
+  it.** A registration's signed statement now includes "JURISDICTION: <county>, <state>"
+  (fixed when the first key holder signs, carried in its codes and JSON), and so does
+  the signed text of every new document and file. Both print it as a COUNTY barcode. The
+  check fails a registration or document for another county than the one the site is set
+  to (or one that doesn't name its county), and the Sign tab refuses to continue them.
+  Keys stay county-free: one key can be registered anywhere.
+- **The footer's program line wraps** instead of cutting off the demonstration notice.
 - **Demonstration until adopted; the adoption list.** Adoption is now a list built into
   the program (`src/adoptions.json`), kept by the project owner: a state entry adopts every
   county in that state, a county entry adopts one county. Everywhere else the page and

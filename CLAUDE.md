@@ -138,6 +138,16 @@ gives counter staff a way to check a filing.
    shows each registration's proof status, and a deed check fails unless the
    registration is fully proven (`checkRegistrationProof`). The key tab also offers a **public key
    card** PDF for sharing with co-owners.
+   **Jurisdiction** (the owner's decision, Nov 2026): a registration names its county
+   (`jurisdiction`, "Pima County, Arizona", fixed from the site's county when the first
+   key holder signs) in `registrationStatement` ("JURISDICTION: ..."), its codes' fifth
+   field, its JSON and drafts, and a sale's buyers' registration takes the sellers'. New
+   documents and files start their signed text with the same line (`jurisdictionLine`).
+   Registrations and documents print it as a COUNTY Code 128 barcode
+   (`jurisdictionBarcode`; under 30 points tall, never a document ID). The check
+   (`verifyScannedText`'s `jurisdiction`) fails a registration or document for another
+   county, or one that names none; the Sign tab refuses them (`requireThisCounty`). Keys
+   carry no county.
    **Roles**: a registration is for the owner of record (default) or a **lien holder**
    (`role: 'lienholder'`, `interest` names the lien); the role is in
    `registrationStatement`, the codes (the fifth field becomes a JSON object
@@ -387,7 +397,8 @@ Every build that is released, or pushed for a pull request, must be proven:
    - a sale to an individual checked against the previous filing, and the new owner's
      document checked against the certificate-only filing
    - checks that must fail: the new owner's document against the original
-     registration, and a deed signed by a key that isn't registered
+     registration, a deed signed by a key that isn't registered, and a Pima County
+     registration and deed on a site set to Maricopa County
    - changing the county from the header on another tab, and settings from the link
      (with an embedded seal; "Copy a link" round-trips; a seal at a web address is
      refused with no request)

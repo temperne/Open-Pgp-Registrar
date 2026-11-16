@@ -43,6 +43,9 @@ import {
   signHolderUpdate,
   checkHolderUpdate,
   registrationStatement,
+  jurisdictionLabel,
+  jurisdictionOf,
+  sameJurisdiction,
   toBase64,
   fromBase64,
   type Registration,
@@ -147,6 +150,8 @@ interface State {
     proofs: Record<string, SignedText>;
     role?: RegistrationRole;
     interest?: string;
+    /** The county the registration is for, fixed when the first key holder signs. */
+    jurisdiction?: string;
   } | null;
 }
 /** Signature lines typed by hand (documents without a registration), instead of from the keys. */
@@ -784,14 +789,14 @@ action(
       }
       const parcels = splitParcels(need(textarea('reg-parcels').value, 'Enter the parcel number.'));
       const interest = role === 'lienholder' ? need(input('reg-interest').value, 'Describe the lien (its type and recording number).').trim() : undefined;
-      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest };
+      state.regDraft = { keys: regKeysFromForm(), parcels, proofs: {}, role, interest, jurisdiction: jurisdictionLabel(BRAND.county, BRAND.state) };
     }
     const d = state.regDraft;
     if (!d.keys.some((k) => k.getFingerprint().toUpperCase() === state.signer!.getFingerprint().toUpperCase())) {
       throw new UserError('Your key is not on this registration. Load one of its listed keys, or choose "Start over" above to begin a new registration.');
     }
     for (const parcel of d.parcels) {
-      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel], role: d.role, interest: d.interest });
+      d.proofs[parcel] = await signRegistration(state.signer, { parcel, keys: d.keys, proof: d.proofs[parcel], role: d.role, interest: d.interest, jurisdiction: d.jurisdiction });
     }
     lockRegistration();
     renderRegDraft();
@@ -817,6 +822,7 @@ action(
       draft,
       role: d.role,
       interest: d.interest,
+      jurisdiction: d.jurisdiction,
       propertyAddress: draft.propertyAddress,
       mailingAddress: draft.mailingAddress,
       county: draft.county,
@@ -858,20 +864,27 @@ function regDraftForPdf(): RegistrationDraft | null {
     proofs: Object.fromEntries(d.parcels.map((p) => [p, sigsOf(d.proofs[p])])),
     role: d.role,
     interest: d.interest,
+    jurisdiction: d.jurisdiction,
   };
 }
 
 /** Takes up a registration in progress (from its PDF, or from another tab in a signing room). */
 async function loadRegDraft(draft: RegistrationDraft) {
+  // A registration for another county is signed for that county: refuse it here.
+  if (draft.jurisdiction && !sameJurisdiction(draft.jurisdiction, jurisdictionLabel(BRAND.county, BRAND.state))) {
+    throw new UserError(
+      `This registration is for ${draft.jurisdiction}, but this site is set to ${jurisdictionLabel(BRAND.county, BRAND.state)}. Change the county or state (top of the page) to ${draft.jurisdiction} to continue it.`,
+    );
+  }
   const keys = await Promise.all(draft.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
   const parcels = splitParcels(draft.parcels);
   const proofs: Record<string, SignedText> = {};
   const role = draft.role === 'lienholder' ? 'lienholder' : undefined;
   for (const p of parcels) {
-    const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest }, draft.proofs[p] ?? []);
+    const proof = await proofFromSigs({ parcel: p, keys, role, interest: draft.interest, jurisdiction: draft.jurisdiction }, draft.proofs[p] ?? []);
     if (proof) proofs[p] = proof;
   }
-  state.regDraft = { keys, parcels, proofs, role, interest: draft.interest };
+  state.regDraft = { keys, parcels, proofs, role, interest: draft.interest, jurisdiction: draft.jurisdiction };
   input('reg-role').value = role ?? 'owner';
   input('reg-interest').value = draft.interest ?? '';
   syncRegRole();
@@ -907,13 +920,13 @@ async function applyRoomReg(remote: RegistrationDraft) {
   const parcels = splitParcels(remote.parcels);
   const role = remote.role === 'lienholder' ? 'lienholder' : undefined;
   const lien = (r?: string) => r === 'lienholder';
-  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || lien(role) !== lien(d.role) || (remote.interest ?? '') !== (d.interest ?? '')) {
+  if (!sameKeys(keys, d.keys) || parcels.join('|') !== d.parcels.join('|') || lien(role) !== lien(d.role) || (remote.interest ?? '') !== (d.interest ?? '') || (remote.jurisdiction ?? '') !== (d.jurisdiction ?? '')) {
     status.textContent = 'Another tab in the room has a different registration open (other parcels or keys). Everyone must sign the same one: start over, or leave the room.';
     return;
   }
   let changed = false;
   for (const p of d.parcels) {
-    const theirs = await proofFromSigs({ parcel: p, keys: d.keys, role: d.role, interest: d.interest }, remote.proofs[p] ?? []);
+    const theirs = await proofFromSigs({ parcel: p, keys: d.keys, role: d.role, interest: d.interest, jurisdiction: d.jurisdiction }, remote.proofs[p] ?? []);
     const merged = await mergeSigned(d.proofs[p], theirs);
     if (merged && merged !== d.proofs[p]) {
       d.proofs[p] = merged;
@@ -1199,6 +1212,11 @@ syncTemplate();
 
 /** Locks the text once anyone has signed: every owner must sign exactly the same text. */
 /** The parcel filing statement, when "Ready this document for parcel filing" is ticked. */
+/** The signed line naming the county this document is for. */
+function jurisdictionLine() {
+  return `JURISDICTION: ${jurisdictionLabel(BRAND.county, BRAND.state)}.`;
+}
+
 function parcelStatement() {
   const parcel = state.signReg?.parcel;
   return parcel && input('parcel-ready').checked ? parcelFilingStatement(parcel, BRAND.county, BRAND.state) : '';
@@ -1257,7 +1275,8 @@ function lockDraft() {
 
 /** The registration a sale deed hands over: the parcel with the buyers' keys. */
 function buyerRegistration(): Registration | null {
-  return state.signReg?.parcel && buyerKeys.length ? { parcel: state.signReg.parcel, keys: buyerKeys } : null;
+  // The buyers' registration is for the same parcel in the same county as the sellers'.
+  return state.signReg?.parcel && buyerKeys.length ? { parcel: state.signReg.parcel, keys: buyerKeys, jurisdiction: state.signReg.jurisdiction } : null;
 }
 
 /** Buyers' keys that haven't proven possession yet (signed the new registration). */
@@ -1432,7 +1451,16 @@ input('s-holder-file').addEventListener('change', async () => {
   }
 });
 
+/** Refuses a registration or document made for another county than the one this site is set to. */
+function requireThisCounty(what: string, named: string | undefined) {
+  const site = jurisdictionLabel(BRAND.county, BRAND.state);
+  if (named && !sameJurisdiction(named, site)) {
+    throw new UserError(`This ${what} is for ${named}, but this site is set to ${site}. Change the county or state (top of the page) to ${named} to use it.`);
+  }
+}
+
 function useSignRegistration(regs: Registration[]) {
+  for (const r of regs) if (r.parcel) requireThisCounty('registration', r.jurisdiction);
   const sel = $<HTMLSelectElement>('s-reg-parcel');
   sel.innerHTML = '';
   const byParcel = new Map<string, Registration[]>();
@@ -1589,6 +1617,7 @@ input('continue-file').addEventListener('change', async () => {
         bytes: fromBase64(x.sig),
       }));
       const signed = await assembleSigned(canonicalText(fullText(embedded.title, embedded.text)), sigs);
+      requireThisCounty('document', jurisdictionOf(signed.canonical));
       // The registration the document was started for: its owners are the ones who must sign.
       const embReg: Registration | null = embedded.registration ? await registrationFromDraft(embedded.registration) : null;
       const signedBy = new Set(embedded.signatures.map((x) => x.fingerprint.toUpperCase()));
@@ -1620,7 +1649,7 @@ input('continue-file').addEventListener('change', async () => {
       }
       buyerKeys = embBuyers;
       const buyerProof =
-        embReg?.parcel && embedded.buyerProof?.length ? await proofFromSigs({ parcel: embReg.parcel, keys: embBuyers }, embedded.buyerProof) : undefined;
+        embReg?.parcel && embedded.buyerProof?.length ? await proofFromSigs({ parcel: embReg.parcel, keys: embBuyers, jurisdiction: embReg.jurisdiction }, embedded.buyerProof) : undefined;
       setDraft({
         buyerProof,
         signed,
@@ -1639,6 +1668,7 @@ input('continue-file').addEventListener('change', async () => {
         return p.total > 0 && p.missing.length === 0;
       });
       const signed = await signedFromCodes(codes.join('\n'));
+      requireThisCounty('document', jurisdictionOf(signed.canonical));
       setDraft({ signed, title: '', text: signed.canonical, returnTo: textarea('doc-return').value, signers: textarea('doc-signers').value, recordable: true });
     }
     void roomShare();
@@ -1692,7 +1722,7 @@ action(
       // A file that does not name the parcel can still be signed: it is then for third
       // parties only (a tenant, buyer, bank), and the result says so.
       const statement = parcelStatement();
-      const full = fileSignedText(src, description, statement);
+      const full = fileSignedText(src, description, statement, jurisdictionLine());
       const signed = await signText(state.signer, full);
       setDraft({
         signed,
@@ -1711,7 +1741,8 @@ action(
         const flat = canonicalText(body).replace(/\s+/g, '');
         if (!buyerKeys.every((k) => flat.includes(k.getFingerprint().toUpperCase()))) body = `${body.trimEnd()}\n\n${transferClause(buyerKeys)}`;
       }
-      const text = statement ? `${statement}\n\n${body}` : body;
+      // The county it's for, signed with it: another county's site refuses it.
+      const text = [jurisdictionLine(), statement, body].filter(Boolean).join('\n\n');
       const title = input('doc-title').value.trim();
       if (!canonicalText(text)) throw new UserError('Write the document text first.');
       const placeholder = fullText(title, text).match(/\[[A-Z][A-Z ]+\]/);
@@ -2008,7 +2039,7 @@ async function applyRoomDraft(remote: DocumentDraft & RoomDraftExtras) {
   );
   const reg = remote.registration ? await registrationFromDraft(remote.registration) : null;
   const remoteBuyers = await Promise.all((remote.buyerKeys ?? []).map(async (a) => (await readAnyKey(a)).toPublic()));
-  const remoteProof = reg?.parcel && remote.buyerProof?.length ? await proofFromSigs({ parcel: reg.parcel, keys: remoteBuyers }, remote.buyerProof) : undefined;
+  const remoteProof = reg?.parcel && remote.buyerProof?.length ? await proofFromSigs({ parcel: reg.parcel, keys: remoteBuyers, jurisdiction: reg.jurisdiction }, remote.buyerProof) : undefined;
   const d = state.draft;
   if (d) {
     if (d.signed.canonical !== canonical) {
@@ -2313,7 +2344,7 @@ async function downloadInstrument() {
   const named = canonicalText(d.text).replace(/\s+/g, '');
   const transfer =
     state.signReg?.parcel && buyerKeys.length && buyerKeys.every((k) => named.includes(k.getFingerprint().toUpperCase()))
-      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys, proof: d.buyerProof }
+      ? { parcel: state.signReg.parcel, keys: buyerKeys, from: state.signReg.keys, proof: d.buyerProof, jurisdiction: state.signReg.jurisdiction }
       : undefined;
   const pdf = await instrumentPdf({
     transfer,
@@ -2917,7 +2948,7 @@ action(
     if (payload.includes('PGPQ1|')) {
       // Paper filing: the codes carry the signed text.
       const registration = await registrationFor(payload);
-      r = await verifyScannedText({ scanned: payload, registration });
+      r = await verifyScannedText({ scanned: payload, registration, jurisdiction: jurisdictionLabel(BRAND.county, BRAND.state) });
       for (const f of scannedFiles) {
         r.checks.push({
           label: `Scanned copy: ${f.name}`,

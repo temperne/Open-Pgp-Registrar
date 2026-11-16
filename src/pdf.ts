@@ -37,6 +37,8 @@ import {
   type RegistrationRole,
   type SignedText,
   type HolderUpdate,
+  jurisdictionOf,
+  jurisdictionLabel,
 } from './crypto';
 import { canonicalText } from './text';
 import { needsDescription, type ExtractedFile, type SourceImage } from './extract';
@@ -256,8 +258,28 @@ function footer(page: PDFPage, fonts: Fonts, left: string, pageNo: number, pages
   const right = `Page ${pageNo} of ${pages}`;
   page.drawText(right, { x: PAGE_W - M - fonts.reg.widthOfTextAtSize(right, 7.5), y: 35, size: 7.5, font: fonts.reg, color: MUTED });
   // Program line: name, web address, and the demonstration notice while it applies.
-  const brand = wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)[0];
-  page.drawText(brand, { x: M, y: 25, size: 6.5, font: fonts.reg, color: BRAND.status === 'demo' ? WARN : MUTED });
+  // Up to two lines, so the demonstration notice is never cut off.
+  wrap(brandLine(), fonts.reg, 6.5, CONTENT_W)
+    .slice(0, 2)
+    .forEach((line, i) => page.drawText(line, { x: M, y: 25 - i * 8, size: 6.5, font: fonts.reg, color: BRAND.status === 'demo' ? WARN : MUTED }));
+}
+
+/**
+ * The county a registration or document is for, as a Code 128 barcode (for intake
+ * scanners) with the text below. The check itself reads the county from the signed
+ * text, which can't be changed; this is a convenience. Returns the y below it.
+ */
+function jurisdictionBarcode(page: PDFPage, fonts: Fonts, jurisdiction: string | undefined, x: number, top: number, maxW = 175) {
+  if (!jurisdiction?.trim()) return top;
+  const value = safeText(`COUNTY:${jurisdiction}`).toUpperCase();
+  const moduleW = Math.min(0.8, maxW / (code128Bits(value).length + 20));
+  page.drawText('COUNTY', { x, y: top - 8, size: 7, font: fonts.bold, color: MUTED });
+  // Under 30 points tall, so it is never taken for the page's document ID barcode.
+  const bw = drawCode128(page, value, x + 10 * moduleW, top - 40, moduleW, 28);
+  const label = safeText(jurisdiction);
+  const lw = fonts.reg.widthOfTextAtSize(label, 8);
+  page.drawText(label, { x: x + 10 * moduleW + Math.max(0, (bw - lw) / 2), y: top - 51, size: 8, font: fonts.reg, color: INK });
+  return top - 58;
 }
 
 /** Seal at the top-right corner of a page. Returns the width it takes. */
@@ -356,6 +378,8 @@ export interface RegistrationInfo {
   /** Owner of record (default) or lien holder; a lien holder names the lien. */
   role?: RegistrationRole;
   interest?: string;
+  /** "Pima County, Arizona": part of the signed statement; another county's site refuses it. */
+  jurisdiction?: string;
   propertyAddress?: string;
   mailingAddress?: string;
   county?: string;
@@ -395,6 +419,7 @@ export interface RegistrationDraft {
   proofs: Record<string, { fingerprint: string; userID: string; signedAt: string; sig: string }[]>;
   role?: RegistrationRole;
   interest?: string;
+  jurisdiction?: string;
 }
 
 type StoredSig = { fingerprint: string; userID: string; signedAt: string; sig: string };
@@ -409,6 +434,7 @@ export interface DraftRegistration {
   labels?: string[];
   role?: RegistrationRole;
   interest?: string;
+  jurisdiction?: string;
   /** Proof of key possession (each key's signature over the registration statement). */
   proof?: StoredSig[];
   /** Registration by sale: the deed (its signed text and signatures) and the previous keys. */
@@ -422,6 +448,7 @@ export function draftRegistration(r: Registration): DraftRegistration {
     labels: r.labels,
     role: r.role,
     interest: r.interest,
+    jurisdiction: r.jurisdiction,
     proof: r.proof ? proofSigs(r.proof) : undefined,
     transfer: r.transfer
       ? {
@@ -439,7 +466,7 @@ const toSigs = (sigs: StoredSig[]) => sigs.map((x) => ({ fingerprint: x.fingerpr
 export async function registrationFromDraft(d: DraftRegistration): Promise<Registration> {
   const keys = await Promise.all(d.keys.map(async (a) => (await readAnyKey(a)).toPublic()));
   const role = d.role === 'lienholder' ? 'lienholder' : undefined;
-  const reg: Registration = { parcel: d.parcel, keys, labels: d.labels, role, interest: d.interest };
+  const reg: Registration = { parcel: d.parcel, keys, labels: d.labels, role, interest: d.interest, jurisdiction: d.jurisdiction };
   if (d.proof?.length) reg.proof = await proofFromSigs(reg, d.proof);
   if (d.transfer) {
     const from = await Promise.all(d.transfer.from.map(async (a) => (await readAnyKey(a)).toPublic()));
@@ -453,7 +480,7 @@ const proofSigs = (p?: SignedText) =>
   (p?.signatures ?? []).map((x) => ({ fingerprint: x.fingerprint, userID: x.userID, signedAt: x.signedAt.toISOString(), sig: toBase64(x.bytes) }));
 
 /** Rebuilds a proof from stored signatures for the given registration. */
-export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[]; role?: RegistrationRole; interest?: string }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
+export async function proofFromSigs(reg: { parcel: string; keys: openpgp.PublicKey[]; role?: RegistrationRole; interest?: string; jurisdiction?: string }, sigs: { fingerprint: string; userID: string; signedAt: string; sig: string }[]) {
   if (!sigs?.length) return undefined;
   return assembleSigned(
     canonicalText(registrationStatement(reg)),
@@ -500,6 +527,7 @@ export async function registrationPdf(info: RegistrationInfo): Promise<Uint8Arra
       proof: proofSigs(proof),
       role: info.role === 'lienholder' ? 'lienholder' : undefined,
       interest: info.role === 'lienholder' ? info.interest?.trim() || undefined : undefined,
+      jurisdiction: info.jurisdiction?.trim() || undefined,
     };
     await doc.attach(new TextEncoder().encode(JSON.stringify(json, null, 1)), `${REGISTRATION_ATTACHMENT}-${n + 1}.json`, {
       mimeType: 'application/json',
@@ -830,6 +858,7 @@ async function drawRegistration(
     'Every key listed must sign any instrument affecting the parcel. The owners chose how many keys to use and how to describe them. Public keys are safe to publish: they check signatures but cannot create them.',
   );
   const keyRows: Row[] = [{ label: 'Parcel number', value: parcel }];
+  if (info.jurisdiction?.trim()) keyRows.push({ label: 'County', value: info.jurisdiction.trim() });
   keys.forEach((k, i) => {
     const kf = k.getFingerprint().toUpperCase();
     keyRows.push({
@@ -840,6 +869,7 @@ async function drawRegistration(
     });
   });
   y = table(page, fonts, keyRows, y, CONTENT_W, 150);
+  y = jurisdictionBarcode(page, fonts, info.jurisdiction, M, y - 8);
 
   // Codes: this registrant's key, and the parcel's whole key list.
   const ensure = (h: number) => {
@@ -848,7 +878,7 @@ async function drawRegistration(
       y = header(page, fonts, 'Attachment to registration (continued)', 'Keys Registered for This Parcel');
     }
   };
-  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels, role: info.role, interest: info.interest });
+  const regCodes = await encodeRegistrationCodes({ parcel, keys, labels, role: info.role, interest: info.interest, jurisdiction: info.jurisdiction });
   const size = 120;
   const perRow = 3;
   const gap = (CONTENT_W - perRow * size) / (perRow - 1);
@@ -1342,6 +1372,8 @@ export interface SaleTransfer {
   from: openpgp.PublicKey[];
   /** The buyers' proof of key possession: each key's signature over the new registration. */
   proof?: SignedText;
+  /** The county the sale (and the buyers' registration) is for. */
+  jurisdiction?: string;
 }
 
 export interface InstrumentInfo {
@@ -1613,6 +1645,7 @@ export async function instrumentPdf(info: InstrumentInfo): Promise<Uint8Array> {
   const bw = drawCode128(sp, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
   const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
   sp.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y = Math.min(y, jurisdictionBarcode(sp, fonts, jurisdictionOf(`${info.title}\n${info.text}`), bx, tableTop - 80));
 
   y = text(
     sp,
@@ -1696,6 +1729,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
           keys: t.keys.map((k) => k.armor()),
           labels: t.keys.map((k) => describeKey(k)),
           proof: proofSigs(t.proof),
+          jurisdiction: t.jurisdiction,
           transfer: { documentId, from: t.from.map((k) => k.armor()) },
         },
         null,
@@ -1771,7 +1805,7 @@ async function drawSaleRegistration(doc: PDFDocument, fonts: Fonts, t: SaleTrans
     y -= 8;
     grid(t.proof.codes, 'Proof code');
   }
-  const codes = await encodeRegistrationCodes({ parcel: t.parcel, keys: t.keys, transfer: { documentId, from: t.from } });
+  const codes = await encodeRegistrationCodes({ parcel: t.parcel, keys: t.keys, jurisdiction: t.jurisdiction, transfer: { documentId, from: t.from } });
   if (y - size - 50 < 64) newPage();
   y = text(page, fonts, 'The buyers’ keys as codes (scan them in any order with the deed’s signature codes):', y - 6, { size: 9, font: fonts.bold });
   y -= 8;
@@ -2078,8 +2112,9 @@ export async function registrationsFromPdf(bytes: Uint8Array): Promise<Registrat
       const parcel = String(j.parcel ?? '');
       const role: RegistrationRole | undefined = j.role === 'lienholder' ? 'lienholder' : undefined;
       const interest = role ? String(j.interest ?? '') : undefined;
-      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys, role, interest }, j.proof) : undefined;
-      const reg: Registration = { parcel, keys, labels, proof, role, interest };
+      const jurisdiction = j.jurisdiction ? String(j.jurisdiction) : undefined;
+      const proof = Array.isArray(j.proof) ? await proofFromSigs({ parcel, keys, role, interest, jurisdiction }, j.proof) : undefined;
+      const reg: Registration = { parcel, keys, labels, proof, role, interest, jurisdiction };
       if (j.transfer?.documentId && Array.isArray(j.transfer.from)) {
         const from = await Promise.all((j.transfer.from as string[]).map(async (a) => (await readAnyKey(a)).toPublic()));
         reg.transfer = { documentId: String(j.transfer.documentId), from };
@@ -2363,6 +2398,7 @@ export async function filePackagePdf(info: FilePackageInfo): Promise<Uint8Array>
   const bw = drawCode128(cover, info.documentId, bx + 10 * moduleW, tableTop - 58, moduleW, 50);
   const idW = fonts.mono.widthOfTextAtSize(info.documentId, 8);
   cover.drawText(info.documentId, { x: bx + 10 * moduleW + (bw - idW) / 2, y: tableTop - 70, size: 8, font: fonts.mono, color: INK });
+  y = Math.min(y, jurisdictionBarcode(cover, fonts, jurisdictionLabel(BRAND.county, BRAND.state), bx, tableTop - 80));
   y -= 14;
   const size = 120;
   const perRow = 3;

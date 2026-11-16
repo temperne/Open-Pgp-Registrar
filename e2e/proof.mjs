@@ -53,14 +53,14 @@ const flat = (s) => (s ?? '').replace(/\s+/g, ' ').trim();
 
 const browser = await chromium.launch();
 const errors = [];
-async function newPage() {
+async function newPage(url = APP) {
   const p = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
   p.on('pageerror', (e) => errors.push(e.message));
   p.on('dialog', (d) => d.accept());
   p.on('request', (r) => {
     if (!/^(file|blob|data):/.test(r.url())) errors.push(`network request: ${r.url()}`);
   });
-  await p.goto(APP);
+  await p.goto(url);
   return p;
 }
 async function save(p, selector, name) {
@@ -90,8 +90,8 @@ async function signUntilComplete(p) {
 }
 
 // Checks a document against a registration file; optionally downloads the filing.
-async function checkDocument(regFile, docFile, filing) {
-  const r = await newPage();
+async function checkDocument(regFile, docFile, filing, url = APP) {
+  const r = await newPage(url);
   await r.click('#tab-verify');
   await r.setInputFiles('#v-reg-file', regFile);
   await r.waitForFunction(() => /Proof of key possession(: every|: by sale| NOT)|error|not a registration/i.test(document.getElementById('v-reg-info').textContent), null, {
@@ -226,6 +226,17 @@ try {
 
   let c = await checkDocument(R0, D1, { name: '03-sale-1-filing-original-and-certificate.pdf', original: true });
   check('3. Recorder checks sale 1', /GOOD/.test(c.verdict), c.verdict, [c.filed]);
+  {
+    // The same registration and deed, on a site set to another county: refused.
+    const d1Text = flat(execFileSync('pdftotext', [D1, '-']).toString());
+    const r0Text = flat(execFileSync('pdftotext', ['-f', '2', R0, '-']).toString());
+    const other = await checkDocument(R0, D1, null, `${APP}?${new URLSearchParams({ county: 'Maricopa County' })}`);
+    check(
+      '3b. Another county\u2019s site refuses them',
+      /DOES NOT VERIFY/.test(other.verdict) && /JURISDICTION: Pima County, Arizona/i.test(d1Text) && /COUNTY/.test(d1Text) && /Pima County, Arizona/.test(r0Text),
+      `the registration and the deed name Pima County, Arizona in their signed text (and as a COUNTY barcode); a site set to Maricopa County says ${other.verdict}`,
+    );
+  }
   const F1 = c.filed;
   const F1both = (await checkDocument(R0, D1, { name: '03b-sale-1-filing-original-checked-copy-certificate.pdf', original: true, checked: true })).filed;
   const F1cert = (await checkDocument(R0, D1, { name: '03c-sale-1-filing-certificate-only.pdf' })).filed;
