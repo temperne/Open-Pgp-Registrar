@@ -1858,12 +1858,17 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
 }
 
 /** Sends who we are (proven by our key) and the document so far. */
-async function roomShare(force = '') {
+async function roomShare(force = '', why: 'arrived' | 'someone-arrived' | 'update' = 'update') {
   if (!room?.ws) return;
   if (state.signer) await room.hello(state.signer);
   if (room.host && state.signer) await room.shareSettings(state.signer, roomSettings());
-  // Before anyone signs, the forms as they are (for someone who just arrived).
-  if (!state.draft || !state.regDraft) await sendPrep(true);
+  // Before anyone signs, the forms as they are, for someone who just arrived.
+  if (why === 'someone-arrived' && (!state.draft || !state.regDraft)) await sendPrep(true);
+  // Having just arrived, what we have is already what the room has seen of us: nothing.
+  if (why === 'arrived') {
+    for (const el of prepFields()) prepSeen.set(el.id, fieldValue(el));
+    prepKeysSeen = JSON.stringify([state.signReg?.parcel ?? '', state.signReg?.keys.map((k) => k.getFingerprint()) ?? [], buyerKeys.map((k) => k.getFingerprint()), state.coOwners.map((k) => k.getFingerprint())]);
+  }
   const reg = regDraftForPdf();
   if (reg) await room.send({ t: 'reg', reg });
   const d = draftForPdf();
@@ -2218,7 +2223,9 @@ async function applyRoomDraft(remote: DocumentDraft & RoomDraftExtras) {
 
 const roomEvents = {
   onStatus: roomStatus,
-  onJoined: () => void roomShare(),
+  // Someone arrived: send them the forms as they are. Having just arrived ourselves, we take
+  // the room's forms instead of pushing ours.
+  onJoined: (_r: SigningRoom, newcomer?: boolean) => void roomShare('', newcomer ? 'arrived' : 'someone-arrived'),
   // One message at a time: two signatures arriving together must both be merged, not race.
   onMessage: (m: RoomMessage, r: SigningRoom) => {
     roomQueue = roomQueue.then(() => handleRoomMessage(m, r));

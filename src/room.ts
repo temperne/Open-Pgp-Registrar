@@ -48,7 +48,8 @@ export interface RoomEvents {
   onStatus(status: 'connecting' | 'connected' | 'closed', tabs: number, detail?: string): void;
   onMessage(m: RoomMessage, room: SigningRoom): void;
   /** Another tab arrived: send it what it needs (who we are, the document so far). */
-  onJoined(room: SigningRoom): void;
+  /** newcomer: this tab just arrived (welcome); otherwise someone else arrived. */
+  onJoined(room: SigningRoom, newcomer?: boolean): void;
 }
 
 /**
@@ -265,10 +266,10 @@ export class SigningRoom {
           if (n.relay === 'welcome') {
             welcomed = true;
             clearTimeout(timer);
-            this.events.onJoined(this);
+            this.events.onJoined(this, true);
             await this.send({ t: 'ask' });
           }
-          if (n.relay === 'joined') this.events.onJoined(this);
+          if (n.relay === 'joined') this.events.onJoined(this, false);
         } catch {
           /* ignore */
         }
