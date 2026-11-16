@@ -36,7 +36,8 @@ gives counter staff a way to check a filing.
   peers' keys (`#co-room`, and a question before the first signature). A signed file's
   original goes through the room **once per file hash** (`roomFileSent`, at most
   `ROOM_FILE_LIMIT`); later updates carry signatures only, and a late joiner asks with
-  `need-file` (one tab answers after a random delay; the others stand down).
+  `need-file` naming the first signer, who answers at once; the others wait 3-5 s and
+  stand down when it arrives.
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
   relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check), the
   master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the

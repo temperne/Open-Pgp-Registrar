@@ -1823,6 +1823,10 @@ const fileHashOf = (src: { sha256: string[] }) => src.sha256.join(',');
 let roomFileSent = '';
 /** A reply to someone asking for the file, waiting a moment in case another tab answers first. */
 let fileReply: ReturnType<typeof setTimeout> | null = null;
+/** When this tab last sent the file to someone who asked (it doesn't answer twice in a row). */
+let fileAnswered = 0;
+/** The file this tab asked the room for, and when (it asks once, again only if nothing comes). */
+let fileAsked = { hash: '', at: 0 };
 
 function roomFileSize() {
   const src = state.source;
@@ -1900,9 +1904,10 @@ async function applyRoomDraft(remote: DocumentDraft & { files?: RoomFiles; fileH
   if (remote.source) {
     const hash = remote.fileHash ?? fileHashOf(remote.source);
     // Someone else sent the file: no need for this tab to answer a request for it.
-    if (remote.files && fileReply) {
-      clearTimeout(fileReply);
+    if (remote.files) {
+      if (fileReply) clearTimeout(fileReply);
       fileReply = null;
+      fileAnswered = Date.now();
     }
     const have = !!state.source && fileHashOf(state.source) === hash;
     if (!state.draft && !have) {
@@ -1911,9 +1916,13 @@ async function applyRoomDraft(remote: DocumentDraft & { files?: RoomFiles; fileH
         return;
       }
       if (!remote.files) {
-        // We joined after the file went round: ask for it once.
+        // We joined after the file went round: ask for it once (again only if nothing comes).
         status.textContent = 'Getting the file from the room...';
-        await room?.send({ t: 'need-file', hash });
+        if (fileAsked.hash !== hash || Date.now() - fileAsked.at > 10_000) {
+          fileAsked = { hash, at: Date.now() };
+          // Asked of the first signer (who loaded the file); the others answer only if they don't.
+          await room?.send({ t: 'need-file', hash, to: remote.signatures[0]?.fingerprint?.toUpperCase() });
+        }
         return;
       }
       state.source = {
@@ -1984,13 +1993,18 @@ async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
       else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
       else if (m.t === 'settings') await applyRoomSettings(m, r);
       else if (m.t === 'need-file') {
-        // Someone joined after the file went round. One tab answers: wait a moment, and stand
-        // down if another tab sends it first.
-        if (state.source && fileHashOf(state.source) === m.hash && !fileReply) {
-          fileReply = setTimeout(() => {
-            fileReply = null;
-            void roomShare(m.hash);
-          }, 200 + Math.random() * 1500);
+        // Someone joined after the file went round. The tab it was asked of answers at once; the
+        // others wait a few seconds and stand down if it arrives (they answer only if that tab left).
+        if (state.source && fileHashOf(state.source) === m.hash && !fileReply && Date.now() - fileAnswered > 5000) {
+          const mine = (state.signer ?? state.key)?.getFingerprint().toUpperCase();
+          fileReply = setTimeout(
+            () => {
+              fileReply = null;
+              fileAnswered = Date.now();
+              void roomShare(m.hash);
+            },
+            m.to && m.to === mine ? 0 : 3000 + Math.random() * 2000,
+          );
         }
       }
     } catch (err) {
