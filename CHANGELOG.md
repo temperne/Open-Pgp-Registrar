@@ -96,6 +96,11 @@ last part is the date the version was tagged.
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included (up to
   2.8 MB; larger files go by PDF). Tested with four signers in four tabs.
+- **A signing room uses the settings of the person who started it.** County, state,
+  recording office, program name, business office and logo are shared with everyone who
+  joins, signed with the starter's key, so every tab prints the same forms. Joiners see
+  whose settings they are using and can't change them while in the room; the starter's
+  changes reach everyone.
 - **Join a signing room by pasting its link or code.** Someone who already has the page
   open with their key unlocked pastes the room link (or the code after `#room=`) into the
   Sign together card and joins, with no reload: the key and the work in progress stay.

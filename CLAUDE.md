@@ -27,7 +27,13 @@ gives counter staff a way to check a filing.
   shows an invitation at the top of the page and asks before joining. The room key is
   read once at start-up (`INVITED_ROOM`): tab changes rewrite the "#". Messages are AES-GCM encrypted in the tab with a 32-byte key that
   is only in the link after `#`; the relay sees ciphertext and a hashed room name, and
-  stores nothing. Participants prove their keys by signing a challenge.
+  stores nothing. Participants prove their keys by signing a challenge. The room's
+  **settings** (jurisdiction and logo) are the starter's (`room.host`): shared as a
+  `settings` message signed with their key (`shareSettings`/`checkSettings`), applied by
+  joiners (`applyRoomSettings`, first proven sender wins), and locked for joiners while in
+  the room (`settingsLockedByRoom`). Joiners can also paste a room link or code
+  (`#room-code`) to join without reloading. A registration in a room offers the proven
+  peers' keys (`#co-room`, and a question before the first signature).
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
   relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check) and
   the analytics endpoint **only**. Do not loosen it further.
@@ -361,7 +367,9 @@ Every build that is released, or pushed for a pull request, must be proven:
      zip's SHA-256; `gpg --verify` passes; the program's check with the file and the
      statement is GOOD, and a changed file DOES NOT VERIFY
    - four signers in one room (two signing at the same moment; gpg verifies all four), a
-     registration signed together in a room, and a file signed together in a room
+     registration signed together in a room (the joiner pastes the link into the page they
+     have open, takes the starter's county, and the room's keys are offered and asked
+     for), and a file signed together in a room
    - the update check: nothing until Sign together is turned on, then one request to the
      master site; a newer version is offered with the same settings, an older one isn't
    - two owners signing together in a signing room through a test relay, with the app

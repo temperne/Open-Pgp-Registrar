@@ -753,9 +753,25 @@ try {
   // ---- 12c. A registration signed together in a room ----
   {
     // The second key holder already has the page open with their key unlocked: they paste the room link.
-    const { tabs } = await openRoom(['ann', 'bob-carol'], null, true);
+    // The person who starts the room works for Maricopa County: the room uses their settings.
+    const { tabs } = await openRoom(
+      ['ann', 'bob-carol'],
+      async (p, i) => {
+        if (i) return;
+        await p.click('#j-open');
+        await p.selectOption('#j-county', 'Maricopa County');
+        await p.click('#j-apply');
+        await p.waitForTimeout(300);
+      },
+      true,
+    );
     const [a, b] = tabs;
     const keptKey = /Unlocked/.test(await b.textContent('#key-status'));
+    await b.waitForFunction(() => /Settings from/.test(document.getElementById('room-settings-note').textContent), null, { timeout: 30000 });
+    const joinerBar = flat(await b.textContent('.jbar'));
+    const joinerNote = flat(await b.textContent('#room-settings-note'));
+    await b.click('#j-open');
+    const locked = !(await b.evaluate(() => document.getElementById('jurisdiction').open)) && /signing room/.test(await b.textContent('#boot'));
     await a.click('#tab-register');
     await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
     await a.fill('#reg-parcels', '444-55-6666');
@@ -782,9 +798,9 @@ try {
     await r.close();
     check(
       '12c. A registration signed together in a room',
-      keptKey && offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
+      keptKey && /Maricopa County/.test(joinerBar) && /Ann Smith/.test(joinerNote) && locked && offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
         owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
-      `the second key holder joined by pasting the room link into the page they had open (key still unlocked); the room offered their proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
+      `the second key holder joined by pasting the room link into the page they had open (key still unlocked) and took the starter's settings ("${joinerBar}"; "${joinerNote.slice(0, 60)}..."), which they can't change while in the room; the room offered their proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
       [reg],
     );
   }

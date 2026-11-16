@@ -23,6 +23,7 @@ export type RoomMessage =
   | { t: 'hello'; key: string; ts: number; sig: string }
   | { t: 'state'; draft: unknown }
   | { t: 'reg'; reg: unknown }
+  | { t: 'settings'; settings: string; key: string; sig: string }
   | { t: 'ask' };
 
 export interface Peer {
@@ -80,7 +81,39 @@ export class SigningRoom {
 
   /** A new room: a fresh random key. */
   static async create(events: RoomEvents) {
-    return SigningRoom.open(b64url(crypto.getRandomValues(new Uint8Array(32))), events);
+    const r = await SigningRoom.open(b64url(crypto.getRandomValues(new Uint8Array(32))), events);
+    r.host = true;
+    return r;
+  }
+
+  /** This tab started the room: its settings (county, office, names, logo) are the room's. */
+  host = false;
+
+  /** The room's settings, signed by the person who started it. */
+  async shareSettings(key: openpgp.PrivateKey, settings: string) {
+    const sig = (await openpgp.sign({
+      message: await openpgp.createMessage({ text: `S.T.O.P. ROOM SETTINGS ${this.id}\n${settings}` }),
+      signingKeys: key,
+      detached: true,
+      format: 'binary',
+    })) as Uint8Array;
+    await this.send({ t: 'settings', settings, key: key.toPublic().armor(), sig: b64(sig) });
+  }
+
+  /** The signer of a settings message (its fingerprint), or null if the signature doesn't hold. */
+  async checkSettings(m: Extract<RoomMessage, { t: 'settings' }>): Promise<string | null> {
+    try {
+      const key = await openpgp.readKey({ armoredKey: m.key });
+      const r = await openpgp.verify({
+        message: await openpgp.createMessage({ text: `S.T.O.P. ROOM SETTINGS ${this.id}\n${m.settings}` }),
+        signature: await openpgp.readSignature({ binarySignature: fromB64(m.sig) }),
+        verificationKeys: key,
+      });
+      await r.signatures[0].verified;
+      return key.getFingerprint().toUpperCase();
+    } catch {
+      return null;
+    }
   }
 
   /** The room a link names (its key, from after "#"). */

@@ -1784,15 +1784,20 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
   $('room-leave').hidden = !room || status === 'closed';
   $('room-start').hidden = !!room && status !== 'closed';
   $('room-share').hidden = !room || status === 'closed';
-  if (status === 'closed') peers.clear();
+  if (status === 'closed') {
+    peers.clear();
+    roomHost = null;
+  }
   renderPeers();
   showRoomConsent();
+  showRoomSettings();
 }
 
 /** Sends who we are (proven by our key) and the document so far. */
 async function roomShare() {
   if (!room?.ws) return;
   if (state.signer) await room.hello(state.signer);
+  if (room.host && state.signer) await room.shareSettings(state.signer, roomSettings());
   const reg = regDraftForPdf();
   if (reg) await room.send({ t: 'reg', reg });
   const d = draftForPdf();
@@ -1810,6 +1815,51 @@ async function roomShare() {
     return;
   }
   await room.send({ t: 'state', draft: d });
+}
+
+/** This page's settings, as the room's host shares them (the same fields as a settings link). */
+function roomSettings() {
+  const b = BRAND as unknown as Record<string, string>;
+  const j: Record<string, string> = {};
+  for (const [, key] of LINK_KEYS) j[key] = String(b[key] ?? '');
+  // The state seals are built in; an uploaded logo travels with the settings.
+  return JSON.stringify({ j, logo: customLogo ? `data:${customLogo.type};base64,${toBase64(customLogo.bytes)}` : '' });
+}
+
+/** Whose settings this tab follows (the room's host), once they arrive. */
+let roomHost: { fingerprint: string; name: string } | null = null;
+
+async function applyRoomSettings(m: Extract<RoomMessage, { t: 'settings' }>, r: SigningRoom) {
+  if (r.host) return; // the host sets them
+  const fpr = await r.checkSettings(m);
+  if (!fpr) return;
+  // The first proven person to share settings is the host; nobody else can change them.
+  const peer = peers.get(fpr);
+  if (!peer?.proven) return;
+  if (roomHost && roomHost.fingerprint !== fpr) return;
+  roomHost = { fingerprint: fpr, name: identityFromUserID(peer.userID).name || peer.userID };
+  const parsed = JSON.parse(m.settings) as { j?: Partial<Jurisdiction>; logo?: string };
+  const j: Partial<Jurisdiction> = {};
+  for (const [, key] of LINK_KEYS) {
+    const v = parsed.j?.[key];
+    if (typeof v === 'string' && v.trim()) j[key] = v;
+  }
+  const logo = parsed.logo ? sealFromDataUrl(parsed.logo) : null;
+  const b = BRAND as unknown as Record<string, string>;
+  const same = (Object.keys(j) as (keyof Jurisdiction)[]).every((k) => b[k] === j[k]) && !logo === !customLogo;
+  if (!same) useJurisdiction(j, logo);
+  showRoomSettings();
+}
+
+function showRoomSettings() {
+  const note = $('room-settings-note');
+  note.hidden = !room?.ws;
+  if (!room?.ws) return;
+  note.textContent = room.host
+    ? `Everyone in this room uses your settings: ${BRAND.name}, ${BRAND.county}, ${BRAND.state} (deeds recorded with the ${BRAND.recorderOffice}).`
+    : roomHost
+      ? `Settings from ${roomHost.name}, who started this room: ${BRAND.name}, ${BRAND.county}, ${BRAND.state} (deeds recorded with the ${BRAND.recorderOffice}). They stay while you are in the room.`
+      : 'Waiting for the settings of the person who started this room.';
 }
 
 /** The largest original file a room passes on (the relay takes 4 MB per message, after encryption and base64). */
@@ -1896,6 +1946,7 @@ async function handleRoomMessage(m: RoomMessage, r: SigningRoom) {
         renderPeers();
       } else if (m.t === 'state') await applyRoomDraft(m.draft as DocumentDraft & { files?: RoomFiles });
       else if (m.t === 'reg') await applyRoomReg(m.reg as RegistrationDraft);
+      else if (m.t === 'settings') await applyRoomSettings(m, r);
     } catch (err) {
       $('room-status').textContent = `A message from the room could not be used: ${(err as Error).message}`;
     }
@@ -2983,12 +3034,24 @@ applyBrandToPage();
 // ---- Use this tool for another county or state ----
 // Prominent: a button in the page header (and the seal itself) opens the panel, on any tab.
 function openJurisdiction() {
+  if (settingsLockedByRoom()) {
+    banner(`You are in a signing room: its settings come from ${roomHost?.name ?? 'the person who started it'}. Leave the room to change them.`);
+    $('boot').className = 'callout';
+    return;
+  }
   const d = $('jurisdiction') as HTMLDetailsElement;
   d.open = true;
   d.scrollIntoView({ behavior: 'smooth', block: 'start' });
   input('j-county').focus({ preventScroll: true });
 }
 $('j-open').addEventListener('click', openJurisdiction);
+$('jurisdiction').addEventListener('toggle', () => {
+  const d = $('jurisdiction') as HTMLDetailsElement;
+  if (d.open && settingsLockedByRoom()) {
+    d.open = false;
+    openJurisdiction();
+  }
+});
 $('brand-seal').addEventListener('click', openJurisdiction);
 $('brand-seal').title = 'Change the county, state or logo';
 // State and county selectors (src/counties.ts: every U.S. county, from the Census Bureau).
@@ -3363,6 +3426,15 @@ function useJurisdiction(j: Partial<Jurisdiction> | null, logo: typeof customLog
     ? `Using ${BRAND.name} (${BRAND.county}, ${BRAND.state}) until this page is closed.`
     : 'Using the defaults.';
   buildLink();
+  if (room?.host) {
+    void roomShare();
+    showRoomSettings();
+  }
+}
+
+/** In someone else's room, the settings are theirs. */
+function settingsLockedByRoom() {
+  return !!room?.ws && !room.host;
 }
 
 async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>> {
@@ -3371,6 +3443,7 @@ async function logoFromFile(file: File): Promise<NonNullable<typeof customLogo>>
 }
 
 action('j-apply', async () => {
+  if (settingsLockedByRoom()) throw new UserError(`You are in a signing room: its settings come from ${roomHost?.name ?? 'the person who started it'}. Leave the room to change them.`);
   const f = input('j-logo').files?.[0];
   const logo = f ? await logoFromFile(f) : customLogo;
   useJurisdiction(
