@@ -475,7 +475,7 @@ the version was released.
 
 | Version | SHA-256 of the HTML file |
 |---|---|
-| v0.1.11152026 | `13a50b3f80fbaf88f9036746af74e722089ec33c0614d28498f5246e35f42998` |
+| v0.1.11152026 | `5f2ddc36a1c5092915dcbfd2bdf705299c63fd4437d5d51213ed19a15da69501` |
 
 ## License
 
