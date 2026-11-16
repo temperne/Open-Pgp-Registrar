@@ -853,6 +853,79 @@ try {
     check('12. Signing rooms carry only ciphertext', !leaked && roomSeen.length > 0, `${roomSeen.length} relay messages in steps 12b-12d, none readable`);
   }
 
+  // ---- 16. Failover: the master site's relay can't be reached; rooms move to the backup server ----
+  {
+    const BACKUP_URL = 'https://84-46-239-112.sslip.io/';
+    const seen = [];
+    const sockets = new Map();
+    let refused = 0;
+    const failTab = async (url) => {
+      const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1100, height: 900 } });
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('dialog', (d) => d.accept());
+      for (const u of [OFFICIAL_URL, BACKUP_URL]) await page.route(`${u}**`, (r) => r.fulfill({ body: distHtml, contentType: 'text/html' }));
+      await page.routeWebSocket(/\/relay\//, (ws) => {
+        const u = new URL(ws.url());
+        // Cloudflare is down (or out of its free quota): it refuses at once.
+        if (u.host === new URL(OFFICIAL_URL).host) {
+          refused++;
+          ws.close({ code: 1011, reason: 'unavailable' });
+          return;
+        }
+        const id = u.pathname.split('/').pop();
+        const set = sockets.get(id) ?? new Set();
+        sockets.set(id, set);
+        for (const other of set) other.send(JSON.stringify({ relay: 'joined', tabs: set.size + 1 }));
+        set.add(ws);
+        ws.send(JSON.stringify({ relay: 'welcome', tabs: set.size }));
+        ws.onMessage((m) => {
+          seen.push(String(m));
+          for (const other of set) if (other !== ws) other.send(m);
+        });
+        ws.onClose(() => set.delete(ws));
+      });
+      await page.goto(url);
+      return page;
+    };
+    // Ann is on the program's address, Bob and Carol on the backup address.
+    const a = await failTab(OFFICIAL_URL);
+    await loadKey(a, keys.ann.priv);
+    await loadSignRegistration(a, R0);
+    await a.check('#room-agree');
+    await a.check('#room-enable');
+    await a.click('#room-start');
+    await a.waitForFunction(() => /backup server/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const link = await a.inputValue('#room-link');
+    const b = await failTab(BACKUP_URL);
+    await loadKey(b, keys['bob-carol'].priv);
+    await b.click('#tab-sign');
+    const where = flat(await b.textContent('#room-where'));
+    await b.check('#room-agree');
+    await b.check('#room-enable');
+    await b.fill('#room-code', link);
+    await b.click('#room-code-join');
+    await b.waitForFunction(() => /2 tabs/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
+    const bStatus = flat(await b.textContent('#room-status'));
+    await a.selectOption('#tpl', 'ownership');
+    await a.fill('#f-grantor', 'Ann Smith, Bob Jones and Carol Jones');
+    await a.fill('#f-terms', 'Signed through the backup server.');
+    await a.click('#text-sign-btn');
+    await status(b, 'tr-status', 'Not complete: 1 of 2');
+    await b.click('#text-sign-btn');
+    for (const p of [a, b]) await status(p, 'tr-status', 'Complete');
+    const doc = await save(a, '#dl-instrument', '16-signed-through-the-backup-server.pdf');
+    await a.close();
+    await b.close();
+    const c = await checkDocument(R0, doc, null);
+    const leaked = seen.some((m) => /OWNERSHIP|BACKUP SERVER|BEGIN PGP/i.test(m));
+    check(
+      '16. Failover to the backup server',
+      refused >= 2 && /backup address/.test(where) && /backup server/.test(bStatus) && !leaked && /GOOD/.test(c.verdict),
+      `the master site's relay refused ${refused} connections; both tabs moved to the backup server on their own (one loaded from the program's address, one from the backup address: "${where.slice(0, 70)}..."), signed together through it (${seen.length} messages, all encrypted), and the result checks ${c.verdict}`,
+      [doc],
+    );
+  }
+
   // ---- 15. Update check: only once the person connects; offers the newest version with the same settings ----
   {
     const COPY = 'https://harris-county-stop.example.workers.dev/';

@@ -1,0 +1,11 @@
+# The S.T.O.P. backup server. Caddy gets and renews the https certificate itself.
+# sslip.io resolves 84-46-239-112.sslip.io to 84.46.239.112, so no domain is needed;
+# to use your own domain, point it at the server and put it here (and in src/brand.ts,
+# MASTER_FALLBACK_URL), then rebuild the page.
+# Caddy writes no access log unless a site asks for one, so no record of visitors is kept.
+84-46-239-112.sslip.io {
+	encode zstd gzip
+	header -Server
+	# The app and the signing-room relay (WebSockets pass straight through).
+	reverse_proxy 127.0.0.1:8787
+}

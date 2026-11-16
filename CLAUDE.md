@@ -38,8 +38,16 @@ gives counter staff a way to check a filing.
   `ROOM_FILE_LIMIT`); later updates carry signatures only, and a late joiner asks with
   `need-file` (one tab answers after a random delay; the others stand down).
 - The production build's Content-Security-Policy allows `connect-src` to `'self'`, the
-  relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check) and
-  the analytics endpoint **only**. Do not loosen it further.
+  relay host in `BRAND.relayUrl`, the master site (`MASTER_URL`, for the update check), the
+  master's backup server (`MASTER_FALLBACK_URL`, when relaying through the master) and the
+  analytics endpoint **only**. Do not loosen it further.
+- **Backup server** (`vps/`, the owner's decision, Nov 2026): `MASTER_FALLBACK_URL`
+  (https://84-46-239-112.sslip.io) is a second official address for pages that relay
+  through the master site (`officialOrigins`). `SigningRoom.connect` tries the relays in
+  order (`relayBases`: master, then backup) and moves on if one doesn't welcome the tab
+  within 8 s or closes first. `vps/relay.mjs` speaks the Worker's protocol; it serves
+  only the proven page (`update-page.sh` checks the README's SHA-256) and logs nothing.
+  Set up with `sh vps/setup.sh` (Debian 13, as root).
 - **Update check** (`checkForUpdate`): never on load. Only after the person turns on Sign
   together or allows analytics, and only when the page isn't on `MASTER_URL`: it reads
   the first few KB of `MASTER_URL/?check=1` for the comment the build puts near the top
@@ -279,6 +287,14 @@ storage, at most 16 tabs and 4 MB per message) and counts usage (`stop_usage` da
 Deploy: `cd worker && npm install && npx wrangler deploy` (after `npm run build`). See
 `worker/README.md`. `npx wrangler dev` runs it locally (the relay and the page together).
 
+## Backup server (`vps/`)
+
+The project's VPS (Debian 13): Caddy (https, no access log) in front of `relay.mjs` (Node,
+`ws`) on 127.0.0.1:8787, run by systemd as a throwaway user, behind an nftables firewall
+(22, 80, 443 only). `setup.sh` installs and updates it; `update-page.sh` installs the page
+from the master site only if it matches the README's SHA-256, so deploy to the master
+first, then pull and update the VPS. `tests/relay.test.ts` runs the real relay.
+
 ## County copies, seals, master site
 
 - **Link API** (GET parameters on the page; documented and built live in the panel's
@@ -374,6 +390,8 @@ Every build that is released, or pushed for a pull request, must be proven:
      have open, takes the starter's county, and the room's keys are offered and asked
      for), and a file signed together in a room (the file crosses the relay once while
      both sign, and once more for someone who joins afterwards)
+   - failover: the master's relay refuses, and two tabs (one on each official address)
+     move to the backup server on their own, sign together and check GOOD
    - the update check: nothing until Sign together is turned on, then one request to the
      master site; a newer version is offered with the same settings, an older one isn't
    - two owners signing together in a signing room through a test relay, with the app

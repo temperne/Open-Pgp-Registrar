@@ -1,0 +1,21 @@
+#!/usr/sbin/nft -f
+# The S.T.O.P. backup server's firewall: SSH, http (for the certificate) and https only.
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority 0; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+		iif lo accept
+		meta l4proto { icmp, ipv6-icmp } accept
+		tcp dport { 22, 80, 443 } accept
+		udp dport 443 accept
+	}
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+	}
+	chain output {
+		type filter hook output priority 0; policy accept;
+	}
+}

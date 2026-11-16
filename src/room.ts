@@ -7,7 +7,7 @@
 // a room name derived from the key by a one-way hash. Nothing connects until
 // someone starts or joins a room, and leaving disconnects.
 import * as openpgp from 'openpgp';
-import { BRAND } from './brand';
+import { BRAND, MASTER_URL, MASTER_FALLBACK_URL } from './brand';
 
 const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const fromB64url = (s: string) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
@@ -48,8 +48,28 @@ export interface RoomEvents {
  * address (BRAND.relayUrl): a saved copy, another host or a preview can't open or join
  * rooms. Returns the relay's WebSocket address, or '' when signing rooms aren't available.
  */
+/**
+ * Every address where this site's signing rooms work, in the order they are tried: its
+ * own, then (when it relays through the master site) the master's backup server.
+ */
+export function officialOrigins(): string[] {
+  const own = officialOrigin();
+  if (!own) return [];
+  try {
+    return own === new URL(MASTER_URL).origin ? [own, new URL(MASTER_FALLBACK_URL).origin] : [own];
+  } catch {
+    return [own];
+  }
+}
+
+/** The relays to try, in order (the same order for everyone, so a room meets on one of them). */
+export function relayBases(): string[] {
+  return roomsAvailableHere() ? officialOrigins().map((o) => `wss://${new URL(o).host}`) : [];
+}
+
+/** @deprecated The first relay; see relayBases. */
 export function relayBase(): string {
-  return roomsAvailableHere() ? `wss://${new URL(BRAND.relayUrl).host}` : '';
+  return relayBases()[0] ?? '';
 }
 
 /** The program's own address, where Sign together works ('' if rooms are turned off). */
@@ -64,7 +84,7 @@ export function officialOrigin(): string {
 export function roomsAvailableHere(): boolean {
   try {
     const official = officialOrigin();
-    return !!official && location.origin === official && location.protocol === 'https:';
+    return !!official && officialOrigins().includes(location.origin) && location.protocol === 'https:';
   } catch {
     return false;
   }
@@ -131,12 +151,33 @@ export class SigningRoom {
     return `${location.href.split('#')[0]}#room=${this.secret}`;
   }
 
-  connect() {
-    const base = relayBase();
+  /** Which relay the room is on: 0 is the program's own, 1 its backup server. */
+  via = 0;
+
+  connect(attempt = 0) {
+    const bases = relayBases();
+    const base = bases[attempt];
     if (!base) throw new Error('No signing room relay is set up for this site.');
+    this.via = attempt;
     this.events.onStatus('connecting', 0);
     const ws = new WebSocket(`${base}/relay/${this.id}`);
     this.ws = ws;
+    // A relay that doesn't welcome us (down, refusing, or out of its free quota): try the
+    // next one. Everyone tries them in the same order, so the room meets on the same one.
+    let welcomed = false;
+    const next = () => {
+      if (welcomed || this.ws !== ws || attempt + 1 >= bases.length) return false;
+      clearTimeout(timer);
+      ws.onclose = ws.onerror = ws.onmessage = null;
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+      this.connect(attempt + 1);
+      return true;
+    };
+    const timer = setTimeout(next, 8000);
     ws.onmessage = async (e) => {
       const data = String(e.data);
       if (data.startsWith('{')) {
@@ -146,6 +187,8 @@ export class SigningRoom {
           this.tabs = n.tabs;
           this.events.onStatus('connected', n.tabs);
           if (n.relay === 'welcome') {
+            welcomed = true;
+            clearTimeout(timer);
             this.events.onJoined(this);
             await this.send({ t: 'ask' });
           }
@@ -162,9 +205,14 @@ export class SigningRoom {
       }
     };
     ws.onclose = () => {
+      if (next()) return;
+      clearTimeout(timer);
       if (this.ws === ws) this.events.onStatus('closed', 0);
     };
-    ws.onerror = () => this.events.onStatus('closed', 0, 'The signing room relay could not be reached.');
+    ws.onerror = () => {
+      if (next()) return;
+      this.events.onStatus('closed', 0, 'The signing room relay could not be reached.');
+    };
   }
 
   leave() {

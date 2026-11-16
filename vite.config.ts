@@ -22,7 +22,16 @@ const workerSource = readFileSync(new URL('./worker/src/index.ts', import.meta.u
 const brandSource = readFileSync(new URL('./src/brand.ts', import.meta.url), 'utf8');
 const relay = /relayUrl:\s*'([^']*)'/.exec(brandSource)?.[1] ?? '';
 const relayHost = relay ? new URL(relay).host : '';
-const connect = ["'self'", ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : []), 'https://cloudflareinsights.com'].join(' ');
+// The master site's backup server (MASTER_FALLBACK_URL): signing rooms move there if the master can't be reached.
+const masterHost = new URL(/MASTER_URL = '([^']*)'/.exec(brandSource)?.[1] ?? 'https://invalid').host;
+const fallback = /MASTER_FALLBACK_URL = '([^']*)'/.exec(brandSource)?.[1] ?? '';
+const fallbackHost = fallback && relayHost === masterHost ? new URL(fallback).host : '';
+const connect = [
+  "'self'",
+  ...(relayHost ? [`https://${relayHost}`, `wss://${relayHost}`] : []),
+  ...(fallbackHost ? [`https://${fallbackHost}`, `wss://${fallbackHost}`] : []),
+  'https://cloudflareinsights.com',
+].join(' ');
 const csp = [
   "default-src 'none'",
   // Cloudflare Web Analytics: its beacon script, loaded only if the visitor allows it.

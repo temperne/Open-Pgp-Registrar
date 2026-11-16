@@ -90,7 +90,7 @@ import {
   type CheckedFile,
 } from './pdf';
 import { BRAND, BRAND_DEFAULTS, MASTER_URL, MASTER_ANALYTICS_TOKEN, applyJurisdiction, type Jurisdiction } from './brand';
-import { SigningRoom, relayBase, officialOrigin, roomsAvailableHere, type Peer, type RoomMessage } from './room';
+import { SigningRoom, officialOrigin, officialOrigins, roomsAvailableHere, type Peer, type RoomMessage } from './room';
 import { STATES, countiesOf, stateCode, recordingOffice } from './counties';
 import { bakedConfig, cleanConfig, countyHtml, countyPackage, slug } from './deploy';
 import { STATE_SEALS } from './seals';
@@ -1770,7 +1770,7 @@ function roomStatus(status: 'connecting' | 'connected' | 'closed', tabs: number,
     status === 'connecting'
       ? 'Connecting to the signing room...'
       : connected
-        ? `Connected (encrypted). ${tabs} tab${tabs === 1 ? '' : 's'} in the room, yours included.`
+        ? `Connected (encrypted${room?.via ? ', through the program\u2019s backup server' : ''}). ${tabs} tab${tabs === 1 ? '' : 's'} in the room, yours included.`
         : (detail ?? (room ? 'Disconnected from the signing room.' : ''));
   // Can't reach this copy's relay: fall back to the program's master site, same room
   // (the room's key is in the link, so everyone who follows it meets there).
@@ -2050,7 +2050,10 @@ function showRoomConsent() {
     );
   }
   if (here) {
-    msg.textContent = `This page was loaded from ${official}, the program\u2019s own address. Sign together connects this tab to that same address, and only while you are in a room.`;
+    const backup = location.origin !== official;
+    msg.textContent = backup
+      ? `This page was loaded from ${location.origin}, the program\u2019s backup address. Sign together connects this tab to the program\u2019s address (${official}), or to this backup if that can\u2019t be reached, and only while you are in a room.`
+      : `This page was loaded from ${official}, the program\u2019s own address. Sign together connects this tab to that same address${officialOrigins().length > 1 ? ' (or to the program\u2019s backup server if it can\u2019t be reached)' : ''}, and only while you are in a room.`;
   } else {
     // Only the program's own address can sign together: a copy elsewhere can't be trusted to.
     msg.append(
@@ -2125,7 +2128,7 @@ action('room-code-join', async () => {
   if (!secret) throw new UserError('Paste the room link (it has "#room=" in it) or the code that follows "#room=".');
   // A room lives at one address: a link to another copy's site is joined there.
   const other = /^https?:\/\/[^/#?]+/i.exec(v)?.[0];
-  if (other && other.toLowerCase() !== officialOrigin().toLowerCase()) {
+  if (other && !officialOrigins().some((o) => o.toLowerCase() === other.toLowerCase())) {
     throw new UserError(`That room is on ${other}, not this site. Open the link itself to join it there.`);
   }
   $('room-invite-top').hidden = true;

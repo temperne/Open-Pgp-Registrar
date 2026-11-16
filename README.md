@@ -191,6 +191,10 @@ country. On the web the page also asks each visitor whether it may count the vis
 Cloudflare Web Analytics (no cookies); it loads only if they allow it. Set your token in
 `MASTER_ANALYTICS_TOKEN` (`src/brand.ts`).
 
+**Backup server.** If the master site's relay can't be reached, signing rooms move to the
+project's own server, https://84-46-239-112.sslip.io, on their own; the page works from
+there too. See [`vps/README.md`](vps/README.md) to set it up or update it.
+
 **Updates.** `index.html` carries its version in a comment near the top. A copy that isn't
 on the master site (a saved file, or a county's own site) checks the master site's
 `index.html` only when someone turns on Sign together or allows analytics, reading just

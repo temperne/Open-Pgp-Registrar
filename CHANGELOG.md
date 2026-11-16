@@ -99,6 +99,12 @@ last part is the date the version was tagged.
   PDF). The file goes through the room once per file (by its SHA-256): after that only
   signatures travel, and someone who joins later asks for it once and one tab answers.
   Tested with four signers in four tabs.
+- **A backup server for signing rooms.** If the master site's relay can't be reached (or
+  its free quota is used up), rooms move to the project's own server,
+  https://84-46-239-112.sslip.io, on their own: everyone tries the master first, then the
+  backup, with the same room key. The page works from that address too. The server
+  (`vps/`) serves the proven page (checked against its SHA-256), relays only encrypted
+  messages, stores and logs nothing, and sits behind a firewall.
 - **A signing room uses the settings of the person who started it.** County, state,
   recording office, program name, business office and logo are shared with everyone who
   joins, signed with the starter's key, so every tab prints the same forms. Joiners see
