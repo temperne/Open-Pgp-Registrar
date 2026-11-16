@@ -50,7 +50,7 @@ import { canonicalText } from './text';
 import { needsDescription, type ExtractedFile, type SourceImage } from './extract';
 import type * as openpgp from 'openpgp';
 import { safeText } from './text';
-import { BRAND, brandLine } from './brand';
+import { BRAND, brandLine, refreshStatus } from './brand';
 
 const PAGE_W = 612; // US Letter
 const PAGE_H = 792;
@@ -1124,6 +1124,8 @@ export interface ReleaseStatementInfo {
   adoption?: string;
   /** The user guide, appended after the statement and its verification page. */
   guide?: Uint8Array;
+  /** The released copy's seal or logo (PNG or JPEG). */
+  seal?: Uint8Array;
   signed: null | {
     userID: string;
     fingerprint: string;
@@ -1136,8 +1138,30 @@ export interface ReleaseStatementInfo {
 
 export const RELEASE_KEY_ATTACHMENT = 'publisher-key.asc';
 
+/**
+ * The statement is about the released copy, not the site that made it: its name, county,
+ * address, adoption status and seal appear in the header, footer and seal corner.
+ */
 export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<Uint8Array> {
+  const saved = { ...BRAND };
+  try {
+    Object.assign(BRAND, { name: info.program, county: info.county, state: info.state, recorderOffice: info.office, projectUrl: info.programUrl || BRAND.projectUrl });
+    refreshStatus();
+    return await releaseStatement(info);
+  } finally {
+    Object.assign(BRAND, saved);
+  }
+}
+
+async function releaseStatement(info: ReleaseStatementInfo): Promise<Uint8Array> {
   const { doc, fonts } = await newDoc(`Release statement - ${info.program}`);
+  if (info.seal?.length) {
+    try {
+      fonts.seal = info.seal[0] === 0x89 ? await doc.embedPng(info.seal) : await doc.embedJpg(info.seal);
+    } catch {
+      /* keep the page's own seal */
+    }
+  }
 
   // ---- Page 1: the statement ----
   const sp = doc.addPage([PAGE_W, PAGE_H]);
@@ -1165,7 +1189,7 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
   );
   if (info.adoption) section('Status', info.adoption);
   if (info.changes?.length) {
-    const shown = info.changes.slice(0, 14);
+    const shown = info.changes.slice(0, 10);
     const more = info.changes.length - shown.length;
     section(
       `In this version (${info.changes.length} changes)`,
@@ -1180,8 +1204,8 @@ export async function releaseStatementPdf(info: ReleaseStatementInfo): Promise<U
     'How to put it online',
     `The package ${info.zipName} holds the program and a Cloudflare Worker that serves it and relays signing rooms. Unzip it, then run npm install and npx wrangler deploy (its README.md explains). Or put ${info.fileName} on any web server.`,
   );
-  // The publisher's own signature, in ink.
-  sy -= 26;
+  // The publisher's own signature, in ink, clear of the footer.
+  sy = Math.max(sy - 26, 96);
   sp.drawLine({ start: { x: M, y: sy }, end: { x: M + 250, y: sy }, thickness: 0.75, color: INK });
   sp.drawLine({ start: { x: M + 290, y: sy }, end: { x: M + 420, y: sy }, thickness: 0.75, color: INK });
   text(sp, fonts, `${who}`, sy - 4, { size: 8.5, color: MUTED, width: 250 });

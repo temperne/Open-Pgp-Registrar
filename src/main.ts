@@ -3430,6 +3430,7 @@ action('lb-package', async () => {
         : `A demonstration: not adopted by ${cfg.county}, ${cfg.state}. Its pages and forms say so, and the seal carries a DEMO band, until the county (or the state) adopts it and the project adds it to the adoption list.`;
     })(),
     guide: guideBytes() ?? undefined,
+    seal: logo ? logo.bytes : st ? fromBase64(st.png) : undefined,
     signed: signed && state.signer
       ? { userID: describeKey(state.signer), fingerprint: signed.fingerprint, signedAt: signed.signedAt, payload: signed.payload, signature: signed.signature, publicArmored }
       : null,
