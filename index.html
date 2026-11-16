@@ -674,6 +674,14 @@
                 This link invites you to a signing room. Unlock your private key (step 1), turn on Sign together above, then join.
                 <button type="button" id="room-join" class="primary" disabled>Join the signing room</button>
               </div>
+              <div id="room-paste">
+                <label for="room-code">Join a room someone sent you <span class="opt">(paste the link, or the code after
+                  #room=; your key and your work stay as they are)</span></label>
+                <div class="inline-row">
+                  <input id="room-code" autocomplete="off" spellcheck="false" placeholder="https://.../#room=... or the code" />
+                  <button type="button" id="room-code-join" disabled>Join</button>
+                </div>
+              </div>
               <div class="actions">
                 <button type="button" id="room-start" disabled>Start a signing room</button>
                 <button type="button" id="room-leave" hidden>Leave the room</button>

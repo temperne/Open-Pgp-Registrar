@@ -96,6 +96,9 @@ last part is the date the version was tagged.
   registration in progress (every key holder signs it from their own tab; the room card
   follows them to the Register tab) and a signed file, the original included (up to
   2.8 MB; larger files go by PDF). Tested with four signers in four tabs.
+- **Join a signing room by pasting its link or code.** Someone who already has the page
+  open with their key unlocked pastes the room link (or the code after `#room=`) into the
+  Sign together card and joins, with no reload: the key and the work in progress stay.
 - **Fixed: a registration in a signing room listed only the person who started it.**
   Being in the room didn't add anyone's key, so the registration was "complete" after
   one signature. The Register tab now offers to add the keys of everyone proven in the

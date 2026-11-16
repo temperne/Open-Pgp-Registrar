@@ -670,12 +670,13 @@ try {
     return page;
   }
   /** Opens one tab per key, all in one room, each seeing the others proven by their keys. */
-  async function openRoom(ids, prepare) {
+  async function openRoom(ids, prepare, paste = false) {
     const tabs = [];
     let link = '';
     for (const [i, id] of ids.entries()) {
       const p = await roomTab();
-      await p.goto(i ? link : OFFICIAL_URL);
+      // Joiners open the link, or (paste) already have the page open and paste the link in.
+      await p.goto(i && !paste ? link : OFFICIAL_URL);
       await loadKey(p, keys[id].priv);
       if (prepare) await prepare(p, i);
       await p.click('#tab-sign');
@@ -685,6 +686,11 @@ try {
         await p.click('#room-start');
         await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
         link = await p.inputValue('#room-link');
+      } else if (paste) {
+        // The key is already unlocked, and stays: no reload.
+        await p.fill('#room-code', link);
+        await p.click('#room-code-join');
+        await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
       } else {
         await p.click('#room-join');
         await p.waitForFunction(() => /Connected/.test(document.getElementById('room-status').textContent), null, { timeout: 30000 });
@@ -746,8 +752,10 @@ try {
 
   // ---- 12c. A registration signed together in a room ----
   {
-    const { tabs } = await openRoom(['ann', 'bob-carol']);
+    // The second key holder already has the page open with their key unlocked: they paste the room link.
+    const { tabs } = await openRoom(['ann', 'bob-carol'], null, true);
     const [a, b] = tabs;
+    const keptKey = /Unlocked/.test(await b.textContent('#key-status'));
     await a.click('#tab-register');
     await a.fill('#reg-owner', 'Ann Smith, Bob Jones and Carol Jones');
     await a.fill('#reg-parcels', '444-55-6666');
@@ -774,9 +782,9 @@ try {
     await r.close();
     check(
       '12c. A registration signed together in a room',
-      offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
+      keptKey && offered && asked.some((m) => /in the signing room but not on this registration/.test(m)) &&
         owner === 'Ann Smith, Bob Jones and Carol Jones' && cardMoved && /Proof of key possession: every/.test(info),
-      `the room offered the other key holder's proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
+      `the second key holder joined by pasting the room link into the page they had open (key still unlocked); the room offered their proven key ("${offer.slice(0, 60)}...") and signing asked to add it; the second key holder's tab received the registration (owner "${owner}"), the room card followed them to the Register tab, both signed, and the form reads "${info.slice(0, 90)}"`,
       [reg],
     );
   }

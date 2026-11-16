@@ -851,3 +851,15 @@ details.jurisdiction {
   padding: 0 0.5rem;
   border-left: 3px solid var(--rule);
 }
+
+/* A text field with its button on the same line (wraps on phones). */
+.inline-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.inline-row input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}

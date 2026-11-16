@@ -1971,6 +1971,8 @@ function showRoomConsent() {
   const on = input('room-enable').checked && ready;
   ($('room-start') as HTMLButtonElement).disabled = !on;
   ($('room-join') as HTMLButtonElement).disabled = !on;
+  ($('room-code-join') as HTMLButtonElement).disabled = !on || !!room?.ws;
+  $('room-paste').hidden = !!room?.ws;
 }
 input('room-agree').addEventListener('change', () => {
   // Withdrawing agreement turns Sign together off (and leaves any room).
@@ -2010,6 +2012,33 @@ action('room-join', async () => {
   if (!secret) throw new UserError('This link has no signing room in it.');
   $('room-invite').hidden = true;
   await enterRoom(await SigningRoom.open(secret, roomEvents));
+});
+input('room-code').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('room-code-join').click();
+});
+/** Joins a room from a pasted link or code, without reloading: the unlocked key and the work in progress stay. */
+action('room-code-join', async () => {
+  if (!roomsAvailableHere()) throw new UserError(`Sign together works only on ${officialOrigin() || 'the program\u2019s own address'}.`);
+  if (!state.signer) throw new UserError('Load and unlock your private key (step 1) first.');
+  if (!input('room-agree').checked) throw new UserError('Read and agree to the terms of service and waiver of liability first.');
+  if (!input('room-enable').checked) throw new UserError('Turn on Sign together first.');
+  const v = input('room-code').value.trim();
+  const secret = /room=([A-Za-z0-9_-]{20,})/.exec(v)?.[1] ?? (/^[A-Za-z0-9_-]{20,}$/.test(v) ? v : '');
+  if (!secret) throw new UserError('Paste the room link (it has "#room=" in it) or the code that follows "#room=".');
+  // A room lives at one address: a link to another copy's site is joined there.
+  const other = /^https?:\/\/[^/#?]+/i.exec(v)?.[0];
+  if (other && other.toLowerCase() !== officialOrigin().toLowerCase()) {
+    throw new UserError(`That room is on ${other}, not this site. Open the link itself to join it there.`);
+  }
+  $('room-invite-top').hidden = true;
+  $('room-invite').hidden = true;
+  await enterRoom(await SigningRoom.open(secret, roomEvents));
+  input('room-code').value = '';
+  try {
+    history.replaceState(null, '', `#room=${secret}`);
+  } catch {
+    /* sandboxed preview */
+  }
 });
 action('room-leave', () => {
   room?.leave();
